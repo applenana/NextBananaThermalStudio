@@ -82,7 +82,12 @@ class _HomeShellState extends State<HomeShell> {
                   iconActive: Icons.photo_library,
                   label: '图库',
                   active: _index == 1,
-                  onTap: () => setState(() => _index = 1),
+                  onTap: () {
+                    setState(() => _index = 1);
+                    // 切到图库时若已连接则自动刷新图片列表; 即使已经在该 tab
+                    // 上, 再次点击也会重新拉取一次, 符合用户预期.
+                    photoTabRefreshTrigger.value++;
+                  },
                 ),
                 const Spacer(),
                 _NavItem(

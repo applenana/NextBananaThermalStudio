@@ -23,6 +23,21 @@ class _ConnectionBarState extends State<ConnectionBar> {
   void initState() {
     super.initState();
     _refresh();
+    // 启动后自动搜索一次, 让用户开箱即用. 延迟 600ms 给窗口完成首帧 +
+    // 让 native serialport 完成初始化, 避免与 splash 拆除阶段抢资源.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(milliseconds: 600), () {
+        if (!mounted) return;
+        final app = context.read<AppState>();
+        if (app.status == ConnectionStatus.disconnected) {
+          app.autoSearchAndConnect(baud: _baud).then((ok) {
+            if (ok && mounted) {
+              setState(() => _selected = app.currentPort);
+            }
+          });
+        }
+      });
+    });
   }
 
   void _refresh() {
@@ -40,174 +55,211 @@ class _ConnectionBarState extends State<ConnectionBar> {
     final scheme = Theme.of(context).colorScheme;
     final connected = app.status == ConnectionStatus.connected;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(
-          children: [
-            // 端口选择
-            Icon(Icons.usb_rounded, size: 18, color: scheme.onSurfaceVariant),
-            const SizedBox(width: 8),
-            Container(
-              constraints: const BoxConstraints(maxWidth: 320, minWidth: 200),
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: scheme.surfaceContainerHigh,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  isExpanded: true,
-                  isDense: true,
-                  value: _selected,
-                  hint: const Text('选择端口'),
-                  items: _ports
-                      .map((p) => DropdownMenuItem(
-                            value: p.name,
-                            child: Text(
-                              p.description.isEmpty
-                                  ? p.name
-                                  : '${p.name} · ${p.description}',
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 13),
-                            ),
-                          ))
-                      .toList(),
-                  onChanged:
-                      connected ? null : (v) => setState(() => _selected = v),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            _IconChip(
-              icon: Icons.refresh_rounded,
-              onTap: connected ? null : _refresh,
-              tooltip: '刷新端口列表',
-            ),
-            const SizedBox(width: 16),
-
-            // 波特率
-            Text('波特率',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: scheme.onSurfaceVariant,
-                )),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: scheme.surfaceContainerHigh,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<int>(
-                  value: _baud,
-                  isDense: true,
-                  items: const [
-                    9600,
-                    19200,
-                    38400,
-                    57600,
-                    115200,
-                    230400,
-                    460800,
-                    921600,
-                    1000000,
-                  ]
-                      .map((b) =>
-                          DropdownMenuItem(value: b, child: Text('$b')))
-                      .toList(),
-                  onChanged:
-                      connected ? null : (v) => setState(() => _baud = v!),
-                ),
-              ),
-            ),
-            const SizedBox(width: 16),
-
-            // 连接按钮
-            FilledButton.icon(
-              onPressed: () async {
-                if (connected) {
-                  await app.disconnect();
-                } else if (_selected != null) {
-                  await app.connect(_selected!, baud: _baud);
-                }
-              },
-              icon: Icon(
-                connected ? Icons.link_off_rounded : Icons.bolt_rounded,
-                size: 18,
-              ),
-              label: Text(connected ? '断开' : '连接'),
-              style: FilledButton.styleFrom(
-                backgroundColor:
-                    connected ? scheme.errorContainer : scheme.primary,
-                foregroundColor:
-                    connected ? scheme.onErrorContainer : scheme.onPrimary,
-              ),
-            ),
-
-            const Spacer(),
-
-            _StatusBadge(status: app.status),
-            if (app.deviceSerial != null) ...[
-              const SizedBox(width: 12),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: scheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.numbers_rounded,
-                        size: 14, color: scheme.onSurfaceVariant),
-                    const SizedBox(width: 4),
-                    Text(
-                      app.deviceSerial!,
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 12,
+    return SizedBox(
+      width: double.infinity,
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // ===== 第 1 行: 端口 / 刷新 / 自动 / 波特率 / 连接 / 状态 =====
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.usb_rounded,
+                          size: 18, color: scheme.onSurfaceVariant),
+                      const SizedBox(width: 8),
+                      Container(
+                        constraints: const BoxConstraints(
+                            maxWidth: 320, minWidth: 200),
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: scheme.surfaceContainerHigh,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            isExpanded: true,
+                            isDense: true,
+                            value: _selected,
+                            hint: const Text('选择端口'),
+                            items: _ports
+                                .map((p) => DropdownMenuItem(
+                                      value: p.name,
+                                      child: Text(
+                                        p.description.isEmpty
+                                            ? p.name
+                                            : '${p.name} · ${p.description}',
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 13),
+                                      ),
+                                    ))
+                                .toList(),
+                            onChanged: connected
+                                ? null
+                                : (v) => setState(() => _selected = v),
+                          ),
+                        ),
                       ),
+                    ],
+                  ),
+                  _IconChip(
+                    icon: Icons.refresh_rounded,
+                    onTap: connected ? null : _refresh,
+                    tooltip: '刷新端口列表',
+                  ),
+                  FilledButton.tonalIcon(
+                    onPressed: (connected ||
+                            app.status == ConnectionStatus.scanning ||
+                            app.status == ConnectionStatus.connecting)
+                        ? null
+                        : () async {
+                            final ok =
+                                await app.autoSearchAndConnect(baud: _baud);
+                            if (ok && mounted) {
+                              setState(() => _selected = app.currentPort);
+                            }
+                          },
+                    icon: app.status == ConnectionStatus.scanning
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.auto_awesome_rounded, size: 16),
+                    label: Text(app.status == ConnectionStatus.scanning
+                        ? '搜索中…'
+                        : '自动'),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
                     ),
-                  ],
-                ),
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('波特率',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: scheme.onSurfaceVariant,
+                          )),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: scheme.surfaceContainerHigh,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<int>(
+                            value: _baud,
+                            isDense: true,
+                            items: const [
+                              9600,
+                              19200,
+                              38400,
+                              57600,
+                              115200,
+                              230400,
+                              460800,
+                              921600,
+                              1000000,
+                            ]
+                                .map((b) => DropdownMenuItem(
+                                    value: b, child: Text('$b')))
+                                .toList(),
+                            onChanged: connected
+                                ? null
+                                : (v) => setState(() => _baud = v!),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  FilledButton.icon(
+                    onPressed: () async {
+                      if (connected) {
+                        await app.disconnect();
+                      } else if (_selected != null) {
+                        await app.connect(_selected!, baud: _baud);
+                      }
+                    },
+                    icon: Icon(
+                      connected
+                          ? Icons.link_off_rounded
+                          : Icons.bolt_rounded,
+                      size: 18,
+                    ),
+                    label: Text(connected ? '断开' : '连接'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: connected
+                          ? scheme.errorContainer
+                          : scheme.primary,
+                      foregroundColor: connected
+                          ? scheme.onErrorContainer
+                          : scheme.onPrimary,
+                    ),
+                  ),
+                  _StatusBadge(status: app.status),
+                ],
               ),
-            ],
-            if (app.deviceInfo != null) ...[
-              const SizedBox(width: 8),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: app.isActivated
-                      ? Colors.green.withValues(alpha: 0.18)
-                      : Colors.orange.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
+
+              // ===== 第 2 行: 序列号 / 激活状态 / 激活时间 / 保修时间 =====
+              if (app.deviceSerial != null ||
+                  app.deviceInfo != null ||
+                  app.activateTime != null ||
+                  app.warrantyTime != null) ...[
+                const SizedBox(height: 10),
+                Divider(
+                    height: 1, color: scheme.outlineVariant.withValues(alpha: 0.4)),
+                const SizedBox(height: 10),
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 10,
+                  runSpacing: 8,
                   children: [
-                    Icon(
-                      app.isActivated
-                          ? Icons.check_circle_rounded
-                          : Icons.lock_outline_rounded,
-                      size: 14,
-                      color: app.isActivated ? Colors.green : Colors.orange,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      app.isActivated ? '已激活' : '未激活',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
+                    if (app.deviceSerial != null)
+                      _InfoPill(
+                        icon: Icons.numbers_rounded,
+                        label: '序列号',
+                        value: app.deviceSerial!,
+                        mono: true,
+                      ),
+                    if (app.deviceInfo != null)
+                      _InfoPill(
+                        icon: app.isActivated
+                            ? Icons.check_circle_rounded
+                            : Icons.lock_outline_rounded,
+                        label: '激活状态',
+                        value: app.isActivated ? '已激活' : '未激活',
                         color: app.isActivated ? Colors.green : Colors.orange,
                       ),
-                    ),
+                    if (app.activateTime != null &&
+                        app.activateTime!.isNotEmpty)
+                      _InfoPill(
+                        icon: Icons.event_available_rounded,
+                        label: '激活时间',
+                        value: app.activateTime!,
+                      ),
+                    if (app.warrantyTime != null &&
+                        app.warrantyTime!.isNotEmpty)
+                      _InfoPill(
+                        icon: Icons.verified_user_rounded,
+                        label: '保修截止',
+                        value: app.warrantyTime!,
+                      ),
                   ],
                 ),
-              ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -296,6 +348,58 @@ class _StatusBadge extends StatelessWidget {
                 color: color,
                 fontWeight: FontWeight.w600,
                 fontSize: 12,
+              )),
+        ],
+      ),
+    );
+  }
+}
+
+/// 设备信息小药丸: [图标][标签:][值]. 用于第二行序列号/激活时间等展示.
+class _InfoPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final bool mono;
+  final Color? color;
+  const _InfoPill({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.mono = false,
+    this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final bg = (color ?? scheme.onSurface).withValues(alpha: 0.10);
+    final fg = color ?? scheme.onSurface;
+    final muted = color?.withValues(alpha: 0.85) ?? scheme.onSurfaceVariant;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: fg),
+          const SizedBox(width: 5),
+          Text('$label:',
+              style: TextStyle(
+                fontSize: 11,
+                color: muted,
+                fontWeight: FontWeight.w500,
+              )),
+          const SizedBox(width: 4),
+          Text(value,
+              style: TextStyle(
+                fontSize: 12,
+                color: fg,
+                fontWeight: FontWeight.w600,
+                fontFamily: mono ? 'monospace' : null,
               )),
         ],
       ),

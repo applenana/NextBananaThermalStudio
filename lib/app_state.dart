@@ -30,6 +30,16 @@ class AppState extends ChangeNotifier {
   StreamSubscription<Uint8List>? _byteSub;
   Timer? _thermalHeartbeat;
   Timer? _visibleHeartbeat;
+  /// 掩插检测: 周期查看 native port 是否还开着. libserialport
+  /// 在 Windows 上设备拔出后不会立刻在读流上报错, 必须主动轮询.
+  Timer? _portWatchdog;
+  /// 自动重连计时器.
+  Timer? _reconnectTimer;
+  /// 是否为用户主动断开 (点击断开按钮). 为 true 时不启动重连.
+  bool _userDisconnect = false;
+  /// 上次成功连接的端口 / 波特率, 用于重连优先尝试同一个端口.
+  String? _lastPort;
+  int _lastBaud = 115200;
 
   // ---------------- 连接 ----------------
   ConnectionStatus status = ConnectionStatus.disconnected;
@@ -37,6 +47,10 @@ class AppState extends ChangeNotifier {
   String? deviceSerial;
   bool isActivated = false;
   Map<String, dynamic>? deviceInfo;
+  /// 激活时间 (设备 GetSysInfo 返回的 ActivateTime, 字符串原样保留).
+  String? activateTime;
+  /// 保修截止时间 (设备 GetSysInfo 返回的 WarrantyTime).
+  String? warrantyTime;
 
   // ---------------- 推流 ----------------
   bool thermalStreamEnabled = false;
@@ -99,6 +113,51 @@ class AppState extends ChangeNotifier {
 
   List<SerialPortInfo> listPorts() => SerialService.listPorts();
 
+  /// 自动搜索热成像设备并连接.
+  ///
+  /// 流程: 状态置为 scanning -> 枚举端口 -> 逐个发 `GetSysInfo` 探测 ->
+  /// 找到目标后用 [open] 正常打开 + 沿用现有字节回调链.
+  ///
+  /// 返回 true 表示连接成功. 若已连接会先断开重连. 探测期间会刷新 UI 显示
+  /// "正在搜索 COMx" 进度日志.
+  Future<bool> autoSearchAndConnect({int baud = 115200}) async {
+    if (status == ConnectionStatus.connected) {
+      await disconnect();
+    }
+    if (status == ConnectionStatus.scanning ||
+        status == ConnectionStatus.connecting) {
+      return false;
+    }
+    status = ConnectionStatus.scanning;
+    _log('info', '开始自动搜索热成像设备...');
+    notifyListeners();
+
+    final found = await SerialService.searchTargetDevice(
+      baud: baud,
+      onProbe: (p) {
+        _log('info', '探测 $p ...');
+        notifyListeners();
+      },
+    );
+
+    if (found.port == null) {
+      status = ConnectionStatus.disconnected;
+      _log('warn', '未发现热成像设备, 请检查 USB 连接');
+      notifyListeners();
+      return false;
+    }
+
+    _log('info', '发现设备 @ ${found.port}, 准备连接');
+    notifyListeners();
+    await connect(found.port!, baud: baud);
+    // 探测阶段已经拿到 JSON, 直接消化, 不必等连接后再 GetSysInfo
+    if (found.info != null) {
+      _absorbDeviceInfo(found.info!);
+      notifyListeners();
+    }
+    return status == ConnectionStatus.connected;
+  }
+
   Future<void> connect(String portName, {int baud = 115200}) async {
     if (status == ConnectionStatus.connected) await disconnect();
     status = ConnectionStatus.connecting;
@@ -106,8 +165,24 @@ class AppState extends ChangeNotifier {
     try {
       await _serial.open(portName, baud: baud);
       currentPort = portName;
+      _lastPort = portName;
+      _lastBaud = baud;
+      _userDisconnect = false;
+      _stopReconnectLoop();
       status = ConnectionStatus.connected;
-      _byteSub = _serial.bytesStream.listen(_onBytes);
+      _byteSub = _serial.bytesStream.listen(
+        _onBytes,
+        onError: (e) {
+          _log('err', '串口读错误: $e');
+          _handleUnexpectedDisconnect();
+        },
+        onDone: () {
+          _log('warn', '串口读流结束 (设备可能被拔出)');
+          _handleUnexpectedDisconnect();
+        },
+        cancelOnError: false,
+      );
+      _startPortWatchdog();
       _log('info', '已打开 $portName @ $baud');
       // 自动探测设备
       Future.delayed(const Duration(milliseconds: 300), () {
@@ -121,9 +196,17 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    _userDisconnect = true;
+    _stopReconnectLoop();
+    await _teardownConnection(reason: '已断开串口');
+  }
+
+  /// 内部: 拆除当前连接资源 (不改 _userDisconnect / 不动重连逻辑).
+  Future<void> _teardownConnection({required String reason}) async {
+    _stopPortWatchdog();
     _stopThermalHeartbeat();
     _stopVisibleHeartbeat();
-    await _byteSub?.cancel();
+    try { await _byteSub?.cancel(); } catch (_) {}
     _byteSub = null;
     await _serial.close();
     _parser.reset();
@@ -134,8 +217,74 @@ class AppState extends ChangeNotifier {
     isActivated = false;
     deviceInfo = null;
     deviceSerial = null;
-    _log('info', '已断开串口');
+    activateTime = null;
+    warrantyTime = null;
+    _log('info', reason);
     notifyListeners();
+  }
+
+  /// 检测到非主动断开 (读错/读完/watchdog) 后调用: 释放连接并启动自动重连循环.
+  void _handleUnexpectedDisconnect() {
+    if (status == ConnectionStatus.disconnected) return;
+    _teardownConnection(reason: '设备已断开, 准备重连');
+    if (!_userDisconnect) {
+      _startReconnectLoop();
+    }
+  }
+
+  // ============================================================
+  // 掩插看门狗 + 重连循环
+  // ============================================================
+
+  void _startPortWatchdog() {
+    _portWatchdog?.cancel();
+    _portWatchdog = Timer.periodic(const Duration(milliseconds: 1500), (_) {
+      if (status != ConnectionStatus.connected) return;
+      if (!_serial.isOpen) {
+        _log('warn', '检测到串口已关闭 (拔出?)');
+        _handleUnexpectedDisconnect();
+      }
+    });
+  }
+
+  void _stopPortWatchdog() {
+    _portWatchdog?.cancel();
+    _portWatchdog = null;
+  }
+
+  void _startReconnectLoop() {
+    if (_reconnectTimer != null) return;
+    _log('info', '启动自动重连 (每 3s 重试)');
+    _reconnectTimer =
+        Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (_userDisconnect) {
+        _stopReconnectLoop();
+        return;
+      }
+      if (status == ConnectionStatus.connected ||
+          status == ConnectionStatus.connecting ||
+          status == ConnectionStatus.scanning) {
+        return;
+      }
+      // 优先尝试上次端口, 失败再全局扫描.
+      if (_lastPort != null) {
+        final ports = SerialService.listPorts().map((e) => e.name).toList();
+        if (ports.contains(_lastPort)) {
+          await connect(_lastPort!, baud: _lastBaud);
+          if (status == ConnectionStatus.connected) {
+            _stopReconnectLoop();
+            return;
+          }
+        }
+      }
+      final ok = await autoSearchAndConnect(baud: _lastBaud);
+      if (ok) _stopReconnectLoop();
+    });
+  }
+
+  void _stopReconnectLoop() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
   }
 
   /// 发送一行命令 (自动加 \n, 同步回显日志).
@@ -198,16 +347,30 @@ class AppState extends ChangeNotifier {
     if (text.startsWith('{') && text.endsWith('}')) {
       try {
         final j = jsonDecode(text) as Map<String, dynamic>;
-        if (j.containsKey('Activated') || j.containsKey('Serial')) {
-          deviceInfo = j;
-          deviceSerial = j['Serial']?.toString() ?? deviceSerial;
-          isActivated = (j['Activated'] == true) ||
-              (j['Activated']?.toString().toLowerCase() == 'true');
+        if (j.containsKey('Activated') ||
+            j.containsKey('isActivated') ||
+            j.containsKey('Serial') ||
+            j.containsKey('SerialNum')) {
+          _absorbDeviceInfo(j);
           _log('info', '设备信息更新, 激活=$isActivated, SN=$deviceSerial');
           notifyListeners();
         }
       } catch (_) {}
     }
+  }
+
+  /// 统一吸收 GetSysInfo 返回的 JSON 字段, 兼容 Python/固件两套 key 命名.
+  void _absorbDeviceInfo(Map<String, dynamic> j) {
+    deviceInfo = j;
+    deviceSerial =
+        (j['Serial'] ?? j['SerialNum'])?.toString() ?? deviceSerial;
+    final actField = j['Activated'] ?? j['isActivated'];
+    isActivated = (actField == true) ||
+        (actField?.toString().toLowerCase() == 'true');
+    final at = j['ActivateTime']?.toString();
+    if (at != null && at.isNotEmpty) activateTime = at;
+    final wt = j['WarrantyTime']?.toString();
+    if (wt != null && wt.isNotEmpty) warrantyTime = wt;
   }
 
   // ============================================================

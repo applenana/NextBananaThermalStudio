@@ -11,6 +11,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_libserialport/flutter_libserialport.dart';
@@ -154,5 +155,139 @@ class SerialService {
   Future<void> dispose() async {
     await close();
     await _byteCtrl.close();
+  }
+
+  // ============================================================
+  // 自动探测设备 (参考全能上位机 _probe_device)
+  // ============================================================
+
+  /// 临时打开 [name] 端口, 发 `GetSysInfo\n`, 在 [timeout] 内等设备
+  /// 返回 JSON 行 (包含 `Activated`/`Serial` 等字段).
+  ///
+  /// 成功返回解析后的 JSON Map, 失败 / 超时返回 null. 全程不阻塞 UI 线程.
+  /// 探测完成自动释放 native handle, 不影响后续 [open].
+  static Future<Map<String, dynamic>?> probeDevice(
+    String name, {
+    int baud = 115200,
+    Duration timeout = const Duration(milliseconds: 1800),
+  }) async {
+    SerialPort? port;
+    SerialPortReader? reader;
+    StreamSubscription<Uint8List>? sub;
+    final completer = Completer<Map<String, dynamic>?>();
+    final buf = BytesBuilder(copy: false);
+    try {
+      port = SerialPort(name);
+      if (!port.openReadWrite()) {
+        return null;
+      }
+      final cfg = SerialPortConfig()
+        ..baudRate = baud
+        ..bits = 8
+        ..stopBits = 1
+        ..parity = SerialPortParity.none
+        ..setFlowControl(SerialPortFlowControl.none);
+      port.config = cfg;
+
+      reader = SerialPortReader(port);
+      sub = reader.stream.listen((data) {
+        if (completer.isCompleted) return;
+        buf.add(data);
+        final all = buf.toBytes();
+        int last = 0;
+        for (int i = 0; i < all.length; i++) {
+          if (all[i] != 0x0A) continue;
+          final raw = all.sublist(last, i);
+          last = i + 1;
+          // 仅保留可打印 ASCII (设备描述/JSON 都是 ASCII).
+          final ascii = raw
+              .where((b) => b == 0x09 || (b >= 0x20 && b < 0x7F))
+              .toList(growable: false);
+          final line = String.fromCharCodes(ascii).trim();
+          if (line.startsWith('{') && line.endsWith('}')) {
+            try {
+              final j = jsonDecode(line);
+              if (j is Map<String, dynamic> &&
+                  (j.containsKey('Activated') ||
+                      j.containsKey('Serial') ||
+                      j.containsKey('SerialNum') ||
+                      j.containsKey('isActivated'))) {
+                if (!completer.isCompleted) completer.complete(j);
+                return;
+              }
+            } catch (_) {}
+          }
+        }
+        // 截断已消费部分
+        if (last > 0 && last < all.length) {
+          final tail = all.sublist(last);
+          buf.clear();
+          buf.add(tail);
+        } else if (last >= all.length) {
+          buf.clear();
+        }
+      }, onError: (_) {
+        if (!completer.isCompleted) completer.complete(null);
+      });
+
+      // 给设备一点上电就绪时间, 再发命令
+      await Future.delayed(const Duration(milliseconds: 150));
+      if (!port.isOpen) {
+        if (!completer.isCompleted) completer.complete(null);
+      } else {
+        port.write(Uint8List.fromList('GetSysInfo\n'.codeUnits),
+            timeout: 200);
+      }
+
+      return await completer.future.timeout(
+        timeout,
+        onTimeout: () => null,
+      );
+    } catch (_) {
+      return null;
+    } finally {
+      try { await sub?.cancel(); } catch (_) {}
+      try { reader?.close(); } catch (_) {}
+      try { if (port?.isOpen == true) port?.close(); } catch (_) {}
+    }
+  }
+
+  /// 判断端口描述是否可能是热成像 USB CDC 设备 (优先尝试).
+  /// 与 Python 上位机的过滤策略一致.
+  static bool _isLikelyTarget(SerialPortInfo info) {
+    final d = info.description.toUpperCase();
+    final m = (info.manufacturer ?? '').toUpperCase();
+    final blob = '$d $m';
+    return blob.contains('USB') ||
+        blob.contains('CDC') ||
+        blob.contains('ACM') ||
+        blob.contains('SERIAL') ||
+        // RP2040 默认描述 "Board CDC"
+        blob.contains('BOARD');
+  }
+
+  /// 扫描全部串口并探测目标设备. 返回 `(端口名, 设备JSON)`,
+  /// 没找到返回 `(null, null)`.
+  ///
+  /// 探测顺序: 描述含 USB/CDC/ACM/BOARD 的端口优先, 其余端口兜底.
+  /// 每个端口最多耗时 [perPortTimeout].
+  static Future<({String? port, Map<String, dynamic>? info})>
+      searchTargetDevice({
+    int baud = 115200,
+    Duration perPortTimeout = const Duration(milliseconds: 1500),
+    void Function(String port)? onProbe,
+  }) async {
+    final ports = listPorts();
+    final preferred = ports.where(_isLikelyTarget).toList();
+    final fallback = ports.where((p) => !_isLikelyTarget(p)).toList();
+    for (final p in [...preferred, ...fallback]) {
+      onProbe?.call(p.name);
+      final info = await probeDevice(p.name,
+          baud: baud, timeout: perPortTimeout);
+      if (info != null) {
+        return (port: p.name, info: info);
+      }
+    }
+    return (port: null, info: null);
   }
 }

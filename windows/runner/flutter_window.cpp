@@ -7,6 +7,12 @@
 
 #pragma comment(lib, "Dwmapi.lib")
 
+// Custom message used to dismiss the boot splash on the UI thread.
+// Posted from SetNextFrameCallback (which may run on the raster thread)
+// so DestroyWindow / SetWindowPos always run on the window-owning thread.
+static constexpr UINT kSplashDismissMsg = WM_APP + 0x21;
+static constexpr UINT_PTR kSplashFallbackTimerId = 0xBA0;
+
 // Newer DWM attributes (Win11 22000+). Define here to avoid SDK version gates.
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -59,9 +65,19 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+  // Splash dismissal must run on the UI thread (DestroyWindow + SetWindowPos
+  // both require being called from the thread that owns the window).
+  // SetNextFrameCallback may invoke on the raster thread in some Flutter
+  // versions, so we just PostMessage to the main thread and let
+  // MessageHandler call DismissSplash().
+  HWND self = GetHandle();
+  flutter_controller_->engine()->SetNextFrameCallback([self]() {
+    if (self) PostMessage(self, kSplashDismissMsg, 0, 0);
   });
+
+  // Fallback: if for any reason SetNextFrameCallback never fires, dismiss
+  // the splash after a safety interval so the user is never stuck.
+  SetTimer(self, kSplashFallbackTimerId, 2500, nullptr);
 
   // Flutter can complete the first frame before the "show window" callback is
   // registered. The following call ensures a frame is pending to ensure the
@@ -89,6 +105,18 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   // (0xc0000005 @ flutter_windows.dll+0x391b6). Desktop tool has weak
   // a11y needs, disable globally for stability.
   if (message == WM_GETOBJECT) {
+    return 0;
+  }
+
+  // Splash control on the UI thread.
+  if (message == kSplashDismissMsg) {
+    KillTimer(hwnd, kSplashFallbackTimerId);
+    DismissSplash();
+    return 0;
+  }
+  if (message == WM_TIMER && wparam == kSplashFallbackTimerId) {
+    KillTimer(hwnd, kSplashFallbackTimerId);
+    DismissSplash();
     return 0;
   }
 

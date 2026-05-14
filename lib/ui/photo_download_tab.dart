@@ -27,6 +27,10 @@ import '../render/render_pipeline.dart';
 import 'widgets/rgb_image_view.dart';
 import 'widgets/thermal_canvas.dart';
 
+/// 外部触发图库刷新的通道. 每次 value++ 表示请求一次刷新,
+/// 由 [_PhotoDownloadTabState] 监听并在已连接 / 非忙时执行.
+final ValueNotifier<int> photoTabRefreshTrigger = ValueNotifier<int>(0);
+
 class PhotoDownloadTab extends StatefulWidget {
   const PhotoDownloadTab({super.key});
 
@@ -65,6 +69,21 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       if (!mounted) return;
       context.read<AppState>().stopAllStreams();
     });
+    photoTabRefreshTrigger.addListener(_onExternalRefresh);
+  }
+
+  @override
+  void dispose() {
+    photoTabRefreshTrigger.removeListener(_onExternalRefresh);
+    super.dispose();
+  }
+
+  void _onExternalRefresh() {
+    if (!mounted) return;
+    final app = context.read<AppState>();
+    if (app.status != ConnectionStatus.connected) return;
+    if (_busy) return;
+    _refresh();
   }
 
   Future<void> _refresh() async {

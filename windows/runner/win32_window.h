@@ -55,6 +55,14 @@ class Win32Window {
   // Return a RECT representing the bounds of the current client area.
   RECT GetClientArea();
 
+  // Splash overlay control. A small, draggable, transparent-background
+  // popup window is created during Win32Window::Create() and the main
+  // top-level window stays hidden until DismissSplash() is invoked (from
+  // the Flutter first-frame callback). This gives the user immediate
+  // visual feedback while the engine boots, and the popup can be moved
+  // by dragging anywhere on it.
+  void DismissSplash();
+
  protected:
   // Processes and route salient window messages for mouse handling,
   // size change and DPI. Delegates handling of these to member overloads that
@@ -97,6 +105,20 @@ class Win32Window {
 
   // window handle for hosted content.
   HWND child_content_ = nullptr;
+
+  // Independent transparent popup window shown during engine boot.
+  HWND splash_hwnd_ = nullptr;
+
+  // When true, the main top-level window is kept hidden and the splash
+  // popup is shown instead. Flipped to false by DismissSplash() once
+  // Flutter has rendered its first frame.
+  bool splash_active_ = true;
+
+  // Intended on-screen rectangle for the main window. During splash boot
+  // the main window is shown off-screen (so the Flutter engine treats it
+  // as visible and produces frames), and DismissSplash() restores it to
+  // this rect.
+  RECT splash_target_rect_ = {0, 0, 0, 0};
 };
 
 #endif  // RUNNER_WIN32_WINDOW_H_
