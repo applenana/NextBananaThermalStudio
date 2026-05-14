@@ -1,0 +1,63 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # 允许创建 Release / 上传附件
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.9"
+          channel: stable
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Build Windows Release
+        run: flutter build windows --release
+
+      - name: Collect Release folder
+        id: pack
+        shell: pwsh
+        run: |
+          $src = "build\windows\x64\runner\Release"
+          if (-not (Test-Path $src)) { throw "Release folder not found: $src" }
+          $stamp = (Get-Date -Format "yyyyMMdd-HHmmss")
+          $sha = "${{ github.sha }}".Substring(0,7)
+          $name = "NextBananaThermalStudio-windows-x64-$stamp-$sha"
+          $zip  = "$name.zip"
+          Compress-Archive -Path "$src\*" -DestinationPath $zip -Force
+          Get-ChildItem $zip | Select-Object FullName,Length
+          "zip_name=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "art_name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.art_name }}
+          path: ${{ steps.pack.outputs.zip_name }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create Release (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.pack.outputs.zip_name }}
+          generate_release_notes: true

@@ -1,0 +1,50 @@
+name: banana_thermal
+description: "BananaThermal Studio - 跨平台热成像 + 可见光双光上位机 (Flutter 桌面版)"
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # 串口 (Windows/macOS/Linux 桌面跨平台)
+  flutter_libserialport: ^0.4.0
+
+  # 实时图表
+  fl_chart: ^0.69.0
+
+  # 状态管理
+  provider: ^6.1.2
+
+  # 文件选择 / 保存
+  file_picker: ^8.1.4
+  path_provider: ^2.1.5
+  path: ^1.9.0
+
+  # 图像处理 (Dart 纯实现; JPEG 解码 / 缩放 / 滤镜)
+  image: ^4.3.0
+
+  collection: ^1.18.0
+
+  # Win32 ffi helper (Utf16 / calloc), 仅用于设置页的窗口尺寸调整,
+  # 避免引入 window_manager 等会与串口插件冲突的 native plugin.
+  ffi: ^2.1.0
+  shared_preferences: ^2.5.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/fonts/
+  fonts:
+    - family: SmileySans
+      fonts:
+        - asset: assets/fonts/SmileySans-Oblique.ttf
