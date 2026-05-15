@@ -108,7 +108,13 @@ class SerialService {
       ..bits = 8
       ..stopBits = 1
       ..parity = SerialPortParity.none
-      ..setFlowControl(SerialPortFlowControl.none);
+      ..setFlowControl(SerialPortFlowControl.none)
+      // 关键: 显式拉高 DTR / RTS, 唤醒 RP2040 + TinyUSB CDC 设备的 TX.
+      // 多数 TinyUSB CDC 固件在 cdc_set_control_line_state(dtr=1) 回调里
+      // 才把内部 cdc_connected 置 true, 否则 tud_cdc_write 全部丢弃.
+      // 这也是为什么必须先用浏览器 Web Serial (默认拉 DTR) "唤一下"才有数据.
+      ..dtr = SerialPortDtr.on
+      ..rts = SerialPortRts.on;
     p.config = cfg;
     // 不调 cfg.dispose(): flutter_libserialport 在 Windows 上手动 dispose 后
     // GC finalizer 会二次释放同一 native handle, 造成闪退. 交给 GC.
@@ -305,7 +311,10 @@ class SerialService {
         ..bits = 8
         ..stopBits = 1
         ..parity = SerialPortParity.none
-        ..setFlowControl(SerialPortFlowControl.none);
+        ..setFlowControl(SerialPortFlowControl.none)
+        // 探测路径同样要拉高 DTR / RTS, 否则探测期设备不会回 JSON.
+        ..dtr = SerialPortDtr.on
+        ..rts = SerialPortRts.on;
       port.config = cfg;
 
       reader = SerialPortReader(port);

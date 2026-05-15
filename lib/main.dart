@@ -15,8 +15,8 @@ const ThemeMode _defaultThemeMode = ThemeMode.dark;
 const double _defaultUiScale = 1.0;
 const double _defaultWideBreakpoint = 800;
 const bool _defaultConsoleExpanded = true;
-const int _defaultWindowW = 935;
-const int _defaultWindowH = 755;
+const int _defaultWindowW = 1280;
+const int _defaultWindowH = 820;
 
 const String _kThemeMode = 'theme_mode'; // int: 0 system / 1 light / 2 dark
 const String _kUiScale = 'ui_scale';
