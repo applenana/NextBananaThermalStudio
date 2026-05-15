@@ -21,7 +21,7 @@ import 'package:provider/provider.dart';
 
 import '../app_state.dart';
 import '../fusion/fusion.dart';
-import '../main.dart' show appPhotoDownloadDir;
+import '../main.dart' show appPhotoDownloadDir, appPhotoDetailOpen, appClosePhotoDetail;
 import '../protocol/photo_decoder.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
@@ -67,6 +67,13 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   /// 桌面不走这个状态 (一直是左右分栏).
   bool _phoneShowDetail = false;
 
+  /// 切换详情页并同步全局 [appPhotoDetailOpen] 状态, 供返回键拦截判断.
+  void _setPhoneShowDetail(bool v) {
+    if (_phoneShowDetail == v) return;
+    setState(() => _phoneShowDetail = v);
+    appPhotoDetailOpen.value = v;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -75,11 +82,18 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       context.read<AppState>().stopAllStreams();
     });
     photoTabRefreshTrigger.addListener(_onExternalRefresh);
+    // 注册全局关闭回调, 供 Android 系统返回键拦截调用.
+    appClosePhotoDetail = () {
+      if (!mounted) return;
+      if (_phoneShowDetail) _setPhoneShowDetail(false);
+    };
   }
 
   @override
   void dispose() {
     photoTabRefreshTrigger.removeListener(_onExternalRefresh);
+    appClosePhotoDetail = null;
+    appPhotoDetailOpen.value = false;
     super.dispose();
   }
 
@@ -235,11 +249,29 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
 
   @override
   Widget build(BuildContext context) {
-    // Android 手机: 列表 / 详情单页切换, 顶部详情页加返回按钮.
+    // Android 手机: 列表 / 详情单页切换, 两者之间用 fade+scale 动画.
     if (Platform.isAndroid) {
-      return _phoneShowDetail
-          ? _buildDetailCard(phone: true)
-          : _buildListCard(phone: true);
+      return AnimatedSwitcher(
+        duration: const Duration(milliseconds: 260),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, anim) => FadeTransition(
+          opacity: anim,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.96, end: 1.0).animate(anim),
+            child: child,
+          ),
+        ),
+        child: _phoneShowDetail
+            ? KeyedSubtree(
+                key: const ValueKey('photo-detail'),
+                child: _buildDetailCard(phone: true),
+              )
+            : KeyedSubtree(
+                key: const ValueKey('photo-list'),
+                child: _buildListCard(phone: true),
+              ),
+      );
     }
     return LayoutBuilder(
       builder: (context, c) {
@@ -332,8 +364,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                               _raw = null;
                               _decoded = null;
                               _markers.clear();
-                              if (phone) _phoneShowDetail = true;
                             });
+                            if (phone) _setPhoneShowDetail(true);
                             _download();
                           },
                         );
@@ -360,8 +392,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 if (phone) ...[
                   IconButton(
                     tooltip: '返回列表',
-                    onPressed: () =>
-                        setState(() => _phoneShowDetail = false),
+                    onPressed: () => _setPhoneShowDetail(false),
                     icon: const Icon(Icons.arrow_back_rounded, size: 20),
                   ),
                   const SizedBox(width: 4),

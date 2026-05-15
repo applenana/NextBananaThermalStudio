@@ -49,6 +49,14 @@ final ValueNotifier<bool> appConsoleExpanded =
 final ValueNotifier<bool> appConnectionBarExpanded =
     ValueNotifier<bool>(true);
 
+/// 图库 Tab 是否处于"详情页"状态 (仅 Android 窄屏 list↔detail 切换时使用).
+/// 用于让 Android 系统返回键能优先关闭详情页, 由 [PhotoDownloadTab] 维护.
+final ValueNotifier<bool> appPhotoDetailOpen = ValueNotifier<bool>(false);
+
+/// Android 返回键请求关闭图库详情的回调. 由 PhotoDownloadTab 在 initState
+/// 内注册, dispose 内置 null. home_shell 拦截返回键时调用此回调.
+VoidCallback? appClosePhotoDetail;
+
 /// 图库文件下载根目录. null 表示用默认 `<Documents>/BananaThermalStudio`.
 final ValueNotifier<String?> appPhotoDownloadDir =
     ValueNotifier<String?>(null);

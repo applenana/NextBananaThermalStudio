@@ -2,6 +2,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -13,6 +14,10 @@ import '../main.dart'
         appUiScale,
         appWideBreakpoint,
         appPhotoDownloadDir,
+        appPhotoDetailOpen,
+        appClosePhotoDetail,
+        appConnectionBarExpanded,
+        appConsoleExpanded,
         setPhotoDownloadDir,
         setWindowSizePersist,
         resetAllSettings;
@@ -32,10 +37,52 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
+  /// Android 双击返回退出: 记录上次返回键时间, 2 秒内再按一次才真正退出.
+  DateTime? _lastBackAt;
+
+  /// Android 系统返回键处理. 优先级:
+  /// 1) 图库详情打开 \u2192 关闭详情
+  /// 2) 串口栏 / 控制台展开 \u2192 折叠
+  /// 3) 当前 tab != 实时 \u2192 切到实时
+  /// 4) 已在实时 + 2 秒内重复按 \u2192 退出 App; 否则 toast 提示.
+  Future<void> _handleAndroidBack() async {
+    if (!Platform.isAndroid) return;
+    if (appPhotoDetailOpen.value && appClosePhotoDetail != null) {
+      appClosePhotoDetail!();
+      return;
+    }
+    if (appConnectionBarExpanded.value) {
+      appConnectionBarExpanded.value = false;
+      return;
+    }
+    if (appConsoleExpanded.value) {
+      appConsoleExpanded.value = false;
+      return;
+    }
+    if (_index != 0) {
+      setState(() => _index = 0);
+      return;
+    }
+    final now = DateTime.now();
+    if (_lastBackAt != null &&
+        now.difference(_lastBackAt!) < const Duration(seconds: 2)) {
+      await SystemNavigator.pop();
+      return;
+    }
+    _lastBackAt = now;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('再按一次返回键退出 App'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Scaffold(
+    final scaffold = Scaffold(
       // ExcludeSemantics 包整树: Flutter Windows accessibility_bridge
       // 在复杂 widget 树 (IndexedStack + Slider + Dropdown 等) 上有已知 bug
       // (issue #105538), 持续刷 AXTree "Nodes left pending" 错误并最终让
@@ -74,6 +121,18 @@ class _HomeShellState extends State<HomeShell> {
       ),
       ),
     );
+    // Android 拦截系统返回键, 按层级关闭子视图 / 切 tab / 双击退出.
+    if (Platform.isAndroid) {
+      return PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) return;
+          _handleAndroidBack();
+        },
+        child: scaffold,
+      );
+    }
+    return scaffold;
   }
 
   // 宽屏: 左侧 NavigationRail.
