@@ -1,6 +1,7 @@
 /// 实时投屏 Tab - 现代扁平卡片布局.
 library;
 
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:fl_chart/fl_chart.dart';
@@ -13,6 +14,7 @@ import '../main.dart' show appWideBreakpoint, appConsoleExpanded;
 import '../protocol/frame_parser.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
+import 'connection_bar.dart';
 import 'widgets/rgb_image_view.dart';
 import 'widgets/thermal_canvas.dart';
 
@@ -58,18 +60,25 @@ class _NarrowLayout extends StatelessWidget {
   const _NarrowLayout();
   @override
   Widget build(BuildContext context) {
+    // Android 下 ConnectionBar 不再在 HomeShell 顶部全局项出, 而是作为「实时」tab
+    // 内的顶部普通元素, 跟随页面滚动 (不顶置). 桌面 narrow 模式不走这里.
+    final showInTabConnBar = Platform.isAndroid;
     return SingleChildScrollView(
       child: Column(
-        children: const [
-          _KpiRow(),
-          SizedBox(height: 12),
-          SizedBox(height: 360, child: _ThermalCard()),
-          SizedBox(height: 12),
-          SizedBox(height: 160, child: _ChartCard()),
-          SizedBox(height: 12),
-          _ControlsCard(),
-          SizedBox(height: 12),
-          _CollapsibleConsole(expandedHeight: 200),
+        children: [
+          if (showInTabConnBar) ...[
+            const ConnectionBar(),
+            const SizedBox(height: 12),
+          ],
+          const _KpiRow(),
+          const SizedBox(height: 12),
+          const AspectRatio(aspectRatio: 4 / 3, child: _ThermalCard()),
+          const SizedBox(height: 12),
+          const SizedBox(height: 160, child: _ChartCard()),
+          const SizedBox(height: 12),
+          const _ControlsCard(),
+          const SizedBox(height: 12),
+          const _CollapsibleConsole(expandedHeight: 200),
         ],
       ),
     );
@@ -130,39 +139,52 @@ class _KpiTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // 窄屏 (< 480) 紧凑模式: 缩小 padding / icon / 字体, 防止 3 列在手机挤爆.
+    final compact = MediaQuery.of(context).size.width < 480;
+    final hp = compact ? 10.0 : 18.0;
+    final vp = compact ? 10.0 : 14.0;
+    final iconSide = compact ? 32.0 : 42.0;
+    final iconSize = compact ? 18.0 : 22.0;
+    final valueSize = compact ? 17.0 : 22.0;
+    final labelSize = compact ? 11.0 : 12.0;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        padding: EdgeInsets.symmetric(horizontal: hp, vertical: vp),
         child: Row(
           children: [
             Container(
-              width: 42,
-              height: 42,
+              width: iconSide,
+              height: iconSide,
               decoration: BoxDecoration(
                 color: color.withValues(alpha: 0.16),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(compact ? 10 : 12),
               ),
-              child: Icon(icon, color: color, size: 22),
+              child: Icon(icon, color: color, size: iconSize),
             ),
-            const SizedBox(width: 12),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label,
+            SizedBox(width: compact ? 8 : 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: labelSize,
+                        color: scheme.onSurfaceVariant,
+                      )),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${value.toStringAsFixed(1)} °C',
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: 12,
-                      color: scheme.onSurfaceVariant,
-                    )),
-                const SizedBox(height: 2),
-                Text(
-                  '${value.toStringAsFixed(1)} °C',
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w700,
-                    fontFamily: 'SmileySans',
+                      fontSize: valueSize,
+                      fontWeight: FontWeight.w700,
+                      fontFamily: 'SmileySans',
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),

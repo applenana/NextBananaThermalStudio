@@ -42,7 +42,13 @@ class _HomeShellState extends State<HomeShell> {
       // 任意 native 调用 (libserialport / user32) 概率性 segfault.
       // 桌面工具对无障碍需求很弱, 整树关闭 a11y 节点同步即治本.
       body: ExcludeSemantics(
-        child: Column(
+        child: SafeArea(
+          // 移动端要让状态栏/手势区不挡内容; 桌面 SafeArea 退化为 0 padding.
+          top: !Platform.isWindows,
+          bottom: !Platform.isWindows,
+          left: false,
+          right: false,
+          child: Column(
           children: [
             // 自绘标题栏只在 Windows 上启用 (配合 win32_window WM_NCCALCSIZE),
             // 移动端 / 其它桌面平台用系统装饰.
@@ -65,6 +71,7 @@ class _HomeShellState extends State<HomeShell> {
             ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -128,19 +135,30 @@ class _HomeShellState extends State<HomeShell> {
 
   Widget _mainColumn({required bool compact}) {
     final hPad = compact ? 12.0 : 18.0;
+    // Android 手机上隐藏顶部 Header (品牌标题 + 主题切换), 以最大化主区可用高度.
+    // 主题切换入口转移到设置页。
+    // Android 同时不在顶部全局项出 ConnectionBar — 改为只在「实时」tab 内部以普通
+    // 元素出现, 避免抢占「图库」「设置」的屏幕空间. 桌面依旧全局顶部.
+    final showHeader = !Platform.isAndroid;
+    final showGlobalConnBar = !Platform.isAndroid;
     return Column(
       children: [
-        SizedBox(height: compact ? 10 : 14),
-        Padding(
-          padding: EdgeInsets.symmetric(horizontal: hPad),
-          child: _Header(compact: compact),
-        ),
-        const SizedBox(height: 12),
-        Padding(
-          padding: EdgeInsets.symmetric(horizontal: hPad),
-          child: const ConnectionBar(),
-        ),
-        const SizedBox(height: 12),
+        if (showHeader) ...[
+          SizedBox(height: compact ? 10 : 14),
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: hPad),
+            child: _Header(compact: compact),
+          ),
+          const SizedBox(height: 12),
+        ] else
+          SizedBox(height: compact ? 6 : 10),
+        if (showGlobalConnBar) ...[
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: hPad),
+            child: const ConnectionBar(),
+          ),
+          const SizedBox(height: 12),
+        ],
         Expanded(
           child: Padding(
             padding: EdgeInsets.fromLTRB(hPad, 0, hPad, compact ? 8 : 18),
@@ -184,9 +202,26 @@ class _BrandLogo extends StatelessWidget {
         ),
         borderRadius: BorderRadius.circular(14),
       ),
-      child: const Center(
-        child: Text('🍌', style: TextStyle(fontSize: 24)),
-      ),
+      // Android 上用 emoji 香蕉 (与桌面 launcher 图标同源), 默认字体能正确渲染
+      // 彩色 emoji; 桌面保留 PNG 香蕉 logo 以获得更锐利的质感.
+      child: Platform.isAndroid
+          ? const Center(
+              child: Text(
+                '🍌',
+                style: TextStyle(fontSize: 26),
+              ),
+            )
+          : Padding(
+              padding: const EdgeInsets.all(4),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Image.asset(
+                  'assets/icons/icon.png',
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.medium,
+                ),
+              ),
+            ),
     );
   }
 }
@@ -361,41 +396,69 @@ class _Header extends StatelessWidget {
 class _ThemeToggle extends StatelessWidget {
   const _ThemeToggle();
 
+  static (IconData, String) _modeMeta(ThemeMode m) {
+    switch (m) {
+      case ThemeMode.system:
+        return (Icons.brightness_auto_rounded, '跟随');
+      case ThemeMode.light:
+        return (Icons.light_mode_rounded, '白天');
+      case ThemeMode.dark:
+        return (Icons.dark_mode_rounded, '夜间');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: appThemeMode,
       builder: (context, mode, _) {
-        final isDark = mode == ThemeMode.dark;
+        final (icon, label) = _modeMeta(mode);
         return Material(
           color: scheme.surfaceContainerHigh,
           borderRadius: BorderRadius.circular(12),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(12),
-            onTap: () => appThemeMode.value =
-                isDark ? ThemeMode.light : ThemeMode.dark,
+          child: PopupMenuButton<ThemeMode>(
+            tooltip: '主题模式',
+            initialValue: mode,
+            onSelected: (v) => appThemeMode.value = v,
+            position: PopupMenuPosition.under,
+            itemBuilder: (_) => [
+              for (final m in ThemeMode.values)
+                PopupMenuItem(
+                  value: m,
+                  child: Row(
+                    children: [
+                      Icon(_modeMeta(m).$1, size: 16, color: scheme.primary),
+                      const SizedBox(width: 10),
+                      Text(_modeMeta(m).$2),
+                      if (m == mode) ...[
+                        const SizedBox(width: 8),
+                        Icon(Icons.check_rounded,
+                            size: 14, color: scheme.primary),
+                      ],
+                    ],
+                  ),
+                ),
+            ],
             child: Padding(
               padding:
                   const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    isDark
-                        ? Icons.dark_mode_rounded
-                        : Icons.light_mode_rounded,
-                    size: 16,
-                    color: scheme.primary,
-                  ),
+                  Icon(icon, size: 16, color: scheme.primary),
                   const SizedBox(width: 6),
                   Text(
-                    isDark ? '夜间' : '白天',
+                    label,
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: scheme.onSurface,
                     ),
                   ),
+                  const SizedBox(width: 4),
+                  Icon(Icons.arrow_drop_down_rounded,
+                      size: 16, color: scheme.onSurfaceVariant),
                 ],
               ),
             ),
@@ -576,6 +639,45 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
             ),
           ),
           const SizedBox(height: 12),
+          // 主题模式 — 全平台可见 (Android 上顶部无 ThemeToggle, 这里是唯一入口).
+          _SettingsSection(
+            icon: Icons.brightness_6_rounded,
+            title: '主题模式',
+            subtitle: '跟随系统 / 白天 / 夜间',
+            child: ValueListenableBuilder<ThemeMode>(
+              valueListenable: appThemeMode,
+              builder: (_, mode, __) => Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final m in ThemeMode.values)
+                    ChoiceChip(
+                      avatar: Icon(
+                        m == ThemeMode.system
+                            ? Icons.brightness_auto_rounded
+                            : m == ThemeMode.light
+                                ? Icons.light_mode_rounded
+                                : Icons.dark_mode_rounded,
+                        size: 16,
+                        color: mode == m ? cs.primary : cs.onSurfaceVariant,
+                      ),
+                      label: Text(
+                        m == ThemeMode.system
+                            ? '跟随系统'
+                            : m == ThemeMode.light
+                                ? '白天'
+                                : '夜间',
+                      ),
+                      selected: mode == m,
+                      onSelected: (_) => appThemeMode.value = m,
+                    ),
+                ],
+              ),
+            ),
+          ),
+          // 响应式断点 / 窗口尺寸 仅桌面可见 (Android 无窗口概念, NavigationRail 也并不适用).
+          if (!Platform.isAndroid) ...[
+          const SizedBox(height: 12),
           _SettingsSection(
             icon: Icons.view_column_rounded,
             title: '响应式断点',
@@ -723,6 +825,7 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
               ],
             ),
           ),
+          ], // end if !Platform.isAndroid (响应式断点 + 窗口尺寸)
           const SizedBox(height: 12),
           _SettingsSection(
             icon: Icons.folder_open_rounded,

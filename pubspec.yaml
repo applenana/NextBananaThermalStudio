@@ -43,11 +43,32 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  # 一键生成所有平台的 App 图标 (Android adaptive + macOS).
+  # 用法: dart run flutter_launcher_icons
+  flutter_launcher_icons: ^0.14.4
+
+flutter_launcher_icons:
+  # 源图: 香蕉 emoji (Twemoji CC BY 4.0) 合成在橙色渐变圆角底上, 1024x1024.
+  # 生成脚本: tools/make_emoji_icon.py
+  image_path: "assets/icons/icon_emoji.png"
+  # Android: 覆盖 mipmap 各密度 + adaptive icon (Android 8.0+).
+  android: true
+  adaptive_icon_background: "#FF7043"
+  adaptive_icon_foreground: "assets/icons/icon_emoji.png"
+  # macOS: 顺手补一个, 桌面 Linux 默认走 .desktop / Windows 已有 ico, 跳过.
+  macos:
+    generate: true
+    image_path: "assets/icons/icon_emoji.png"
+  # Windows / iOS 不在本次目标内, 保持现有资源.
+  windows:
+    generate: false
+  ios: false
 
 flutter:
   uses-material-design: true
   assets:
     - assets/fonts/
+    - assets/icons/
   fonts:
     - family: SmileySans
       fonts:

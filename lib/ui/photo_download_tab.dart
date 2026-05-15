@@ -62,6 +62,10 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   int _progress = 0;
   int _progressTotal = 0;
 
+  /// Android 手机上是否处于详情页 (true=详情全屏, false=列表全屏).
+  /// 桌面不走这个状态 (一直是左右分栏).
+  bool _phoneShowDetail = false;
+
   @override
   void initState() {
     super.initState();
@@ -230,6 +234,12 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
 
   @override
   Widget build(BuildContext context) {
+    // Android 手机: 列表 / 详情单页切换, 顶部详情页加返回按钮.
+    if (Platform.isAndroid) {
+      return _phoneShowDetail
+          ? _buildDetailCard(phone: true)
+          : _buildListCard(phone: true);
+    }
     return LayoutBuilder(
       builder: (context, c) {
         final wide = c.maxWidth > 760;
@@ -254,7 +264,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     );
   }
 
-  Widget _buildListCard() {
+  Widget _buildListCard({bool phone = false}) {
     final scheme = Theme.of(context).colorScheme;
     return Card(
       child: Padding(
@@ -321,6 +331,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                               _raw = null;
                               _decoded = null;
                               _markers.clear();
+                              if (phone) _phoneShowDetail = true;
                             });
                             _download();
                           },
@@ -334,7 +345,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     );
   }
 
-  Widget _buildDetailCard() {
+  Widget _buildDetailCard({bool phone = false}) {
     final scheme = Theme.of(context).colorScheme;
     final sel = _selected;
     return Card(
@@ -345,6 +356,15 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           children: [
             Row(
               children: [
+                if (phone) ...[
+                  IconButton(
+                    tooltip: '返回列表',
+                    onPressed: () =>
+                        setState(() => _phoneShowDetail = false),
+                    icon: const Icon(Icons.arrow_back_rounded, size: 20),
+                  ),
+                  const SizedBox(width: 4),
+                ],
                 const Icon(Icons.image_search_rounded, size: 18),
                 const SizedBox(width: 8),
                 const Text(

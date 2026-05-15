@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io' show Platform;
@@ -12,7 +13,8 @@ import 'ui/window_size_ffi.dart';
 // 所有用户可调设置统一在这里管理, 入口处一次性加载, 监听器自动保存.
 // ====================================================================
 
-const ThemeMode _defaultThemeMode = ThemeMode.dark;
+// 默认跟随系统深浅: 桌面/Android 均以系统设定为准, 用户在设置页可改.
+const ThemeMode _defaultThemeMode = ThemeMode.system;
 const double _defaultUiScale = 1.0;
 const double _defaultWideBreakpoint = 800;
 const bool _defaultConsoleExpanded = true;
@@ -157,6 +159,24 @@ Future<void> resetAllSettings() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _loadPersistedSettings();
+  // 移动端: 状态栏与导航栏沉浸 (透明背景, 图标颜色随后随主题).
+  if (Platform.isAndroid) {
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarDividerColor: Colors.transparent,
+      ),
+    );
+    // Edge-to-edge: 让 body 能延伸到状态栏/导航栏下, 配合 SafeArea 控制内容.
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.edgeToEdge,
+    );
+    // 默认在移动端折叠串口控制台 (小屏寸土寸金).
+    if (_prefs?.getBool(_kConsoleExpanded) == null) {
+      appConsoleExpanded.value = false;
+    }
+  }
   runApp(const BananaThermalApp());
 }
 

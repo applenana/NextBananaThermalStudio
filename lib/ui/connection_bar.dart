@@ -1,6 +1,9 @@
 /// 串口连接条 - 现代扁平化风格.
 library;
 
+import 'dart:async';
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -18,6 +21,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
   List<SerialPortInfo> _ports = [];
   String? _selected;
   int _baud = 115200;
+  bool _refreshing = false;
 
   @override
   void initState() {
@@ -25,32 +29,275 @@ class _ConnectionBarState extends State<ConnectionBar> {
     _refresh();
     // 启动后自动搜索一次, 让用户开箱即用. 延迟 600ms 给窗口完成首帧 +
     // 让 native serialport 完成初始化, 避免与 splash 拆除阶段抢资源.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      Future.delayed(const Duration(milliseconds: 600), () {
-        if (!mounted) return;
-        final app = context.read<AppState>();
-        if (app.status == ConnectionStatus.disconnected) {
-          app.autoSearchAndConnect(baud: _baud).then((ok) {
-            if (ok && mounted) {
-              setState(() => _selected = app.currentPort);
-            }
-          });
-        }
+    // 仅桌面自动搜索; Android 走 USB Host 需用户主动点「自动」触发权限弹窗.
+    if (!Platform.isAndroid) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future.delayed(const Duration(milliseconds: 600), () {
+          if (!mounted) return;
+          final app = context.read<AppState>();
+          if (app.status == ConnectionStatus.disconnected) {
+            app.autoSearchAndConnect(baud: _baud).then((ok) {
+              if (ok && mounted) {
+                setState(() => _selected = app.currentPort);
+              }
+            });
+          }
+        });
       });
-    });
+    }
   }
 
-  void _refresh() {
-    setState(() {
-      _ports = SerialService.listPorts();
-      if (_selected == null || !_ports.any((p) => p.name == _selected)) {
-        _selected = _ports.isNotEmpty ? _ports.first.name : null;
-      }
-    });
+  /// 刷新端口列表. Android 上用 USB Host 枚举 (异步); 桌面同步枚举足够快.
+  Future<void> _refresh() async {
+    if (_refreshing) return;
+    _refreshing = true;
+    try {
+      final list = Platform.isAndroid
+          ? await SerialService.listPortsAsync()
+          : SerialService.listPorts();
+      if (!mounted) return;
+      setState(() {
+        _ports = list;
+        if (_selected == null || !_ports.any((p) => p.name == _selected)) {
+          _selected = _ports.isNotEmpty ? _ports.first.name : null;
+        }
+      });
+    } finally {
+      _refreshing = false;
+    }
   }
+
+  /// 设备信息行折叠状态 (Android 默认折叠以节省垂直空间).
+  bool _deviceInfoExpanded = false;
 
   @override
   Widget build(BuildContext context) {
+    if (Platform.isAndroid) return _buildAndroid(context);
+    return _buildDesktop(context);
+  }
+
+  // ====== Android: 紧凑两行 (端口+操作行 / 主按钮行) + 可折叠设备信息 ======
+  Widget _buildAndroid(BuildContext context) {
+    final app = context.watch<AppState>();
+    final scheme = Theme.of(context).colorScheme;
+    final connected = app.status == ConnectionStatus.connected;
+    final hasDeviceInfo = app.deviceSerial != null ||
+        app.deviceInfo != null ||
+        app.activateTime != null ||
+        app.warrantyTime != null;
+    final isBusy = app.status == ConnectionStatus.scanning ||
+        app.status == ConnectionStatus.connecting;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 行 1: USB 图标 + 端口下拉 (撑满) + 状态徽章
+            Row(
+              children: [
+                Icon(Icons.usb_rounded,
+                    size: 16, color: scheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        isDense: true,
+                        value: _selected,
+                        hint: const Text('点「自动」搜索设备',
+                            style: TextStyle(fontSize: 12)),
+                        items: _ports
+                            .map((p) => DropdownMenuItem(
+                                  value: p.name,
+                                  child: Text(
+                                    p.description.isEmpty
+                                        ? p.name
+                                        : '${p.name} · ${p.description}',
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ))
+                            .toList(),
+                        onChanged: connected
+                            ? null
+                            : (v) => setState(() => _selected = v),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _StatusBadge(status: app.status),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // 行 2: 刷新 + 自动 + 连接/断开 (主按钮)
+            Row(
+              children: [
+                _IconChip(
+                  icon: Icons.refresh_rounded,
+                  onTap: connected || isBusy ? null : _refresh,
+                  tooltip: '刷新',
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.tonalIcon(
+                    onPressed: (connected || isBusy)
+                        ? null
+                        : () async {
+                            final ok =
+                                await app.autoSearchAndConnect(baud: _baud);
+                            if (ok && mounted) {
+                              setState(() => _selected = app.currentPort);
+                            }
+                          },
+                    icon: app.status == ConnectionStatus.scanning
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.auto_awesome_rounded, size: 16),
+                    label: Text(app.status == ConnectionStatus.scanning
+                        ? '搜索中…'
+                        : '自动'),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 10),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: isBusy
+                        ? null
+                        : () async {
+                            if (connected) {
+                              await app.disconnect();
+                            } else if (_selected != null) {
+                              await app.connect(_selected!, baud: _baud);
+                            }
+                          },
+                    icon: Icon(
+                      connected ? Icons.link_off_rounded : Icons.bolt_rounded,
+                      size: 16,
+                    ),
+                    label: Text(connected ? '断开' : '连接'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: connected
+                          ? scheme.errorContainer
+                          : scheme.primary,
+                      foregroundColor: connected
+                          ? scheme.onErrorContainer
+                          : scheme.onPrimary,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 10),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            // 设备信息行 (默认折叠, 已连接且有信息时显示展开按钮)
+            if (hasDeviceInfo) ...[
+              const SizedBox(height: 6),
+              InkWell(
+                onTap: () => setState(
+                    () => _deviceInfoExpanded = !_deviceInfoExpanded),
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 4, vertical: 4),
+                  child: Row(
+                    children: [
+                      Icon(
+                        _deviceInfoExpanded
+                            ? Icons.expand_less_rounded
+                            : Icons.expand_more_rounded,
+                        size: 16,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _deviceInfoExpanded ? '收起设备信息' : '设备信息',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: scheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const Spacer(),
+                      if (!_deviceInfoExpanded && app.deviceSerial != null)
+                        Text(
+                          'SN ${app.deviceSerial!}',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: scheme.onSurfaceVariant
+                                .withValues(alpha: 0.7),
+                            fontFamily: 'monospace',
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              if (_deviceInfoExpanded) ...[
+                const SizedBox(height: 6),
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    if (app.deviceSerial != null)
+                      _InfoPill(
+                        icon: Icons.numbers_rounded,
+                        label: '序列号',
+                        value: app.deviceSerial!,
+                        mono: true,
+                      ),
+                    if (app.deviceInfo != null)
+                      _InfoPill(
+                        icon: app.isActivated
+                            ? Icons.check_circle_rounded
+                            : Icons.lock_outline_rounded,
+                        label: '激活',
+                        value: app.isActivated ? '已激活' : '未激活',
+                        color: app.isActivated ? Colors.green : Colors.orange,
+                      ),
+                    if (app.activateTime != null &&
+                        app.activateTime!.isNotEmpty)
+                      _InfoPill(
+                        icon: Icons.event_available_rounded,
+                        label: '激活时间',
+                        value: app.activateTime!,
+                      ),
+                    if (app.warrantyTime != null &&
+                        app.warrantyTime!.isNotEmpty)
+                      _InfoPill(
+                        icon: Icons.verified_user_rounded,
+                        label: '保修截止',
+                        value: app.warrantyTime!,
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDesktop(BuildContext context) {
     final app = context.watch<AppState>();
     final scheme = Theme.of(context).colorScheme;
     final connected = app.status == ConnectionStatus.connected;
@@ -78,7 +325,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
                       const SizedBox(width: 8),
                       Container(
                         constraints: const BoxConstraints(
-                            maxWidth: 320, minWidth: 200),
+                            maxWidth: 320, minWidth: 140),
                         padding: const EdgeInsets.symmetric(horizontal: 12),
                         decoration: BoxDecoration(
                           color: scheme.surfaceContainerHigh,
