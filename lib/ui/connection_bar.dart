@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../main.dart' show appConnectionBarExpanded;
 import '../serial/serial_service.dart';
 
 class ConnectionBar extends StatefulWidget {
@@ -76,8 +77,118 @@ class _ConnectionBarState extends State<ConnectionBar> {
     return _buildDesktop(context);
   }
 
-  // ====== Android: 紧凑两行 (端口+操作行 / 主按钮行) + 可折叠设备信息 ======
+  // ====== Android: 可折叠外壳 + 紧凑两行实体 ======
   Widget _buildAndroid(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: appConnectionBarExpanded,
+      builder: (context, expanded, _) {
+        return AnimatedSize(
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: expanded
+              ? _buildAndroidExpanded(context)
+              : _buildAndroidCollapsedBar(context),
+        );
+      },
+    );
+  }
+
+  /// 折叠态: 单行小条, 点击展开.
+  Widget _buildAndroidCollapsedBar(BuildContext context) {
+    final app = context.watch<AppState>();
+    final scheme = Theme.of(context).colorScheme;
+    final connected = app.status == ConnectionStatus.connected;
+    final label = switch (app.status) {
+      ConnectionStatus.connected => '已连接 · ${app.currentPort ?? ""}',
+      ConnectionStatus.connecting => '连接中…',
+      ConnectionStatus.scanning => '搜索中…',
+      _ => '未连接 · 点击展开',
+    };
+    return InkWell(
+      key: const ValueKey('conn-collapsed'),
+      onTap: () => appConnectionBarExpanded.value = true,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        height: 36,
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
+          children: [
+            Icon(
+              connected
+                  ? Icons.usb_rounded
+                  : Icons.usb_off_rounded,
+              size: 16,
+              color: connected
+                  ? Colors.green
+                  : scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '串口连接',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: scheme.onSurfaceVariant.withValues(alpha: 0.85),
+                ),
+              ),
+            ),
+            Text(
+              '点击展开',
+              style: TextStyle(
+                fontSize: 11,
+                color: scheme.onSurfaceVariant.withValues(alpha: 0.6),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Icon(
+              Icons.expand_more_rounded,
+              size: 16,
+              color: scheme.onSurfaceVariant,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 展开态: 现有紧凑视图 + 右上角收起按钮.
+  Widget _buildAndroidExpanded(BuildContext context) {
+    return Stack(
+      key: const ValueKey('conn-expanded'),
+      children: [
+        _buildAndroidContent(context),
+        Positioned(
+          right: 4,
+          top: 4,
+          child: IconButton(
+            tooltip: '收起',
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            onPressed: () => appConnectionBarExpanded.value = false,
+            icon: const Icon(Icons.expand_less_rounded),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ====== Android: 原紧凑两行 (端口+状态 / 刷新+自动+连接) + 可折叠设备信息 ======
+  Widget _buildAndroidContent(BuildContext context) {
     final app = context.watch<AppState>();
     final scheme = Theme.of(context).colorScheme;
     final connected = app.status == ConnectionStatus.connected;

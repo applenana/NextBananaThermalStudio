@@ -44,6 +44,11 @@ final ValueNotifier<double> appWideBreakpoint =
 final ValueNotifier<bool> appConsoleExpanded =
     ValueNotifier<bool>(_defaultConsoleExpanded);
 
+/// 串口连接栏 (ConnectionBar) 展开 / 折叠 — 仅 Android 有折叠 UI.
+/// 桌面上该物不起作用, ConnectionBar 总是完整呈现.
+final ValueNotifier<bool> appConnectionBarExpanded =
+    ValueNotifier<bool>(true);
+
 /// 图库文件下载根目录. null 表示用默认 `<Documents>/BananaThermalStudio`.
 final ValueNotifier<String?> appPhotoDownloadDir =
     ValueNotifier<String?>(null);
@@ -176,6 +181,8 @@ void main() async {
     if (_prefs?.getBool(_kConsoleExpanded) == null) {
       appConsoleExpanded.value = false;
     }
+    // 默认在移动端折叠串口连接栏, 同样节省纵向空间.
+    appConnectionBarExpanded.value = false;
   }
   runApp(const BananaThermalApp());
 }

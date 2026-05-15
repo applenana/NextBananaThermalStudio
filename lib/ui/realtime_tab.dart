@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show DeviceOrientation, SystemChrome;
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
@@ -60,26 +61,81 @@ class _NarrowLayout extends StatelessWidget {
   const _NarrowLayout();
   @override
   Widget build(BuildContext context) {
-    // Android 下 ConnectionBar 不再在 HomeShell 顶部全局项出, 而是作为「实时」tab
-    // 内的顶部普通元素, 跟随页面滚动 (不顶置). 桌面 narrow 模式不走这里.
-    final showInTabConnBar = Platform.isAndroid;
+    if (Platform.isAndroid) {
+      // Android 专用排版:
+      //   1) ConnectionBar (随滚动, 带水平内边距)
+      //   2) 主画面 (全宽, edgeToEdge 不几乎贴屏边)
+      //   3) KPI 三温度 (与主画面与趋势接壤)
+      //   4) 温度趋势 / 控制面板 / 串口控制台
+      // 主画面以外的卡片给 12 边距, 主画面横向贴边 (将 home_shell 的 hPad 在
+      // 该区域本地抵消 — 用 OverflowBox + MediaQuery 拉算达实际屏宽).
+      const sidePad = EdgeInsets.symmetric(horizontal: 12);
+      return SingleChildScrollView(
+        child: Column(
+          children: [
+            const Padding(padding: sidePad, child: ConnectionBar()),
+            const SizedBox(height: 12),
+            // 全宽主画面: 抵消外部 home_shell 的两侧 hPad(12)
+            const _EdgeToEdgeThermal(),
+            const SizedBox(height: 8),
+            const Padding(padding: sidePad, child: _KpiRow()),
+            const SizedBox(height: 8),
+            const Padding(
+              padding: sidePad,
+              child: SizedBox(height: 160, child: _ChartCard()),
+            ),
+            const SizedBox(height: 12),
+            const Padding(padding: sidePad, child: _ControlsCard()),
+            const SizedBox(height: 12),
+            const Padding(
+              padding: sidePad,
+              child: _CollapsibleConsole(expandedHeight: 200),
+            ),
+          ],
+        ),
+      );
+    }
+    // 桌面 narrow 模式 — 原版不动.
     return SingleChildScrollView(
       child: Column(
-        children: [
-          if (showInTabConnBar) ...[
-            const ConnectionBar(),
-            const SizedBox(height: 12),
-          ],
-          const _KpiRow(),
-          const SizedBox(height: 12),
-          const AspectRatio(aspectRatio: 4 / 3, child: _ThermalCard()),
-          const SizedBox(height: 12),
-          const SizedBox(height: 160, child: _ChartCard()),
-          const SizedBox(height: 12),
-          const _ControlsCard(),
-          const SizedBox(height: 12),
-          const _CollapsibleConsole(expandedHeight: 200),
+        children: const [
+          _KpiRow(),
+          SizedBox(height: 12),
+          AspectRatio(aspectRatio: 4 / 3, child: _ThermalCard()),
+          SizedBox(height: 12),
+          SizedBox(height: 160, child: _ChartCard()),
+          SizedBox(height: 12),
+          _ControlsCard(),
+          SizedBox(height: 12),
+          _CollapsibleConsole(expandedHeight: 200),
         ],
+      ),
+    );
+  }
+}
+
+/// Android 专用: 主画面横向贴边. 通过 OverflowBox 把宽度撑到屏宽,
+/// 抵消外层 home_shell 的 12pt 水平 padding, 并下发 edgeToEdge=true 令
+/// _ThermalCard 内部收起多余 padding 与圆角. 桌面不使用该组件.
+///
+/// 关键: SingleChildScrollView 在纵向给 unbounded 约束, OverflowBox 默认
+/// maxHeight=∞ 会导致整个 Column 测量崩溃. 因此外层用 SizedBox 给定
+/// finite 高度, 并让 OverflowBox 仅扩张宽度.
+class _EdgeToEdgeThermal extends StatelessWidget {
+  const _EdgeToEdgeThermal();
+  @override
+  Widget build(BuildContext context) {
+    final screenW = MediaQuery.of(context).size.width;
+    final h = screenW * 3 / 4;
+    return SizedBox(
+      height: h,
+      child: OverflowBox(
+        maxWidth: screenW,
+        minWidth: screenW,
+        maxHeight: h,
+        minHeight: h,
+        alignment: Alignment.center,
+        child: const _ThermalCard(edgeToEdge: true),
       ),
     );
   }
@@ -193,12 +249,77 @@ class _KpiTile extends StatelessWidget {
   }
 }
 
-class _ThermalCard extends StatelessWidget {
-  const _ThermalCard();
+class _ThermalCard extends StatefulWidget {
+  /// Android 紧贴屏边模式: 移除 Card 外边距/圆角, 收紧内边距, 启用悬浮按钮.
+  final bool edgeToEdge;
+  const _ThermalCard({this.edgeToEdge = false});
+
+  @override
+  State<_ThermalCard> createState() => _ThermalCardState();
+}
+
+class _ThermalCardState extends State<_ThermalCard> {
+  /// 用户点击放置的光标坐标 (帧像素). 温度不在这里存, 而是每次 build
+  /// 按当前帧的 temperatureField 实时计算, 进而随画面更新同步变化.
+  final List<({int x, int y})> _points = [];
+
+  void _addPoint(int px, int py) {
+    if (!mounted) return;
+    setState(() => _points.add((x: px, y: py)));
+  }
+
+  void _removePoint(int i) {
+    if (!mounted) return;
+    setState(() {
+      if (i >= 0 && i < _points.length) _points.removeAt(i);
+    });
+  }
+
+  void _clearPoints() {
+    if (!mounted) return;
+    setState(() => _points.clear());
+  }
+
+  /// 按当前帧生成实时 markers.
+  List<TempMarker> _liveMarkers(RenderedFrame? frame) {
+    if (frame == null) return const [];
+    return [
+      for (final p in _points)
+        if (p.x >= 0 && p.x < frame.width && p.y >= 0 && p.y < frame.height)
+          TempMarker(
+              p.x, p.y, frame.temperatureField[p.y * frame.width + p.x]),
+    ];
+  }
+
+  Future<void> _openFullscreen() async {
+    // 全屏模式: 强制横屏 + 沉浸; 退出还原竖屏. 仅 Android 调用此入口.
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => _FullscreenThermalView(
+          points: _points,
+          onAddPoint: _addPoint,
+          onRemovePoint: _removePoint,
+          onClearPoints: _clearPoints,
+        ),
+      ),
+    );
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+  }
 
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
+    final isAndroid = Platform.isAndroid;
+    final edge = widget.edgeToEdge;
 
     RenderedFrame? frame;
     if (app.thermalFrame != null) {
@@ -213,33 +334,304 @@ class _ThermalCard extends StatelessWidget {
       );
     }
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
+    final headerPad = edge
+        ? const EdgeInsets.fromLTRB(12, 10, 8, 4)
+        : const EdgeInsets.fromLTRB(16, 16, 16, 0);
+    final canvasPad = edge
+        ? const EdgeInsets.fromLTRB(0, 0, 0, 0)
+        : const EdgeInsets.fromLTRB(16, 12, 16, 16);
+
+    Widget header = Padding(
+      padding: headerPad,
+      child: Row(
+        children: [
+          const Icon(Icons.thermostat_rounded, size: 18),
+          const SizedBox(width: 8),
+          const Text('主画面',
+              style: TextStyle(
+                  fontWeight: FontWeight.w700, fontSize: 15)),
+          const Spacer(),
+          if (isAndroid) ...const [
+            _StreamToggleIcon(
+              icon: Icons.thermostat_rounded,
+              tooltip: '热成像推流',
+              channel: _StreamChannel.thermal,
+            ),
+            SizedBox(width: 8),
+            _StreamToggleIcon(
+              icon: Icons.photo_camera_rounded,
+              tooltip: '可见光推流',
+              channel: _StreamChannel.visible,
+            ),
+            SizedBox(width: 8),
+            _VisibleFloatingLauncher(iconOnly: true),
+          ] else ...const [
+            _ThermalStreamSwitch(),
+            SizedBox(width: 14),
+            _VisibleStreamSwitch(),
+            SizedBox(width: 14),
+            _VisibleFloatingLauncher(),
+          ],
+        ],
+      ),
+    );
+
+    Widget canvas = ThermalCanvas(
+      frame: frame,
+      markers: _liveMarkers(frame),
+      onAddMarker:
+          isAndroid ? (px, py, _) => _addPoint(px, py) : null,
+      onRemoveMarker: isAndroid ? _removePoint : null,
+      showCursorTemp: app.renderParams.showCursorTemp,
+      placeholder: '等待热像数据…',
+    );
+
+    Widget canvasArea;
+    if (isAndroid) {
+      canvasArea = Stack(
+        children: [
+          Positioned.fill(child: canvas),
+          // 悬浮按钮: 全屏 + 清理光标
+          Positioned(
+            right: 8,
+            top: 8,
+            child: Column(
               children: [
-                const Icon(Icons.thermostat_rounded, size: 18),
-                const SizedBox(width: 8),
-                const Text('主画面',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w700, fontSize: 15)),
-                const Spacer(),
-                const _ThermalStreamSwitch(),
-                const SizedBox(width: 14),
-                const _VisibleStreamSwitch(),
-                const SizedBox(width: 14),
-                const _VisibleFloatingLauncher(),
+                _FloatingMiniButton(
+                  icon: Icons.fullscreen_rounded,
+                  tooltip: '全屏',
+                  onTap: frame == null ? null : _openFullscreen,
+                ),
+                const SizedBox(height: 8),
+                _FloatingMiniButton(
+                  icon: Icons.cleaning_services_rounded,
+                  tooltip: '清理光标',
+                  onTap: _points.isEmpty ? null : _clearPoints,
+                ),
               ],
             ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: ThermalCanvas(
-                frame: frame,
-                showCursorTemp: app.renderParams.showCursorTemp,
-                placeholder: '等待热像数据…',
+          ),
+        ],
+      );
+    } else {
+      canvasArea = canvas;
+    }
+
+    final inner = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        header,
+        if (!edge) const SizedBox(height: 12),
+        Expanded(
+          child: Padding(
+            padding: canvasPad,
+            child: canvasArea,
+          ),
+        ),
+      ],
+    );
+
+    if (edge) {
+      // Android edgeToEdge: 保留 Card 默认 margin/圆角 (避免画面贴屏边
+      // 裁掉圆角), 仅推进 clipBehavior 让画布裁切到圆角内.
+      return Card(
+        clipBehavior: Clip.antiAlias,
+        child: inner,
+      );
+    }
+    return Card(child: inner);
+  }
+}
+
+/// Android 主画面右上角悬浮迷你按钮 (半透明圆形, 黑底白图).
+class _FloatingMiniButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onTap;
+  const _FloatingMiniButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+  @override
+  Widget build(BuildContext context) {
+    final disabled = onTap == null;
+    return Material(
+      color: Colors.black.withValues(alpha: disabled ? 0.25 : 0.55),
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: Tooltip(
+        message: tooltip,
+        child: InkWell(
+          onTap: onTap,
+          child: SizedBox(
+            width: 36,
+            height: 36,
+            child: Icon(
+              icon,
+              size: 20,
+              color: Colors.white.withValues(alpha: disabled ? 0.5 : 0.95),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _StreamChannel { thermal, visible }
+
+/// Android 紧凑切换按钮: 用图标代替 Switch, on/off 颜色区分, 节省横向空间.
+class _StreamToggleIcon extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final _StreamChannel channel;
+  const _StreamToggleIcon({
+    required this.icon,
+    required this.tooltip,
+    required this.channel,
+  });
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final scheme = Theme.of(context).colorScheme;
+    final enabled = app.status == ConnectionStatus.connected;
+    final on = channel == _StreamChannel.thermal
+        ? app.thermalStreamEnabled
+        : app.visibleStreamEnabled;
+    final color = !enabled
+        ? scheme.onSurfaceVariant.withValues(alpha: 0.4)
+        : (on ? scheme.primary : scheme.onSurfaceVariant);
+    final bg = !enabled
+        ? Colors.transparent
+        : (on
+            ? scheme.primaryContainer.withValues(alpha: 0.6)
+            : scheme.surfaceContainerHighest);
+    return Tooltip(
+      message: '$tooltip · ${on ? "开" : "关"}',
+      child: Material(
+        color: bg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: enabled
+              ? () {
+                  if (channel == _StreamChannel.thermal) {
+                    app.setThermalStream(!app.thermalStreamEnabled);
+                  } else {
+                    app.setVisibleStream(!app.visibleStreamEnabled);
+                  }
+                }
+              : null,
+          child: Padding(
+            padding: const EdgeInsets.all(6),
+            child: Icon(icon, size: 18, color: color),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 全屏热像视图 (Android only). 横屏占满, 顶部右侧浮按钮: 退出 / 清理光标.
+class _FullscreenThermalView extends StatefulWidget {
+  final List<({int x, int y})> points;
+  final void Function(int px, int py) onAddPoint;
+  final void Function(int index) onRemovePoint;
+  final VoidCallback onClearPoints;
+  const _FullscreenThermalView({
+    required this.points,
+    required this.onAddPoint,
+    required this.onRemovePoint,
+    required this.onClearPoints,
+  });
+  @override
+  State<_FullscreenThermalView> createState() =>
+      _FullscreenThermalViewState();
+}
+
+class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    RenderedFrame? frame;
+    if (app.thermalFrame != null) {
+      frame = renderPipeline(
+        thermalFrame: app.thermalFrame!,
+        srcW: 32,
+        srcH: 24,
+        params: app.renderParams,
+        visibleRgb: app.visibleRgb888,
+        visibleW: app.visibleWidth,
+        visibleH: app.visibleHeight,
+      );
+    }
+    final liveMarkers = frame == null
+        ? const <TempMarker>[]
+        : [
+            for (final p in widget.points)
+              if (p.x >= 0 &&
+                  p.x < frame.width &&
+                  p.y >= 0 &&
+                  p.y < frame.height)
+                TempMarker(p.x, p.y,
+                    frame.temperatureField[p.y * frame.width + p.x]),
+          ];
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                // 点击空白未占区域 (画面区域外的黑边) 退出全屏.
+                // 画面内部 ThermalCanvas 会自行吃掉点击事件并放置/移除光标.
+                onTap: () => Navigator.of(context).maybePop(),
+                child: Container(color: Colors.black),
+              ),
+            ),
+            Positioned.fill(
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: ThermalCanvas(
+                  frame: frame,
+                  markers: liveMarkers,
+                  onAddMarker: (px, py, _) {
+                    widget.onAddPoint(px, py);
+                    setState(() {});
+                  },
+                  onRemoveMarker: (i) {
+                    widget.onRemovePoint(i);
+                    setState(() {});
+                  },
+                  showCursorTemp: app.renderParams.showCursorTemp,
+                  placeholder: '等待热像数据…',
+                ),
+              ),
+            ),
+            Positioned(
+              right: 12,
+              top: 12,
+              child: Column(
+                children: [
+                  _FloatingMiniButton(
+                    icon: Icons.fullscreen_exit_rounded,
+                    tooltip: '退出全屏',
+                    onTap: () => Navigator.of(context).maybePop(),
+                  ),
+                  const SizedBox(height: 8),
+                  _FloatingMiniButton(
+                    icon: Icons.cleaning_services_rounded,
+                    tooltip: '清理光标',
+                    onTap: widget.points.isEmpty
+                        ? null
+                        : () {
+                            widget.onClearPoints();
+                            setState(() {});
+                          },
+                  ),
+                ],
               ),
             ),
           ],
@@ -1322,7 +1714,9 @@ class _MiniIcon extends StatelessWidget {
 // =========================================================================
 
 class _VisibleFloatingLauncher extends StatefulWidget {
-  const _VisibleFloatingLauncher();
+  /// Android 上使用图标模式, 同桌面语义但只显示图标 (节省横向空间).
+  final bool iconOnly;
+  const _VisibleFloatingLauncher({this.iconOnly = false});
   @override
   State<_VisibleFloatingLauncher> createState() =>
       _VisibleFloatingLauncherState();
@@ -1373,6 +1767,32 @@ class _VisibleFloatingLauncherState extends State<_VisibleFloatingLauncher> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.iconOnly) {
+      final scheme = Theme.of(context).colorScheme;
+      final on = _open;
+      return Tooltip(
+        message: on ? '关闭可见光浮窗' : '可见光浮窗',
+        child: Material(
+          color: on
+              ? scheme.primaryContainer.withValues(alpha: 0.6)
+              : scheme.surfaceContainerHighest,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: _toggle,
+            child: Padding(
+              padding: const EdgeInsets.all(6),
+              child: Icon(
+                on ? Icons.close_rounded : Icons.picture_in_picture_alt_rounded,
+                size: 18,
+                color: on ? scheme.primary : scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     return FilledButton.tonalIcon(
       onPressed: _toggle,
       icon: Icon(
