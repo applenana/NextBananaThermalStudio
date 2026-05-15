@@ -71,10 +71,22 @@ class _HomeShellState extends State<HomeShell> {
     }
     _lastBackAt = now;
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('再按一次返回键退出 App'),
-        duration: Duration(seconds: 2),
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: const Text(
+          '再按一次返回键退出 App',
+          textAlign: TextAlign.center,
+        ),
+        // floating + 距底部 96 像素, 浮在 NavigationBar 上方而不是被遮挡.
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.fromLTRB(48, 0, 48, 96),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+        duration: const Duration(milliseconds: 1800),
+        elevation: 6,
       ),
     );
   }

@@ -456,14 +456,14 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 ),
               )
             else
-              Expanded(child: _buildDetailBody(sel)),
+              Expanded(child: _buildDetailBody(sel, phone: phone)),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildDetailBody(PhotoMeta sel) {
+  Widget _buildDetailBody(PhotoMeta sel, {bool phone = false}) {
     final scheme = Theme.of(context).colorScheme;
     final app = context.watch<AppState>();
     // 实时根据参数重新渲染 (点下拉后预览立即变化).
@@ -514,6 +514,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           const SizedBox(height: 10),
           _ParamsRow(
             hasVisible: dec?.visibleRgb != null,
+            phone: phone,
           ),
         ],
         const SizedBox(height: 10),
@@ -1039,8 +1040,9 @@ const Map<String, String> _colormapZh = {
 /// 行 1: 颜色映射 + 映射曲线 + 融合模式
 /// 行 2: 当前融合模式对应的参数 (关闭则隐藏)
 class _ParamsRow extends StatelessWidget {
-  const _ParamsRow({required this.hasVisible});
+  const _ParamsRow({required this.hasVisible, this.phone = false});
   final bool hasVisible;
+  final bool phone;
 
   @override
   Widget build(BuildContext context) {
@@ -1057,7 +1059,7 @@ class _ParamsRow extends StatelessWidget {
               )),
         );
 
-    final row1 = <Widget>[
+    final colorWidgets = <Widget>[
       label('颜色映射'),
       _Dropdown<String>(
         value: params.colormapName,
@@ -1075,8 +1077,9 @@ class _ParamsRow extends StatelessWidget {
             app.updateRenderParams(params.copyWith(mappingCurve: v)),
         labelOf: (v) => v == 'linear' ? '线性' : 'S 曲线',
       ),
+    ];
+    final fusionWidgets = <Widget>[
       if (hasVisible) ...[
-        const SizedBox(width: 14),
         label('融合模式'),
         _Dropdown<FusionMode>(
           value: params.fusion.mode,
@@ -1091,6 +1094,15 @@ class _ParamsRow extends StatelessWidget {
         ),
       ],
     ];
+    // 桌面: 颜色映射 / 曲线 / 融合 都塞一行 (Wrap 自动换行).
+    // 手机: 强制把 "融合模式" 单独一行, 避免挤在一起换行错位.
+    final row1 = phone
+        ? colorWidgets
+        : [
+            ...colorWidgets,
+            if (fusionWidgets.isNotEmpty) const SizedBox(width: 14),
+            ...fusionWidgets,
+          ];
 
     // 第二行: 仅在双光 + 融合开启时显示对应参数.
     final row2 = <Widget>[];
@@ -1179,6 +1191,10 @@ class _ParamsRow extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         shell(row1),
+        if (phone && fusionWidgets.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          shell(fusionWidgets),
+        ],
         if (row2.isNotEmpty) ...[
           const SizedBox(height: 6),
           shell(row2),
