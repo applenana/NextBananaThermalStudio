@@ -148,6 +148,23 @@ class _ThermalCanvasState extends State<ThermalCanvas> {
                   onTapDown: (widget.onAddMarker != null ||
                           widget.onRemoveMarker != null)
                       ? (d) => handleTap(d.localPosition)
+                      : (widget.showCursorTemp
+                          // 触屏单点跟随测温: 没有 hover 时, 用 tap 落点更新十字.
+                          ? (d) =>
+                              setState(() => _hoverLocal = d.localPosition)
+                          : null),
+                  // 触屏单点跟随测温: 通过 Pan 持续更新十字位置 (类 PC 端鼠标移动).
+                  // 仅在不冲突 marker 添加/删除时启用, 由父级通过 onAddMarker=null
+                  // 切换到该模式.
+                  onPanStart: (widget.showCursorTemp &&
+                          widget.onAddMarker == null &&
+                          widget.onRemoveMarker == null)
+                      ? (d) => setState(() => _hoverLocal = d.localPosition)
+                      : null,
+                  onPanUpdate: (widget.showCursorTemp &&
+                          widget.onAddMarker == null &&
+                          widget.onRemoveMarker == null)
+                      ? (d) => setState(() => _hoverLocal = d.localPosition)
                       : null,
                   child: RgbImageView(
                     rgb: frame.rgb,

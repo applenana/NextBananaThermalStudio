@@ -263,6 +263,10 @@ class _ThermalCardState extends State<_ThermalCard> {
   /// 按当前帧的 temperatureField 实时计算, 进而随画面更新同步变化.
   final List<({int x, int y})> _points = [];
 
+  /// Android: 是否启用"单点跟随光标"模式 (类 PC 端鼠标 hover).
+  /// false=多点标签 (点击放置/移除 marker), true=按住拖动十字光标显示温度.
+  bool _cursorMode = false;
+
   void _addPoint(int px, int py) {
     if (!mounted) return;
     setState(() => _points.add((x: px, y: py)));
@@ -376,13 +380,18 @@ class _ThermalCardState extends State<_ThermalCard> {
       ),
     );
 
+    // Android 双模式: false=多点标签 (点击放置/移除 marker), true=单点跟随光标
+    // (按住拖动显示十字与温度, 类 PC). 切换时清空 marker 视图以免干扰.
+    final cursorMode = _cursorMode;
     Widget canvas = ThermalCanvas(
       frame: frame,
-      markers: _liveMarkers(frame),
-      onAddMarker:
-          isAndroid ? (px, py, _) => _addPoint(px, py) : null,
-      onRemoveMarker: isAndroid ? _removePoint : null,
-      showCursorTemp: app.renderParams.showCursorTemp,
+      markers: cursorMode ? const [] : _liveMarkers(frame),
+      onAddMarker: (isAndroid && !cursorMode)
+          ? (px, py, _) => _addPoint(px, py)
+          : null,
+      onRemoveMarker: (isAndroid && !cursorMode) ? _removePoint : null,
+      showCursorTemp:
+          isAndroid ? cursorMode : app.renderParams.showCursorTemp,
       placeholder: '等待热像数据…',
     );
 
@@ -391,7 +400,7 @@ class _ThermalCardState extends State<_ThermalCard> {
       canvasArea = Stack(
         children: [
           Positioned.fill(child: canvas),
-          // 悬浮按钮: 全屏 + 清理光标
+          // 悬浮按钮: 全屏 / 模式切换 / 清理光标
           Positioned(
             right: 8,
             top: 8,
@@ -401,6 +410,15 @@ class _ThermalCardState extends State<_ThermalCard> {
                   icon: Icons.fullscreen_rounded,
                   tooltip: '全屏',
                   onTap: frame == null ? null : _openFullscreen,
+                ),
+                const SizedBox(height: 8),
+                _FloatingMiniButton(
+                  icon: cursorMode
+                      ? Icons.touch_app_rounded
+                      : Icons.my_location_rounded,
+                  tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
+                  highlighted: cursorMode,
+                  onTap: () => setState(() => _cursorMode = !_cursorMode),
                 ),
                 const SizedBox(height: 8),
                 _FloatingMiniButton(
@@ -448,16 +466,26 @@ class _FloatingMiniButton extends StatelessWidget {
   final IconData icon;
   final String tooltip;
   final VoidCallback? onTap;
+  /// 高亮态: 表示当前功能已激活 (例: 单点光标模式开启时).
+  final bool highlighted;
   const _FloatingMiniButton({
     required this.icon,
     required this.tooltip,
     required this.onTap,
+    this.highlighted = false,
   });
   @override
   Widget build(BuildContext context) {
     final disabled = onTap == null;
+    final scheme = Theme.of(context).colorScheme;
+    final bg = highlighted
+        ? scheme.primary.withValues(alpha: disabled ? 0.4 : 0.85)
+        : Colors.black.withValues(alpha: disabled ? 0.25 : 0.55);
+    final fg = highlighted
+        ? scheme.onPrimary
+        : Colors.white.withValues(alpha: disabled ? 0.5 : 0.95);
     return Material(
-      color: Colors.black.withValues(alpha: disabled ? 0.25 : 0.55),
+      color: bg,
       shape: const CircleBorder(),
       clipBehavior: Clip.antiAlias,
       child: Tooltip(
@@ -470,7 +498,7 @@ class _FloatingMiniButton extends StatelessWidget {
             child: Icon(
               icon,
               size: 20,
-              color: Colors.white.withValues(alpha: disabled ? 0.5 : 0.95),
+              color: fg,
             ),
           ),
         ),
@@ -551,6 +579,9 @@ class _FullscreenThermalView extends StatefulWidget {
 }
 
 class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
+  /// 全屏视图独立维护一个光标模式开关 (与窗口视图互相独立).
+  bool _cursorMode = false;
+
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
@@ -566,7 +597,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
         visibleH: app.visibleHeight,
       );
     }
-    final liveMarkers = frame == null
+    final liveMarkers = (frame == null || _cursorMode)
         ? const <TempMarker>[]
         : [
             for (final p in widget.points)
@@ -597,15 +628,19 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                 child: ThermalCanvas(
                   frame: frame,
                   markers: liveMarkers,
-                  onAddMarker: (px, py, _) {
-                    widget.onAddPoint(px, py);
-                    setState(() {});
-                  },
-                  onRemoveMarker: (i) {
-                    widget.onRemovePoint(i);
-                    setState(() {});
-                  },
-                  showCursorTemp: app.renderParams.showCursorTemp,
+                  onAddMarker: _cursorMode
+                      ? null
+                      : (px, py, _) {
+                          widget.onAddPoint(px, py);
+                          setState(() {});
+                        },
+                  onRemoveMarker: _cursorMode
+                      ? null
+                      : (i) {
+                          widget.onRemovePoint(i);
+                          setState(() {});
+                        },
+                  showCursorTemp: _cursorMode,
                   placeholder: '等待热像数据…',
                 ),
               ),
@@ -619,6 +654,15 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                     icon: Icons.fullscreen_exit_rounded,
                     tooltip: '退出全屏',
                     onTap: () => Navigator.of(context).maybePop(),
+                  ),
+                  const SizedBox(height: 8),
+                  _FloatingMiniButton(
+                    icon: _cursorMode
+                        ? Icons.touch_app_rounded
+                        : Icons.my_location_rounded,
+                    tooltip: _cursorMode ? '切到多点标签' : '切到单点光标',
+                    highlighted: _cursorMode,
+                    onTap: () => setState(() => _cursorMode = !_cursorMode),
                   ),
                   const SizedBox(height: 8),
                   _FloatingMiniButton(

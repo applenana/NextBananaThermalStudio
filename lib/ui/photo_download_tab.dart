@@ -14,6 +14,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:gal/gal.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -708,9 +709,15 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         final f = File(p.join(out.path,
             '${p.basenameWithoutExtension(sel.filename)}.jpg'));
         await f.writeAsBytes(dec.jpegBytes!);
+        final albumOk = await _saveToGalleryIfAndroid(
+            bytes: dec.jpegBytes!, name: p.basenameWithoutExtension(sel.filename));
         if (!mounted) return;
-        setState(() => _statusText = '已导出: ${f.path}');
-        _toast('已导出 ${p.basename(f.path)}');
+        setState(() => _statusText = albumOk
+            ? '已导出: ${f.path} (并保存到相册)'
+            : '已导出: ${f.path}');
+        _toast(albumOk
+            ? '已导出 ${p.basename(f.path)} (相册已保存)'
+            : '已导出 ${p.basename(f.path)}');
         return;
       }
       // 热成像: 重新渲染 + 在画布上叠加 markers, 输出 PNG.
@@ -735,12 +742,40 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       final f = File(p.join(out.path,
           '${p.basenameWithoutExtension(sel.filename)}.png'));
       await f.writeAsBytes(pngBytes);
+      final albumOk = await _saveToGalleryIfAndroid(
+          bytes: pngBytes, name: p.basenameWithoutExtension(sel.filename));
       if (!mounted) return;
-      setState(() => _statusText = '已导出: ${f.path}');
-      _toast('已导出 ${p.basename(f.path)}');
+      setState(() => _statusText =
+          albumOk ? '已导出: ${f.path} (并保存到相册)' : '已导出: ${f.path}');
+      _toast(albumOk
+          ? '已导出 ${p.basename(f.path)} (相册已保存)'
+          : '已导出 ${p.basename(f.path)}');
     } catch (e) {
       if (!mounted) return;
       setState(() => _statusText = '导出失败: $e');
+    }
+  }
+
+  /// Android: 把图片字节同时写入系统相册 (MediaStore Pictures/BananaThermal).
+  /// 桌面端直接返回 false. 失败仅 toast 提示, 不抛.
+  Future<bool> _saveToGalleryIfAndroid({
+    required Uint8List bytes,
+    required String name,
+  }) async {
+    if (!Platform.isAndroid) return false;
+    try {
+      // gal 2.x: hasAccess/requestAccess 用于 toAlbum 才需; putImageBytes
+      // 默认走 MediaStore, 在 Android 10+ 无需运行时权限.
+      final hasAccess = await Gal.hasAccess();
+      if (!hasAccess) {
+        final granted = await Gal.requestAccess();
+        if (!granted) return false;
+      }
+      await Gal.putImageBytes(bytes, album: 'BananaThermal', name: name);
+      return true;
+    } catch (e) {
+      _toast('相册保存失败: $e');
+      return false;
     }
   }
 

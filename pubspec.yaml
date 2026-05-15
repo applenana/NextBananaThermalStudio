@@ -39,6 +39,10 @@ dependencies:
   ffi: ^2.1.0
   shared_preferences: ^2.5.5
 
+  # 相册导出 (Android MediaStore / iOS Photos). 桌面端不会调用此 API,
+  # 仅 Android 分支使用, 桌面构建忽略.
+  gal: ^2.3.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

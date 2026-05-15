@@ -2,6 +2,13 @@
     <!-- USB Host: 通过 OTG 连接 RP2040 / FTDI / CH34x / CP210x 等 CDC 设备. -->
     <uses-feature android:name="android.hardware.usb.host" android:required="true"/>
 
+    <!-- 相册导出 (gal 包). Android 13+ 通过 MediaStore 写入不需要权限,
+         但若访问图库需 READ_MEDIA_IMAGES; Android 10-12 需 WRITE_EXTERNAL_STORAGE,
+         Android 9 及以下也走旧权限. accessMediaLocation 让相册保留 EXIF GPS (可选). -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
     <application
         android:label="BananaThermal Studio"
         android:name="${applicationName}"
