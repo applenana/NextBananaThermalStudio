@@ -38,13 +38,10 @@ jobs:
         run: |
           $src = "build\windows\x64\runner\Release"
           if (-not (Test-Path $src)) { throw "Release folder not found: $src" }
-          $stamp = (Get-Date -Format "yyyyMMdd-HHmmss")
-          $sha = "${{ github.sha }}".Substring(0,7)
-          $name = "NextBananaThermalStudio-windows-x64-$stamp-$sha"
-          $zip  = "$name.zip"
+          # Release 资产名不带时间戳 / sha; artifact 名中可附加以区分不同 run.
+          $zip = "BananaThermal-windows-x64.zip"
           Compress-Archive -Path "$src\*" -DestinationPath $zip -Force
           "zip_name=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "art_name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Upload windows artifact
         uses: actions/upload-artifact@v4
@@ -89,17 +86,14 @@ jobs:
         shell: bash
         run: |
           set -e
-          stamp=$(date -u +%Y%m%d-%H%M%S)
-          sha=$(echo "${{ github.sha }}" | cut -c1-7)
           mkdir -p dist
           for abi in armeabi-v7a arm64-v8a x86_64; do
             src="build/app/outputs/flutter-apk/app-${abi}-release.apk"
-            dst="dist/NextBananaThermalStudio-android-${abi}-${stamp}-${sha}.apk"
+            dst="dist/BananaThermal-android-${abi}.apk"
             cp "$src" "$dst"
             echo "Packed $dst"
           done
           ls -lh dist/
-          echo "art_name=android-apks-${stamp}-${sha}" >> "$GITHUB_OUTPUT"
 
       - name: Upload android artifact
         uses: actions/upload-artifact@v4
@@ -145,11 +139,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          stamp=$(date -u +%Y%m%d-%H%M%S)
-          sha=$(echo "${{ github.sha }}" | cut -c1-7)
           mkdir -p dist
           src="build/app/outputs/flutter-apk/app-release.apk"
-          dst="dist/NextBananaThermalStudio-android-universal-${stamp}-${sha}.apk"
+          dst="dist/BananaThermal-android.apk"
           cp "$src" "$dst"
           ls -lh dist/
 
