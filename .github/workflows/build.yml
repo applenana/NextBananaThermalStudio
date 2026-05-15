@@ -1,0 +1,139 @@
+name: Build & Release (Windows + Android)
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: "3.41.9"
+
+jobs:
+  # ----------------------------- Windows -----------------------------
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Build Windows Release
+        run: flutter build windows --release
+
+      - name: Pack
+        id: pack
+        shell: pwsh
+        run: |
+          $src = "build\windows\x64\runner\Release"
+          if (-not (Test-Path $src)) { throw "Release folder not found: $src" }
+          $stamp = (Get-Date -Format "yyyyMMdd-HHmmss")
+          $sha = "${{ github.sha }}".Substring(0,7)
+          $name = "NextBananaThermalStudio-windows-x64-$stamp-$sha"
+          $zip  = "$name.zip"
+          Compress-Archive -Path "$src\*" -DestinationPath $zip -Force
+          "zip_name=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "art_name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: ${{ steps.pack.outputs.zip_name }}
+          if-no-files-found: error
+          retention-days: 30
+
+  # ----------------------------- Android -----------------------------
+  build-android:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      # 注意: Windows 上 flutter build apk 不加 --target 时 frontend_server 会因反斜杠失败,
+      # Linux runner 无此坑, 但为统一与本地命令一致, 仍显式传入.
+      - name: Build APK (split per ABI, release)
+        run: flutter build apk --release --target=lib/main.dart --split-per-abi
+
+      - name: Rename APKs
+        id: pack
+        shell: bash
+        run: |
+          set -e
+          stamp=$(date -u +%Y%m%d-%H%M%S)
+          sha=$(echo "${{ github.sha }}" | cut -c1-7)
+          mkdir -p dist
+          for abi in armeabi-v7a arm64-v8a x86_64; do
+            src="build/app/outputs/flutter-apk/app-${abi}-release.apk"
+            dst="dist/NextBananaThermalStudio-android-${abi}-${stamp}-${sha}.apk"
+            cp "$src" "$dst"
+            echo "Packed $dst"
+          done
+          ls -lh dist/
+          echo "art_name=android-apks-${stamp}-${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  # ----------------------------- Release -----------------------------
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: release-assets
+
+      - name: Download android artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apks
+          path: release-assets
+
+      - name: List assets
+        run: ls -lh release-assets/
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

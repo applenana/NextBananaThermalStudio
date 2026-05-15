@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'dart:io' show Platform;
 
 import '../main.dart'
     show
@@ -43,7 +44,9 @@ class _HomeShellState extends State<HomeShell> {
       body: ExcludeSemantics(
         child: Column(
           children: [
-            const WindowTitleBar(),
+            // 自绘标题栏只在 Windows 上启用 (配合 win32_window WM_NCCALCSIZE),
+            // 移动端 / 其它桌面平台用系统装饰.
+            if (Platform.isWindows) const WindowTitleBar(),
             Expanded(
               child: ValueListenableBuilder<double>(
                 valueListenable: appWideBreakpoint,

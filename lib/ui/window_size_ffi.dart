@@ -1,8 +1,12 @@
 /// 通过 dart:ffi 直接调 Win32 SetWindowPos 改窗口尺寸,
 /// 不引入 window_manager 等会与串口插件冲突的 native plugin.
+///
+/// 非 Windows 平台 (Android / iOS / macOS / Linux) 上, 全部方法变 no-op,
+/// 构造时不会加载 user32.dll, 不会触发任何 native 查找.
 library;
 
 import 'dart:ffi';
+import 'dart:io' show Platform;
 import 'package:ffi/ffi.dart';
 
 // HWND FindWindowW(LPCWSTR lpClassName, LPCWSTR lpWindowName)
@@ -65,6 +69,11 @@ const int _htCaption = 2;
 
 class WindowSizeFfi {
   WindowSizeFfi._() {
+    // 非 Windows 平台不加载 user32, 所有方法 fall through 到 no-op 分支.
+    if (!Platform.isWindows) {
+      _stub = true;
+      return;
+    }
     final user32 = DynamicLibrary.open('user32.dll');
     _findWindowW = user32
         .lookup<NativeFunction<_FindWindowWNative>>('FindWindowW')
@@ -93,6 +102,12 @@ class WindowSizeFfi {
   }
   static final WindowSizeFfi instance = WindowSizeFfi._();
 
+  /// true 表示当前平台不支持窗口操作 (非 Windows). 所有方法直接返回失败.
+  bool _stub = false;
+
+  /// 当前平台是否支持窗口尺寸 / 拖拽控制 (仅 Windows).
+  bool get isSupported => !_stub;
+
   late final _FindWindowWDart _findWindowW;
   late final _SetWindowPosDart _setWindowPos;
   late final _GetWindowRectDart _getWindowRect;
@@ -116,6 +131,7 @@ class WindowSizeFfi {
 
   /// 设置窗口宽高 (客户区+边框, 单位像素). 返回是否成功.
   bool setSize(int width, int height) {
+    if (_stub) return false;
     final hwnd = _findHwnd();
     if (hwnd == 0) return false;
     return _setWindowPos(
@@ -126,6 +142,7 @@ class WindowSizeFfi {
 
   /// 读取当前窗口宽高 (像素), 失败返回 null.
   ({int width, int height})? getSize() {
+    if (_stub) return null;
     final hwnd = _findHwnd();
     if (hwnd == 0) return null;
     final rect = calloc<_RECT>();
@@ -140,6 +157,7 @@ class WindowSizeFfi {
 
   /// 最大化.
   bool maximize() {
+    if (_stub) return false;
     final hwnd = _findHwnd();
     if (hwnd == 0) return false;
     _showWindow(hwnd, _swShowMaximized);
@@ -148,6 +166,7 @@ class WindowSizeFfi {
 
   /// 还原.
   bool restore() {
+    if (_stub) return false;
     final hwnd = _findHwnd();
     if (hwnd == 0) return false;
     _showWindow(hwnd, _swRestore);
@@ -156,6 +175,7 @@ class WindowSizeFfi {
 
   /// 最小化.
   bool minimize() {
+    if (_stub) return false;
     final hwnd = _findHwnd();
     if (hwnd == 0) return false;
     _showWindow(hwnd, _swMinimize);
@@ -164,6 +184,7 @@ class WindowSizeFfi {
 
   /// 当前是否最大化.
   bool isMaximized() {
+    if (_stub) return false;
     final hwnd = _findHwnd();
     if (hwnd == 0) return false;
     return _isZoomed(hwnd) != 0;
@@ -171,6 +192,7 @@ class WindowSizeFfi {
 
   /// 在最大化和还原之间切换.
   bool toggleMaximize() {
+    if (_stub) return false;
     final hwnd = _findHwnd();
     if (hwnd == 0) return false;
     if (_isZoomed(hwnd) != 0) {
@@ -183,6 +205,7 @@ class WindowSizeFfi {
 
   /// 关闭窗口 (发送 WM_CLOSE, 走标准关闭流程).
   bool close() {
+    if (_stub) return false;
     final hwnd = _findHwnd();
     if (hwnd == 0) return false;
     _postMessageW(hwnd, _wmClose, 0, 0);
@@ -192,6 +215,7 @@ class WindowSizeFfi {
   /// 由 Flutter 端标题栏 onPanStart 调用, 触发系统级窗口拖拽.
   /// 实现方式: ReleaseCapture + SendMessage(WM_NCLBUTTONDOWN, HTCAPTION).
   bool startSystemDrag() {
+    if (_stub) return false;
     final hwnd = _findHwnd();
     if (hwnd == 0) return false;
     _releaseCapture();

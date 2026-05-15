@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io' show Platform;
 
 import 'app_state.dart';
 import 'ui/home_shell.dart';
@@ -59,7 +60,9 @@ Future<void> setPhotoDownloadDir(String? path) async {
 }
 
 /// 持久化窗口尺寸 + 实际调整窗口.
+/// 仅桌面 (Windows) 有效, 移动端忽略.
 Future<void> setWindowSizePersist(int w, int h) async {
+  if (!Platform.isWindows) return;
   WindowSizeFfi.instance.setSize(w, h);
   final prefs = _prefs ?? await SharedPreferences.getInstance();
   await prefs.setInt(_kWindowW, w);
@@ -97,16 +100,18 @@ Future<void> _loadPersistedSettings() async {
   final pd = prefs.getString(_kPhotoDownloadDir);
   if (pd != null && pd.isNotEmpty) appPhotoDownloadDir.value = pd;
 
-  // 窗口尺寸 (启动时尝试还原)
-  final ww = prefs.getInt(_kWindowW);
-  final wh = prefs.getInt(_kWindowH);
-  if (ww != null && wh != null && ww >= 600 && wh >= 400) {
-    // 推迟一帧让 native window 完成初始化再 resize.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      try {
-        WindowSizeFfi.instance.setSize(ww, wh);
-      } catch (_) {}
-    });
+  // 窗口尺寸 (启动时尝试还原, 仅桌面)
+  if (Platform.isWindows) {
+    final ww = prefs.getInt(_kWindowW);
+    final wh = prefs.getInt(_kWindowH);
+    if (ww != null && wh != null && ww >= 600 && wh >= 400) {
+      // 推迟一帧让 native window 完成初始化再 resize.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        try {
+          WindowSizeFfi.instance.setSize(ww, wh);
+        } catch (_) {}
+      });
+    }
   }
 
   // 自动持久化监听
@@ -142,9 +147,11 @@ Future<void> resetAllSettings() async {
   appConsoleExpanded.value = _defaultConsoleExpanded;
   appPhotoDownloadDir.value = null;
 
-  try {
-    WindowSizeFfi.instance.setSize(_defaultWindowW, _defaultWindowH);
-  } catch (_) {}
+  if (Platform.isWindows) {
+    try {
+      WindowSizeFfi.instance.setSize(_defaultWindowW, _defaultWindowH);
+    } catch (_) {}
+  }
 }
 
 void main() async {

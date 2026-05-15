@@ -1,9 +1,15 @@
-/// 串口服务: 跨平台串口扫描 / 打开 / 关闭 / 收发. 基于 flutter_libserialport.
+/// 串口服务: 跨平台串口扫描 / 打开 / 关闭 / 收发.
+///
+/// - 桌面 (Windows/macOS/Linux): 基于 flutter_libserialport (FFI 直连 libserialport.so/.dll);
+/// - Android: 基于 usb_serial (USB Host API, CDC-ACM/CH34x/FTDI/CP210x).
+///
+/// 公开 API 与单文件早期版本完全一致, app_state / UI 无需改动. 平台分发
+/// 在每个方法入口处通过 `Platform.isAndroid` 短路, 桌面字节级行为 0 变化.
 ///
 /// 用法:
 /// ```dart
 /// final svc = SerialService();
-/// final ports = SerialService.listPorts();
+/// final ports = await SerialService.listPortsAsync();
 /// await svc.open(ports.first.name, baud: 1000000);
 /// svc.bytesStream.listen((data) => parser.feed(data));
 /// svc.writeString('GetSysInfo\n');
@@ -12,48 +18,50 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:flutter_libserialport/flutter_libserialport.dart';
 
-class SerialPortInfo {
-  final String name;
-  final String description;
-  final String? manufacturer;
-  final String? productName;
-  final int? vendorId;
-  final int? productId;
+import 'android_serial_impl.dart';
+import 'serial_port_info.dart';
 
-  const SerialPortInfo({
-    required this.name,
-    required this.description,
-    this.manufacturer,
-    this.productName,
-    this.vendorId,
-    this.productId,
-  });
-
-  @override
-  String toString() =>
-      '$name ($description${manufacturer != null ? ', $manufacturer' : ''})';
-}
+export 'serial_port_info.dart';
 
 class SerialService {
+  SerialService() {
+    if (Platform.isAndroid) {
+      _android = AndroidSerialImpl();
+      // 透传 Android 后端字节流到外层 controller, 让监听方无差别拿到数据.
+      _android!.bytesStream.listen(
+        _byteCtrl.add,
+        onError: (e) => _byteCtrl.addError(e),
+      );
+    }
+  }
+
+  AndroidSerialImpl? _android;
+
   SerialPort? _port;
   SerialPortReader? _reader;
   StreamSubscription<Uint8List>? _sub;
   final StreamController<Uint8List> _byteCtrl =
       StreamController<Uint8List>.broadcast();
 
-  /// 字节流: 来自 SerialPortReader, 转发给上层 FrameParser.
+  /// 字节流: 桌面来自 SerialPortReader, Android 来自 usb_serial inputStream.
   Stream<Uint8List> get bytesStream => _byteCtrl.stream;
 
-  bool get isOpen => _port?.isOpen ?? false;
-  String? get currentPortName => _port?.name;
+  bool get isOpen => Platform.isAndroid
+      ? (_android?.isOpen ?? false)
+      : (_port?.isOpen ?? false);
+  String? get currentPortName =>
+      Platform.isAndroid ? _android?.currentPortName : _port?.name;
 
-  /// 枚举系统所有可用串口.
+  /// 枚举系统所有可用串口. 桌面同步实现; **Android 上请改用 [listPortsAsync]**.
+  /// 在 Android 调用本同步方法会返回空列表 (USB host 枚举必须 await).
   static List<SerialPortInfo> listPorts() {
+    if (Platform.isAndroid) return const <SerialPortInfo>[];
     final result = <SerialPortInfo>[];
     for (final name in SerialPort.availablePorts) {
       SerialPort? p;
@@ -78,6 +86,12 @@ class SerialService {
     return result;
   }
 
+  /// 异步枚举. 桌面包装同步 [listPorts]; Android 走 usb_serial.
+  static Future<List<SerialPortInfo>> listPortsAsync() async {
+    if (Platform.isAndroid) return AndroidSerialImpl.listPortsAsync();
+    return listPorts();
+  }
+
   /// Windows libserialport 返回的描述是 ANSI/GBK 编码,
   /// Dart 按 UTF-8 解码会乱码. 这里只保留可打印 ASCII,
   /// 非 ASCII 字节跳过. COM 编号本身是 ASCII, 不受影响.
@@ -96,8 +110,11 @@ class SerialService {
     return out.isEmpty && dropped ? '?' : out;
   }
 
-  /// 打开串口. 失败抛 [SerialPortError].
+  /// 打开串口. 失败抛 [SerialPortError] (桌面) / [StateError] (Android).
   Future<void> open(String name, {int baud = 115200}) async {
+    if (Platform.isAndroid) {
+      return _android!.open(name, baud: baud);
+    }
     await close();
     final p = SerialPort(name);
     if (!p.openReadWrite()) {
@@ -128,6 +145,9 @@ class SerialService {
   }
 
   Future<void> close() async {
+    if (Platform.isAndroid) {
+      return _android!.close();
+    }
     // 顺序: 取消上层 sub → 关 reader (停下 native 读线程) → 关 port.
     // 重点: 不调 port.dispose() / reader.dispose(),
     // flutter_libserialport 0.4.0 Windows 下手动 dispose 会和 finalizer 双释放闪退.
@@ -144,6 +164,7 @@ class SerialService {
 
   /// 写字符串 (UTF-8, 不附加换行; 调用方负责加 \n).
   int writeString(String s) {
+    if (Platform.isAndroid) return _android!.writeString(s);
     final port = _port;
     if (port == null || !port.isOpen) return 0;
     final bytes = Uint8List.fromList(s.codeUnits);
@@ -152,6 +173,7 @@ class SerialService {
 
   /// 写原始字节.
   int writeBytes(List<int> bytes) {
+    if (Platform.isAndroid) return _android!.writeBytes(bytes);
     final port = _port;
     if (port == null || !port.isOpen) return 0;
     return port.write(
@@ -160,6 +182,11 @@ class SerialService {
   }
 
   Future<void> dispose() async {
+    if (Platform.isAndroid) {
+      await _android!.dispose();
+      await _byteCtrl.close();
+      return;
+    }
     await close();
     await _byteCtrl.close();
   }
@@ -178,8 +205,12 @@ class SerialService {
     String name, {
     int baud = 115200,
     Duration timeout = const Duration(milliseconds: 1800),
-  }) =>
-      _probeDeviceCore(name, baud: baud, timeoutMs: timeout.inMilliseconds);
+  }) {
+    if (Platform.isAndroid) {
+      return AndroidSerialImpl.probeDevice(name, baud: baud, timeout: timeout);
+    }
+    return _probeDeviceCore(name, baud: baud, timeoutMs: timeout.inMilliseconds);
+  }
 
   /// 判断端口描述是否可能是热成像 USB CDC 设备 (优先尝试).
   /// 与 Python 上位机的过滤策略一致.
@@ -210,6 +241,13 @@ class SerialService {
     Duration perPortTimeout = const Duration(milliseconds: 1500),
     void Function(String port)? onProbe,
   }) async {
+    if (Platform.isAndroid) {
+      return AndroidSerialImpl.searchTargetDevice(
+        baud: baud,
+        perPortTimeout: perPortTimeout,
+        onProbe: onProbe,
+      );
+    }
     // 枚举仍在主 isolate, 否则跨 isolate 的 SerialPortInfo 排序逻辑要复制一份.
     final ports = listPorts();
     final ordered = <String>[

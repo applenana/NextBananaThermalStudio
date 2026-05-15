@@ -11,8 +11,12 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
 
-  # 串口 (Windows/macOS/Linux 桌面跨平台)
-  flutter_libserialport: ^0.4.0
+  # 串口 (Windows/macOS/Linux 桌面跨平台). 0.6.0 修复了 AGP 8+ 的 namespace 兼容.
+  flutter_libserialport: ^0.6.0
+
+  # 串口 (Android USB Host, CDC-ACM/CH34x/FTDI/CP210x). 仅 Android 运行时使用,
+  # 桌面构建会忽略, 不会与 flutter_libserialport 冲突.
+  usb_serial: ^0.5.2
 
   # 实时图表
   fl_chart: ^0.69.0
