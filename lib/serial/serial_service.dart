@@ -195,9 +195,9 @@ class SerialService {
   /// 探测顺序: 描述含 USB/CDC/ACM/BOARD 的端口优先, 其余端口兜底.
   /// 每个端口最多耗时 [perPortTimeout].
   ///
-  /// **整个扫描过程跑在后台 isolate**, 避免 libserialport 的同步 FFI
-  /// (openReadWrite / close 等) 卡住 UI 线程造成动画停顿与输入无响应.
-  /// 进度回调 [onProbe] 通过 SendPort 跨 isolate 回主线程派发.
+  /// 整个扫描通过 [Isolate.spawn] 跑在后台 isolate, 避免 libserialport 的
+  /// 同步 FFI (openReadWrite / close 等) 卡住 UI 线程. 进度 / 结果通过
+  /// SendPort 回主线程, 失败兜底为主 isolate 串行探测.
   static Future<({String? port, Map<String, dynamic>? info})>
       searchTargetDevice({
     int baud = 115200,
@@ -213,30 +213,74 @@ class SerialService {
     if (ordered.isEmpty) return (port: null, info: null);
 
     final rp = ReceivePort();
-    final sub = rp.listen((msg) {
-      if (msg is String) onProbe?.call(msg);
-    });
-    final timeoutMs = perPortTimeout.inMilliseconds;
-    final sendPort = rp.sendPort;
-    try {
-      return await Isolate.run<
-          ({String? port, Map<String, dynamic>? info})>(() async {
-        for (final name in ordered) {
-          sendPort.send(name);
-          final info = await _probeDeviceCore(
-            name,
-            baud: baud,
-            timeoutMs: timeoutMs,
-          );
-          if (info != null) {
-            return (port: name, info: info);
-          }
+    final errorPort = ReceivePort();
+    final exitPort = ReceivePort();
+    final resultCompleter = Completer<Map<String, dynamic>?>();
+    final foundCompleter = Completer<String?>();
+
+    final progSub = rp.listen((msg) {
+      if (msg is String) {
+        onProbe?.call(msg);
+      } else if (msg is Map) {
+        // 结果消息: {'port': name, 'info': Map?}
+        final port = msg['port'];
+        final info = msg['info'];
+        if (!foundCompleter.isCompleted) {
+          foundCompleter.complete(port is String ? port : null);
         }
-        return (port: null, info: null);
-      });
+        if (!resultCompleter.isCompleted) {
+          resultCompleter
+              .complete(info is Map ? info.cast<String, dynamic>() : null);
+        }
+      }
+    });
+    final errSub = errorPort.listen((e) {
+      // ignore: avoid_print
+      print('[searchTargetDevice] isolate error: $e');
+      if (!foundCompleter.isCompleted) foundCompleter.complete(null);
+      if (!resultCompleter.isCompleted) resultCompleter.complete(null);
+    });
+    final exitSub = exitPort.listen((_) {
+      if (!foundCompleter.isCompleted) foundCompleter.complete(null);
+      if (!resultCompleter.isCompleted) resultCompleter.complete(null);
+    });
+
+    Isolate? isolate;
+    try {
+      isolate = await Isolate.spawn<_SearchArgs>(
+        _searchIsolateEntry,
+        _SearchArgs(
+          ports: ordered,
+          baud: baud,
+          timeoutMs: perPortTimeout.inMilliseconds,
+          sendPort: rp.sendPort,
+        ),
+        onError: errorPort.sendPort,
+        onExit: exitPort.sendPort,
+        errorsAreFatal: false,
+      );
+      final foundPort = await foundCompleter.future;
+      final foundInfo = await resultCompleter.future;
+      return (port: foundPort, info: foundInfo);
+    } catch (e) {
+      // ignore: avoid_print
+      print('[searchTargetDevice] spawn failed, fallback main isolate: $e');
+      // 兜底: 没法用 isolate 时退回主 isolate 串行扫描, 不至于完全没功能.
+      for (final name in ordered) {
+        onProbe?.call(name);
+        final info = await _probeDeviceCore(name,
+            baud: baud, timeoutMs: perPortTimeout.inMilliseconds);
+        if (info != null) return (port: name, info: info);
+      }
+      return (port: null, info: null);
     } finally {
-      await sub.cancel();
+      try { isolate?.kill(priority: Isolate.immediate); } catch (_) {}
+      await progSub.cancel();
+      await errSub.cancel();
+      await exitSub.cancel();
       rp.close();
+      errorPort.close();
+      exitPort.close();
     }
   }
 
@@ -323,4 +367,37 @@ class SerialService {
       try { if (port?.isOpen == true) port?.close(); } catch (_) {}
     }
   }
+}
+
+// ============================================================
+// 后台 isolate: 串口探测 worker
+// ============================================================
+
+class _SearchArgs {
+  final List<String> ports;
+  final int baud;
+  final int timeoutMs;
+  final SendPort sendPort;
+  const _SearchArgs({
+    required this.ports,
+    required this.baud,
+    required this.timeoutMs,
+    required this.sendPort,
+  });
+}
+
+Future<void> _searchIsolateEntry(_SearchArgs args) async {
+  for (final name in args.ports) {
+    args.sendPort.send(name); // 进度消息: 端口名
+    final info = await SerialService._probeDeviceCore(
+      name,
+      baud: args.baud,
+      timeoutMs: args.timeoutMs,
+    );
+    if (info != null) {
+      args.sendPort.send({'port': name, 'info': info});
+      return;
+    }
+  }
+  args.sendPort.send({'port': null, 'info': null});
 }
