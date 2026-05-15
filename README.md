@@ -40,17 +40,20 @@
 
 ## 🖼️ 截图
 
-### 实时双光主页
-
-![实时双光主页](docs/screenshots/realtime.png)
-
-> 自绘标题栏 · 自动搜索连接 · 序列号 / 激活时间 / 保修截止一目了然 · 温度曲线 + 伪彩可视化 + 串口控制台。
-
-### 设备图库
-
-![设备图库](docs/screenshots/gallery.png)
-
-> 列表点击即下载并解码 (v2-HTPH / full_screen / 24×32 cropped) · 可见光融合 + 任意位置温度标记 · PNG 一键导出。
+<table>
+  <tr>
+    <td align="center"><b>实时双光主页</b></td>
+    <td align="center"><b>设备图库</b></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/realtime.png" alt="实时双光主页" width="100%"/></td>
+    <td><img src="docs/screenshots/gallery.png" alt="设备图库" width="100%"/></td>
+  </tr>
+  <tr>
+    <td>自绘标题栏 · 自动搜索连接 · 序列号 / 激活时间 / 保修截止一目了然 · 温度曲线 + 伪彩可视化 + 串口控制台。</td>
+    <td>列表点击即下载并解码 (v2-HTPH / full_screen / 24×32 cropped) · 可见光融合 + 任意位置温度标记 · PNG 一键导出。</td>
+  </tr>
+</table>
 
 ## 🚀 快速开始
 
