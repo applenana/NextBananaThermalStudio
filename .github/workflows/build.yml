@@ -109,10 +109,63 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # ----------------- Android universal APK (release only) -----------------
+  # 普通 push 仍保留 split-per-abi 三件套作为 artifacts; 仅在打 tag 发布
+  # release 时构建一个 universal APK, 让 release 只挂一个全能 apk + windows zip.
+  build-android-universal:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Build universal APK (release)
+        run: flutter build apk --release --target=lib/main.dart
+
+      - name: Rename APK
+        id: pack
+        shell: bash
+        run: |
+          set -e
+          stamp=$(date -u +%Y%m%d-%H%M%S)
+          sha=$(echo "${{ github.sha }}" | cut -c1-7)
+          mkdir -p dist
+          src="build/app/outputs/flutter-apk/app-release.apk"
+          dst="dist/NextBananaThermalStudio-android-universal-${stamp}-${sha}.apk"
+          cp "$src" "$dst"
+          ls -lh dist/
+
+      - name: Upload universal apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-universal
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
   # ----------------------------- Release -----------------------------
+  # 仅打 tag 触发. 只挂载: 一个 windows zip + 一个 universal apk.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-android]
+    needs: [build-windows, build-android-universal]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -123,10 +176,10 @@ jobs:
           name: windows-zip
           path: release-assets
 
-      - name: Download android artifacts
+      - name: Download android universal apk
         uses: actions/download-artifact@v4
         with:
-          name: android-apks
+          name: android-apk-universal
           path: release-assets
 
       - name: List assets
