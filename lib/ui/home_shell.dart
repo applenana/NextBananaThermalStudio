@@ -45,95 +45,252 @@ class _HomeShellState extends State<HomeShell> {
           children: [
             const WindowTitleBar(),
             Expanded(
-              child: Row(
-        children: [
-          // 左侧导航
-          Container(
-            width: 84,
-            color: scheme.surface,
-            child: Column(
-              children: [
-                const SizedBox(height: 18),
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [scheme.primary, const Color(0xFFFFB199)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: const Center(
-                    child: Text('🍌', style: TextStyle(fontSize: 24)),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                _NavItem(
-                  icon: Icons.thermostat_outlined,
-                  iconActive: Icons.thermostat,
-                  label: '实时',
-                  active: _index == 0,
-                  onTap: () => setState(() => _index = 0),
-                ),
-                _NavItem(
-                  icon: Icons.photo_library_outlined,
-                  iconActive: Icons.photo_library,
-                  label: '图库',
-                  active: _index == 1,
-                  onTap: () {
-                    setState(() => _index = 1);
-                    // 切到图库时若已连接则自动刷新图片列表; 即使已经在该 tab
-                    // 上, 再次点击也会重新拉取一次, 符合用户预期.
-                    photoTabRefreshTrigger.value++;
-                  },
-                ),
-                const Spacer(),
-                _NavItem(
-                  icon: Icons.settings_outlined,
-                  iconActive: Icons.settings,
-                  label: '设置',
-                  active: _index == 2,
-                  onTap: () => setState(() => _index = 2),
-                ),
-                const SizedBox(height: 12),
-              ],
+              child: ValueListenableBuilder<double>(
+                valueListenable: appWideBreakpoint,
+                builder: (context, breakpoint, _) {
+                  return LayoutBuilder(
+                    builder: (context, constraints) {
+                      // 主区可用宽度低于断点 → 切到底部导航的“手机模式”.
+                      final narrow = constraints.maxWidth < breakpoint;
+                      return narrow
+                          ? _buildNarrow(scheme)
+                          : _buildWide(scheme);
+                    },
+                  );
+                },
+              ),
             ),
-          ),
-          // 主区
-          Expanded(
-            child: Column(
-              children: [
-                const SizedBox(height: 14),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 18),
-                  child: _Header(),
-                ),
-                const SizedBox(height: 12),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 18),
-                  child: ConnectionBar(),
-                ),
-                const SizedBox(height: 12),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
-                    child: IndexedStack(
-                      index: _index,
-                      children: const [
-                        RealtimeTab(),
-                        PhotoDownloadTab(),
-                        _SettingsPlaceholder(),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
+    );
+  }
+
+  // 宽屏: 左侧 NavigationRail.
+  Widget _buildWide(ColorScheme scheme) {
+    return Row(
+      children: [
+        Container(
+          width: 84,
+          color: scheme.surface,
+          child: Column(
+            children: [
+              const SizedBox(height: 18),
+              _BrandLogo(scheme: scheme),
+              const SizedBox(height: 24),
+              _NavItem(
+                icon: Icons.thermostat_outlined,
+                iconActive: Icons.thermostat,
+                label: '实时',
+                active: _index == 0,
+                onTap: () => _select(0),
+              ),
+              _NavItem(
+                icon: Icons.photo_library_outlined,
+                iconActive: Icons.photo_library,
+                label: '图库',
+                active: _index == 1,
+                onTap: () => _select(1),
+              ),
+              const Spacer(),
+              _NavItem(
+                icon: Icons.settings_outlined,
+                iconActive: Icons.settings,
+                label: '设置',
+                active: _index == 2,
+                onTap: () => _select(2),
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        ),
+        Expanded(child: _mainColumn(compact: false)),
+      ],
+    );
+  }
+
+  // 窄屏: 顶部 logo+标题精简; 底部 BottomNavigationBar.
+  Widget _buildNarrow(ColorScheme scheme) {
+    return Column(
+      children: [
+        Expanded(child: _mainColumn(compact: true)),
+        _BottomNav(
+          index: _index,
+          onSelect: _select,
+          scheme: scheme,
+        ),
+      ],
+    );
+  }
+
+  Widget _mainColumn({required bool compact}) {
+    final hPad = compact ? 12.0 : 18.0;
+    return Column(
+      children: [
+        SizedBox(height: compact ? 10 : 14),
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: hPad),
+          child: _Header(compact: compact),
+        ),
+        const SizedBox(height: 12),
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: hPad),
+          child: const ConnectionBar(),
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(hPad, 0, hPad, compact ? 8 : 18),
+            child: IndexedStack(
+              index: _index,
+              children: const [
+                RealtimeTab(),
+                PhotoDownloadTab(),
+                _SettingsPlaceholder(),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _select(int i) {
+    setState(() => _index = i);
+    if (i == 1) {
+      // 切到图库时若已连接则自动刷新图片列表.
+      photoTabRefreshTrigger.value++;
+    }
+  }
+}
+
+class _BrandLogo extends StatelessWidget {
+  final ColorScheme scheme;
+  const _BrandLogo({required this.scheme});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [scheme.primary, const Color(0xFFFFB199)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: const Center(
+        child: Text('🍌', style: TextStyle(fontSize: 24)),
+      ),
+    );
+  }
+}
+
+class _BottomNav extends StatelessWidget {
+  final int index;
+  final ValueChanged<int> onSelect;
+  final ColorScheme scheme;
+  const _BottomNav({
+    required this.index,
+    required this.onSelect,
+    required this.scheme,
+  });
+
+  static const _items = <_BottomNavItemData>[
+    _BottomNavItemData(
+      icon: Icons.thermostat_outlined,
+      iconActive: Icons.thermostat,
+      label: '实时',
+    ),
+    _BottomNavItemData(
+      icon: Icons.photo_library_outlined,
+      iconActive: Icons.photo_library,
+      label: '图库',
+    ),
+    _BottomNavItemData(
+      icon: Icons.settings_outlined,
+      iconActive: Icons.settings,
+      label: '设置',
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        border: Border(
+          top: BorderSide(
+            color: scheme.outlineVariant.withValues(alpha: 0.4),
+            width: 0.6,
+          ),
+        ),
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 60,
+          child: Row(
+            children: [
+              for (int i = 0; i < _items.length; i++)
+                Expanded(
+                  child: _BottomNavItem(
+                    data: _items[i],
+                    active: index == i,
+                    onTap: () => onSelect(i),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BottomNavItemData {
+  final IconData icon;
+  final IconData iconActive;
+  final String label;
+  const _BottomNavItemData({
+    required this.icon,
+    required this.iconActive,
+    required this.label,
+  });
+}
+
+class _BottomNavItem extends StatelessWidget {
+  final _BottomNavItemData data;
+  final bool active;
+  final VoidCallback onTap;
+  const _BottomNavItem({
+    required this.data,
+    required this.active,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = active ? scheme.primary : scheme.onSurfaceVariant;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(active ? data.iconActive : data.icon, size: 22, color: color),
+            const SizedBox(height: 2),
+            Text(
+              data.label,
+              style: TextStyle(
+                fontSize: 11,
+                color: color,
+                fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+              ),
             ),
           ],
         ),
@@ -143,7 +300,8 @@ class _HomeShellState extends State<HomeShell> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header();
+  final bool compact;
+  const _Header({this.compact = false});
 
   @override
   Widget build(BuildContext context) {
@@ -151,10 +309,14 @@ class _Header extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
+        if (compact) ...[
+          _BrandLogo(scheme: scheme),
+          const SizedBox(width: 10),
+        ],
         Text(
           'BananaThermal',
           style: TextStyle(
-            fontSize: 26,
+            fontSize: compact ? 20 : 26,
             fontWeight: FontWeight.w700,
             color: scheme.onSurface,
             letterSpacing: 0.2,
@@ -177,14 +339,16 @@ class _Header extends StatelessWidget {
           ),
         ),
         const Spacer(),
-        Text(
-          '红外热成像上位机',
-          style: TextStyle(
-            color: scheme.onSurfaceVariant,
-            fontSize: 13,
+        if (!compact) ...[
+          Text(
+            '红外热成像上位机',
+            style: TextStyle(
+              color: scheme.onSurfaceVariant,
+              fontSize: 13,
+            ),
           ),
-        ),
-        const SizedBox(width: 12),
+          const SizedBox(width: 12),
+        ],
         const _ThemeToggle(),
       ],
     );
