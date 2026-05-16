@@ -29,8 +29,25 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      # 打 tag 时让 APK/EXE 内部版本与 tag 对齐:
+      #   refs/tags/v1.2.3 -> --build-name=1.2.3 --build-number=<run_number>
+      # 非 tag 推送保留 pubspec.yaml 默认 (避免污染常规构建).
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            NAME="${GITHUB_REF_NAME#v}"
+            NUM="$GITHUB_RUN_NUMBER"
+            echo "args=--build-name=$NAME --build-number=$NUM" >> "$GITHUB_OUTPUT"
+            echo "Tag build: $NAME ($NUM)"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "Non-tag build: using pubspec default."
+          fi
+
       - name: Build Windows Release
-        run: flutter build windows --release
+        run: flutter build windows --release ${{ steps.ver.outputs.args }}
 
       - name: Pack
         id: pack
@@ -76,10 +93,24 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            NAME="${GITHUB_REF_NAME#v}"
+            NUM="$GITHUB_RUN_NUMBER"
+            echo "args=--build-name=$NAME --build-number=$NUM" >> "$GITHUB_OUTPUT"
+            echo "Tag build: $NAME ($NUM)"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "Non-tag build: using pubspec default."
+          fi
+
       # 注意: Windows 上 flutter build apk 不加 --target 时 frontend_server 会因反斜杠失败,
       # Linux runner 无此坑, 但为统一与本地命令一致, 仍显式传入.
       - name: Build APK (split per ABI, release)
-        run: flutter build apk --release --target=lib/main.dart --split-per-abi
+        run: flutter build apk --release --target=lib/main.dart --split-per-abi ${{ steps.ver.outputs.args }}
 
       - name: Rename APKs
         id: pack
@@ -131,8 +162,18 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          # 此 job 只在 tag 时触发, 必然走 tag 分支.
+          NAME="${GITHUB_REF_NAME#v}"
+          NUM="$GITHUB_RUN_NUMBER"
+          echo "args=--build-name=$NAME --build-number=$NUM" >> "$GITHUB_OUTPUT"
+          echo "Tag build: $NAME ($NUM)"
+
       - name: Build universal APK (release)
-        run: flutter build apk --release --target=lib/main.dart
+        run: flutter build apk --release --target=lib/main.dart ${{ steps.ver.outputs.args }}
 
       - name: Rename APK
         id: pack
