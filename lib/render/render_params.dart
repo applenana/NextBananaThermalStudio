@@ -76,7 +76,7 @@ class RenderParams {
     this.showInfoOverlay = false,
     this.showCursorTemp = true,
     this.showHotSpot = true,
-    this.showColdSpot = true,
+    this.showColdSpot = false,
   });
 
   RenderParams copyWith({

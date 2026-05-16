@@ -474,6 +474,16 @@ class AppState extends ChangeNotifier {
     } else {
       _stopThermalHeartbeat();
       sendCommand('streaming stoped');
+      // 关闭热像推流: 清空对应缓存, 避免画面残留 (需求: 关闭后不再保留旧帧).
+      thermalFrame = null;
+      // 同时若可见光仍在推流, 把融合模式拨回 off — 此时已无法做"热像+可见光"
+      // 真融合, 强行保留 blend/edge 反而会导致下次只开热像时残留奇怪叠加.
+      if (visibleStreamEnabled &&
+          renderParams.fusion.mode != FusionMode.off) {
+        renderParams = renderParams.copyWith(
+          fusion: _fusionWithMode(FusionMode.off),
+        );
+      }
     }
     notifyListeners();
   }
@@ -483,25 +493,45 @@ class AppState extends ChangeNotifier {
     if (on) {
       sendCommand('vstream');
       _startVisibleHeartbeat();
-      // 打开可见光时, 若融合处于关闭, 自动切换到 blend 以便用户立刻看到混合效果.
-      if (renderParams.fusion.mode == FusionMode.off) {
+      // 打开可见光时, 若融合处于关闭 *且* 热像也在推流, 自动切换到 blend
+      // 以便用户立刻看到混合效果. 若热像没开, 保持 off — 用户只想看可见光.
+      if (thermalStreamEnabled &&
+          renderParams.fusion.mode == FusionMode.off) {
         renderParams = renderParams.copyWith(
-          fusion: FusionParams(
-            mode: FusionMode.blend,
-            gamma: renderParams.fusion.gamma,
-            alpha: renderParams.fusion.alpha,
-            edgeStrength: renderParams.fusion.edgeStrength,
-            edgeThresh: renderParams.fusion.edgeThresh,
-            edgeWidth: renderParams.fusion.edgeWidth,
-            edgeColor: renderParams.fusion.edgeColor,
-          ),
+          fusion: _fusionWithMode(FusionMode.blend),
         );
       }
     } else {
       _stopVisibleHeartbeat();
       sendCommand('vstream stoped');
+      // 关闭可见光推流: 清空 RGB 缓存与尺寸, 避免画面残留.
+      visibleRgb888 = null;
+      visibleWidth = 0;
+      visibleHeight = 0;
+      // 若热像仍在推流, 同样把 fusion 拨回 off, 避免下次再开可见光时
+      // 历史 mode 自动启用了用户不期望的混合.
+      if (thermalStreamEnabled &&
+          renderParams.fusion.mode != FusionMode.off) {
+        renderParams = renderParams.copyWith(
+          fusion: _fusionWithMode(FusionMode.off),
+        );
+      }
     }
     notifyListeners();
+  }
+
+  /// 仅修改 FusionParams.mode, 其它字段沿用当前 renderParams.fusion 的值.
+  FusionParams _fusionWithMode(FusionMode m) {
+    final p = renderParams.fusion;
+    return FusionParams(
+      mode: m,
+      gamma: p.gamma,
+      alpha: p.alpha,
+      edgeStrength: p.edgeStrength,
+      edgeThresh: p.edgeThresh,
+      edgeWidth: p.edgeWidth,
+      edgeColor: p.edgeColor,
+    );
   }
 
   void _startThermalHeartbeat() {

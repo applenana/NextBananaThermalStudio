@@ -437,19 +437,29 @@ class _ThermalCardState extends State<_ThermalCard> {
     // Android 双模式: false=多点标签 (点击放置/移除 marker), true=单点跟随光标
     // (按住拖动显示十字与温度, 类 PC). 切换时清空 marker 视图以免干扰.
     final cursorMode = _store.cursorMode;
-    Widget canvas = ThermalCanvas(
-      frame: frame,
-      markers: cursorMode ? const [] : _liveMarkers(frame),
-      onAddMarker: (isAndroid && !cursorMode)
-          ? (px, py, _) => _store.add(px, py)
-          : null,
-      onRemoveMarker: (isAndroid && !cursorMode) ? _store.removeAt : null,
-      showCursorTemp:
-          isAndroid ? cursorMode : app.renderParams.showCursorTemp,
-      showHotSpot: app.renderParams.showHotSpot,
-      showColdSpot: app.renderParams.showColdSpot,
-      placeholder: '等待热像数据…',
-    );
+    // 仅可见光路径: 用户只开了 vstream, 此时 frame 为 null, 直接走 RgbImageView
+    // 显示纯可见光画面, 不走热像渲染管线 (避免假装等待热像数据).
+    final visibleOnly = frame == null && app.visibleRgb888 != null;
+    Widget canvas = visibleOnly
+        ? RgbImageView(
+            rgb: app.visibleRgb888,
+            width: app.visibleWidth,
+            height: app.visibleHeight,
+            fit: BoxFit.contain,
+          )
+        : ThermalCanvas(
+            frame: frame,
+            markers: cursorMode ? const [] : _liveMarkers(frame),
+            onAddMarker: (isAndroid && !cursorMode)
+                ? (px, py, _) => _store.add(px, py)
+                : null,
+            onRemoveMarker: (isAndroid && !cursorMode) ? _store.removeAt : null,
+            showCursorTemp:
+                isAndroid ? cursorMode : app.renderParams.showCursorTemp,
+            showHotSpot: app.renderParams.showHotSpot,
+            showColdSpot: app.renderParams.showColdSpot,
+            placeholder: '等待热像数据…',
+          );
 
     Widget canvasArea;
     if (isAndroid) {
@@ -465,7 +475,9 @@ class _ThermalCardState extends State<_ThermalCard> {
                 _FloatingMiniButton(
                   icon: Icons.fullscreen_rounded,
                   tooltip: '全屏',
-                  onTap: frame == null ? null : _openFullscreen,
+                  onTap: (frame == null && !visibleOnly)
+                      ? null
+                      : _openFullscreen,
                 ),
                 const SizedBox(height: 8),
                 _FloatingMiniButton(
@@ -693,6 +705,8 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                 TempMarker(p.x, p.y,
                     frame.temperatureField[p.y * frame.width + p.x]),
           ];
+    // 仅可见光路径: 当无热像但有可见光数据时, 用 RgbImageView 替代 ThermalCanvas.
+    final visibleOnly = frame == null && app.visibleRgb888 != null;
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
@@ -710,18 +724,26 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
             Positioned.fill(
               child: Padding(
                 padding: const EdgeInsets.all(8),
-                child: ThermalCanvas(
-                  frame: frame,
-                  markers: liveMarkers,
-                  onAddMarker: cursorMode
-                      ? null
-                      : (px, py, _) => _store.add(px, py),
-                  onRemoveMarker: cursorMode ? null : _store.removeAt,
-                  showCursorTemp: cursorMode,
-                  showHotSpot: app.renderParams.showHotSpot,
-                  showColdSpot: app.renderParams.showColdSpot,
-                  placeholder: '等待热像数据…',
-                ),
+                child: visibleOnly
+                    ? RgbImageView(
+                        rgb: app.visibleRgb888,
+                        width: app.visibleWidth,
+                        height: app.visibleHeight,
+                        fit: BoxFit.contain,
+                      )
+                    : ThermalCanvas(
+                        frame: frame,
+                        markers: liveMarkers,
+                        onAddMarker: cursorMode
+                            ? null
+                            : (px, py, _) => _store.add(px, py),
+                        onRemoveMarker:
+                            cursorMode ? null : _store.removeAt,
+                        showCursorTemp: cursorMode,
+                        showHotSpot: app.renderParams.showHotSpot,
+                        showColdSpot: app.renderParams.showColdSpot,
+                        placeholder: '等待热像数据…',
+                      ),
               ),
             ),
             // 左侧透明浮窗: 温度 KPI + 趋势曲线 (可拖动, 可折叠)
