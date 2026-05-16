@@ -446,7 +446,8 @@ class _ThermalCardState extends State<_ThermalCard> {
       onRemoveMarker: (isAndroid && !cursorMode) ? _store.removeAt : null,
       showCursorTemp:
           isAndroid ? cursorMode : app.renderParams.showCursorTemp,
-      showExtremeSpots: true,
+      showHotSpot: app.renderParams.showHotSpot,
+      showColdSpot: app.renderParams.showColdSpot,
       placeholder: '等待热像数据…',
     );
 
@@ -706,7 +707,8 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                       : (px, py, _) => _store.add(px, py),
                   onRemoveMarker: cursorMode ? null : _store.removeAt,
                   showCursorTemp: cursorMode,
-                  showExtremeSpots: true,
+                  showHotSpot: app.renderParams.showHotSpot,
+                  showColdSpot: app.renderParams.showColdSpot,
                   placeholder: '等待热像数据…',
                 ),
               ),
@@ -1540,8 +1542,48 @@ class _ControlsCard extends StatelessWidget {
               child: _FusionSliders(),
             ),
           ),
+          _CollapseSection(
+            icon: Icons.visibility_outlined,
+            title: '显示',
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
+              child: _DisplaySection(),
+            ),
+          ),
         ],
       ),
+    );
+  }
+}
+
+/// "显示" 折叠区: 控制画面上叠加的额外标记 (最高/最低温追踪角标).
+class _DisplaySection extends StatelessWidget {
+  const _DisplaySection();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final p = app.renderParams;
+    return Row(
+      children: [
+        Expanded(
+          child: _SwitchTile(
+            label: '最高温追踪',
+            value: p.showHotSpot,
+            onChanged: (v) =>
+                app.updateRenderParams(p.copyWith(showHotSpot: v)),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: _SwitchTile(
+            label: '最低温追踪',
+            value: p.showColdSpot,
+            onChanged: (v) =>
+                app.updateRenderParams(p.copyWith(showColdSpot: v)),
+          ),
+        ),
+      ],
     );
   }
 }

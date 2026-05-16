@@ -54,6 +54,12 @@ class RenderParams {
   /// 显示十字光标 + 鼠标悬浮取温
   final bool showCursorTemp;
 
+  /// 主画面叠加最高温跟踪 (橙黄▼角标 + H 标签).
+  final bool showHotSpot;
+
+  /// 主画面叠加最低温跟踪 (冰青▲角标 + L 标签).
+  final bool showColdSpot;
+
   const RenderParams({
     this.upsampleScale = 8,
     this.upsampleMethod = UpsampleMethod.bicubic,
@@ -69,6 +75,8 @@ class RenderParams {
     this.fusion = const FusionParams(),
     this.showInfoOverlay = false,
     this.showCursorTemp = true,
+    this.showHotSpot = true,
+    this.showColdSpot = true,
   });
 
   RenderParams copyWith({
@@ -86,6 +94,8 @@ class RenderParams {
     FusionParams? fusion,
     bool? showInfoOverlay,
     bool? showCursorTemp,
+    bool? showHotSpot,
+    bool? showColdSpot,
   }) {
     return RenderParams(
       upsampleScale: upsampleScale ?? this.upsampleScale,
@@ -104,6 +114,8 @@ class RenderParams {
       fusion: fusion ?? this.fusion,
       showInfoOverlay: showInfoOverlay ?? this.showInfoOverlay,
       showCursorTemp: showCursorTemp ?? this.showCursorTemp,
+      showHotSpot: showHotSpot ?? this.showHotSpot,
+      showColdSpot: showColdSpot ?? this.showColdSpot,
     );
   }
 }

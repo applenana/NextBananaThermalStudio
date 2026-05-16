@@ -40,9 +40,12 @@ class ThermalCanvas extends StatefulWidget {
   /// 单击已存在的 marker 时回调 (传入索引). 可用来实现删除.
   final void Function(int index)? onRemoveMarker;
 
-  /// 是否在画面上叠加最高/最低温像素角标 (与 [markers] 风格独立, 仅展示
-  /// 用、不接受点击). 用于 "主画面 H/L 角标" 功能.
-  final bool showExtremeSpots;
+  /// 是否叠加最高温像素角标 (橙黄 ▼ + H 标签). 与 [markers] 风格独立,
+  /// 仅展示、不接受点击.
+  final bool showHotSpot;
+
+  /// 是否叠加最低温像素角标 (冰青 ▲ + L 标签).
+  final bool showColdSpot;
 
   const ThermalCanvas({
     super.key,
@@ -53,7 +56,8 @@ class ThermalCanvas extends StatefulWidget {
     this.markers = const [],
     this.onAddMarker,
     this.onRemoveMarker,
-    this.showExtremeSpots = false,
+    this.showHotSpot = false,
+    this.showColdSpot = false,
   });
 
   @override
@@ -197,7 +201,7 @@ class _ThermalCanvasState extends State<ThermalCanvas> {
                   ),
                 ),
               ),
-            if (widget.showExtremeSpots)
+            if (widget.showHotSpot || widget.showColdSpot)
               Positioned(
                 left: origin.dx,
                 top: origin.dy,
@@ -207,6 +211,8 @@ class _ThermalCanvasState extends State<ThermalCanvas> {
                   child: CustomPaint(
                     painter: _ExtremesPainter(
                       frame: frame,
+                      showHot: widget.showHotSpot,
+                      showCold: widget.showColdSpot,
                     ),
                   ),
                 ),
@@ -373,12 +379,19 @@ class _MarkersPainter extends CustomPainter {
 /// 标签字体小一号, 加细描边阴影; 仅展示, 不响应事件.
 class _ExtremesPainter extends CustomPainter {
   final RenderedFrame frame;
-  _ExtremesPainter({required this.frame});
+  final bool showHot;
+  final bool showCold;
+  _ExtremesPainter({
+    required this.frame,
+    required this.showHot,
+    required this.showCold,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     final field = frame.temperatureField;
     if (field.isEmpty) return;
+    if (!showHot && !showCold) return;
 
     int hotIdx = -1, coldIdx = -1;
     double hot = -double.infinity, cold = double.infinity;
@@ -397,31 +410,33 @@ class _ExtremesPainter extends CustomPainter {
     if (hotIdx < 0 || coldIdx < 0) return;
 
     final fw = frame.width;
-    final fh = frame.height;
     final sx = size.width / fw;
-    final sy = size.height / fh;
+    final sy = size.height / frame.height;
 
-    final hx = (hotIdx % fw + 0.5) * sx;
-    final hy = (hotIdx ~/ fw + 0.5) * sy;
-    final cx = (coldIdx % fw + 0.5) * sx;
-    final cy = (coldIdx ~/ fw + 0.5) * sy;
-
-    _paintSpot(
-      canvas,
-      size,
-      anchor: Offset(hx, hy),
-      color: const Color(0xFFFFCC00), // 醒目橙黄, 区分于 marker 的红
-      tip: 'H ${hot.toStringAsFixed(1)}°',
-      hot: true,
-    );
-    _paintSpot(
-      canvas,
-      size,
-      anchor: Offset(cx, cy),
-      color: const Color(0xFF80D8FF), // 冷亮青, 区分于 marker 蓝
-      tip: 'L ${cold.toStringAsFixed(1)}°',
-      hot: false,
-    );
+    if (showHot) {
+      final hx = (hotIdx % fw + 0.5) * sx;
+      final hy = (hotIdx ~/ fw + 0.5) * sy;
+      _paintSpot(
+        canvas,
+        size,
+        anchor: Offset(hx, hy),
+        color: const Color(0xFFFFCC00),
+        tip: 'H ${hot.toStringAsFixed(1)}°',
+        hot: true,
+      );
+    }
+    if (showCold) {
+      final cx = (coldIdx % fw + 0.5) * sx;
+      final cy = (coldIdx ~/ fw + 0.5) * sy;
+      _paintSpot(
+        canvas,
+        size,
+        anchor: Offset(cx, cy),
+        color: const Color(0xFF80D8FF),
+        tip: 'L ${cold.toStringAsFixed(1)}°',
+        hot: false,
+      );
+    }
   }
 
   void _paintSpot(
@@ -472,9 +487,9 @@ class _ExtremesPainter extends CustomPainter {
         text: tip,
         style: const TextStyle(
           color: Colors.white,
-          fontSize: 8,
+          fontSize: 10,
           fontWeight: FontWeight.w700,
-          letterSpacing: 0.1,
+          letterSpacing: 0.2,
           fontFamily: 'SmileySans',
         ),
       ),
@@ -485,14 +500,15 @@ class _ExtremesPainter extends CustomPainter {
         ? (anchor.dy - r * 1.4 - tp.height - 2)
         : (anchor.dy + r * 1.4 + 2);
     final lyClamped = ly.clamp(2.0, size.height - tp.height - 2);
-    final rect = Rect.fromLTWH(lx - 3, lyClamped - 1, tp.width + 6, tp.height + 2);
+    final rect = Rect.fromLTWH(lx - 4, lyClamped - 1, tp.width + 8, tp.height + 2);
     canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(2.5)),
-      Paint()..color = Colors.black.withValues(alpha: 0.6),
+      RRect.fromRectAndRadius(rect, const Radius.circular(3)),
+      Paint()..color = Colors.black.withValues(alpha: 0.65),
     );
     tp.paint(canvas, Offset(lx, lyClamped));
   }
 
   @override
-  bool shouldRepaint(covariant _ExtremesPainter o) => o.frame != frame;
+  bool shouldRepaint(covariant _ExtremesPainter o) =>
+      o.frame != frame || o.showHot != showHot || o.showCold != showCold;
 }
