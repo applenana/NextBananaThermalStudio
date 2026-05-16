@@ -40,6 +40,10 @@ class ThermalCanvas extends StatefulWidget {
   /// 单击已存在的 marker 时回调 (传入索引). 可用来实现删除.
   final void Function(int index)? onRemoveMarker;
 
+  /// 是否在画面上叠加最高/最低温像素角标 (与 [markers] 风格独立, 仅展示
+  /// 用、不接受点击). 用于 "主画面 H/L 角标" 功能.
+  final bool showExtremeSpots;
+
   const ThermalCanvas({
     super.key,
     required this.frame,
@@ -49,6 +53,7 @@ class ThermalCanvas extends StatefulWidget {
     this.markers = const [],
     this.onAddMarker,
     this.onRemoveMarker,
+    this.showExtremeSpots = false,
   });
 
   @override
@@ -188,6 +193,20 @@ class _ThermalCanvasState extends State<ThermalCanvas> {
                       markers: widget.markers,
                       frameWidth: frame.width,
                       frameHeight: frame.height,
+                    ),
+                  ),
+                ),
+              ),
+            if (widget.showExtremeSpots)
+              Positioned(
+                left: origin.dx,
+                top: origin.dy,
+                width: w,
+                height: h,
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: _ExtremesPainter(
+                      frame: frame,
                     ),
                   ),
                 ),
@@ -346,4 +365,134 @@ class _MarkersPainter extends CustomPainter {
       o.markers != markers ||
       o.frameWidth != frameWidth ||
       o.frameHeight != frameHeight;
+}
+
+/// 最高 / 最低 温像素角标. 风格独立于 [_MarkersPainter] 的圆形多点标签:
+///   - 最高: 红色等腰三角 ▼ (尖端指向像素), 标签 `H 42.5°`
+///   - 最低: 蓝色等腰三角 ▲ (尖端指向像素), 标签 `L 18.2°`
+/// 标签字体小一号, 加细描边阴影; 仅展示, 不响应事件.
+class _ExtremesPainter extends CustomPainter {
+  final RenderedFrame frame;
+  _ExtremesPainter({required this.frame});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final field = frame.temperatureField;
+    if (field.isEmpty) return;
+
+    int hotIdx = -1, coldIdx = -1;
+    double hot = -double.infinity, cold = double.infinity;
+    for (int i = 0; i < field.length; i++) {
+      final v = field[i];
+      if (v.isNaN) continue;
+      if (v > hot) {
+        hot = v;
+        hotIdx = i;
+      }
+      if (v < cold) {
+        cold = v;
+        coldIdx = i;
+      }
+    }
+    if (hotIdx < 0 || coldIdx < 0) return;
+
+    final fw = frame.width;
+    final fh = frame.height;
+    final sx = size.width / fw;
+    final sy = size.height / fh;
+
+    final hx = (hotIdx % fw + 0.5) * sx;
+    final hy = (hotIdx ~/ fw + 0.5) * sy;
+    final cx = (coldIdx % fw + 0.5) * sx;
+    final cy = (coldIdx ~/ fw + 0.5) * sy;
+
+    _paintSpot(
+      canvas,
+      size,
+      anchor: Offset(hx, hy),
+      color: const Color(0xFFFFCC00), // 醒目橙黄, 区分于 marker 的红
+      tip: 'H ${hot.toStringAsFixed(1)}°',
+      hot: true,
+    );
+    _paintSpot(
+      canvas,
+      size,
+      anchor: Offset(cx, cy),
+      color: const Color(0xFF80D8FF), // 冷亮青, 区分于 marker 蓝
+      tip: 'L ${cold.toStringAsFixed(1)}°',
+      hot: false,
+    );
+  }
+
+  void _paintSpot(
+    Canvas canvas,
+    Size size, {
+    required Offset anchor,
+    required Color color,
+    required String tip,
+    required bool hot,
+  }) {
+    // 三角形尖端指向 anchor 像素. 边长 ~12px.
+    const double r = 7;
+    final path = Path();
+    if (hot) {
+      // ▼ 顶点向下指向 anchor
+      path.moveTo(anchor.dx, anchor.dy);
+      path.lineTo(anchor.dx - r, anchor.dy - r * 1.4);
+      path.lineTo(anchor.dx + r, anchor.dy - r * 1.4);
+      path.close();
+    } else {
+      // ▲ 顶点向上指向 anchor
+      path.moveTo(anchor.dx, anchor.dy);
+      path.lineTo(anchor.dx - r, anchor.dy + r * 1.4);
+      path.lineTo(anchor.dx + r, anchor.dy + r * 1.4);
+      path.close();
+    }
+    // 黑色描边 + 彩色填充, 区分背景
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.6)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..strokeJoin = StrokeJoin.round,
+    );
+    canvas.drawPath(path, Paint()..color = color);
+
+    // 中心小圆点强调像素中心
+    canvas.drawCircle(
+      anchor,
+      1.6,
+      Paint()..color = Colors.black.withValues(alpha: 0.85),
+    );
+
+    // 标签: 放在三角形远端 (热=上方, 冷=下方), 文字白描黑边
+    final tp = TextPainter(
+      text: TextSpan(
+        text: tip,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.3,
+          fontFamily: 'SmileySans',
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final lx = (anchor.dx - tp.width / 2).clamp(2.0, size.width - tp.width - 2);
+    final ly = hot
+        ? (anchor.dy - r * 1.4 - tp.height - 4)
+        : (anchor.dy + r * 1.4 + 4);
+    final lyClamped = ly.clamp(2.0, size.height - tp.height - 2);
+    final rect = Rect.fromLTWH(lx - 4, lyClamped - 1, tp.width + 8, tp.height + 2);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(3)),
+      Paint()..color = Colors.black.withValues(alpha: 0.65),
+    );
+    tp.paint(canvas, Offset(lx, lyClamped));
+  }
+
+  @override
+  bool shouldRepaint(covariant _ExtremesPainter o) => o.frame != frame;
 }

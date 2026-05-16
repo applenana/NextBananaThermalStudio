@@ -446,6 +446,7 @@ class _ThermalCardState extends State<_ThermalCard> {
       onRemoveMarker: (isAndroid && !cursorMode) ? _store.removeAt : null,
       showCursorTemp:
           isAndroid ? cursorMode : app.renderParams.showCursorTemp,
+      showExtremeSpots: true,
       placeholder: '等待热像数据…',
     );
 
@@ -692,6 +693,8 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
             const Positioned.fill(
               child: ColoredBox(color: Colors.black),
             ),
+            // 画面区铺满: 热像 4:3 在 16:9 横屏屏幕上天然有左右黑边,
+            // 透明浮窗正好飘在黑边之上, 不遮挡有效画面.
             Positioned.fill(
               child: Padding(
                 padding: const EdgeInsets.all(8),
@@ -703,9 +706,26 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                       : (px, py, _) => _store.add(px, py),
                   onRemoveMarker: cursorMode ? null : _store.removeAt,
                   showCursorTemp: cursorMode,
+                  showExtremeSpots: true,
                   placeholder: '等待热像数据…',
                 ),
               ),
+            ),
+            // 左侧透明浮窗: 温度 KPI + 趋势曲线
+            const Positioned(
+              left: 8,
+              top: 8,
+              bottom: 8,
+              width: 200,
+              child: _FullscreenLeftPanel(),
+            ),
+            // 右侧透明浮窗: 融合参数 (顶部右侧悬浮按钮列下方留出位置)
+            const Positioned(
+              right: 8,
+              top: 200,
+              bottom: 8,
+              width: 200,
+              child: _FullscreenRightPanel(),
             ),
             Positioned(
               right: 12,
@@ -737,6 +757,431 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// =========================================================================
+// 全屏视图左右透明浮窗 (仅 Android 全屏路由内使用, 不影响其它平台)
+// =========================================================================
+
+/// 通用透明浮窗外壳: 半透明黑底 + 细边 + 圆角. 内部 child 自行处理布局.
+class _GlassPanel extends StatelessWidget {
+  final Widget child;
+  final EdgeInsets padding;
+  const _GlassPanel({
+    required this.child,
+    this.padding = const EdgeInsets.fromLTRB(10, 10, 10, 10),
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.42),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.10),
+          width: 1,
+        ),
+      ),
+      child: Padding(padding: padding, child: child),
+    );
+  }
+}
+
+/// 左侧透明浮窗: 当前最高/最低/平均温 + 趋势曲线.
+class _FullscreenLeftPanel extends StatelessWidget {
+  const _FullscreenLeftPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    List<FlSpot> spotsOf(List<double> arr) =>
+        [for (var i = 0; i < arr.length; i++) FlSpot(i.toDouble(), arr[i])];
+
+    return _GlassPanel(
+      padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _GlassKpi(
+            label: '最高',
+            value: app.tMax,
+            color: const Color(0xFFFF5252),
+            icon: Icons.local_fire_department_rounded,
+          ),
+          const SizedBox(height: 6),
+          _GlassKpi(
+            label: '最低',
+            value: app.tMin,
+            color: const Color(0xFF42A5F5),
+            icon: Icons.ac_unit_rounded,
+          ),
+          const SizedBox(height: 6),
+          _GlassKpi(
+            label: '平均',
+            value: app.tAvg,
+            color: const Color(0xFF66BB6A),
+            icon: Icons.analytics_rounded,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: const [
+              Icon(Icons.show_chart_rounded, size: 14, color: Colors.white70),
+              SizedBox(width: 6),
+              Text('温度趋势',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  )),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Expanded(
+            child: app.historyMax.isEmpty
+                ? const Center(
+                    child: Text(
+                      '暂无数据',
+                      style: TextStyle(color: Colors.white54, fontSize: 11),
+                    ),
+                  )
+                : LineChart(
+                    LineChartData(
+                      lineTouchData: const LineTouchData(enabled: false),
+                      gridData: FlGridData(
+                        show: true,
+                        drawVerticalLine: false,
+                        getDrawingHorizontalLine: (_) => FlLine(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          strokeWidth: 1,
+                        ),
+                      ),
+                      borderData: FlBorderData(show: false),
+                      titlesData: const FlTitlesData(show: false),
+                      lineBarsData: [
+                        LineChartBarData(
+                          spots: spotsOf(app.historyMax),
+                          color: const Color(0xFFFF5252),
+                          barWidth: 1.6,
+                          isCurved: true,
+                          dotData: const FlDotData(show: false),
+                        ),
+                        LineChartBarData(
+                          spots: spotsOf(app.historyMin),
+                          color: const Color(0xFF42A5F5),
+                          barWidth: 1.6,
+                          isCurved: true,
+                          dotData: const FlDotData(show: false),
+                        ),
+                        LineChartBarData(
+                          spots: spotsOf(app.historyAvg),
+                          color: const Color(0xFF66BB6A),
+                          barWidth: 1.6,
+                          isCurved: true,
+                          dotData: const FlDotData(show: false),
+                        ),
+                      ],
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GlassKpi extends StatelessWidget {
+  final String label;
+  final double value;
+  final Color color;
+  final IconData icon;
+  const _GlassKpi({
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.icon,
+  });
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.22),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, color: color, size: 16),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 11,
+          ),
+        ),
+        const Spacer(),
+        Text(
+          '${value.toStringAsFixed(1)} °C',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w800,
+            fontFamily: 'SmileySans',
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 右侧透明浮窗: 融合参数 (模式 + 滑杆). 复用现有 `_FusionModeDropdown` / `_FusionSliders`
+/// 的逻辑, 但用浅色文字风格适配深色背景.
+class _FullscreenRightPanel extends StatelessWidget {
+  const _FullscreenRightPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final fp = app.renderParams.fusion;
+
+    void setFusion(FusionParams Function(FusionParams p) update) {
+      app.updateRenderParams(
+        app.renderParams.copyWith(fusion: update(fp)),
+      );
+    }
+
+    return _GlassPanel(
+      padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: const [
+                Icon(Icons.tune_rounded, size: 14, color: Colors.white70),
+                SizedBox(width: 6),
+                Text('融合参数',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    )),
+              ],
+            ),
+            const SizedBox(height: 8),
+            _GlassModeChips(
+              value: fp.mode,
+              onChanged: (m) => setFusion((p) => FusionParams(
+                    mode: m,
+                    gamma: p.gamma,
+                    alpha: p.alpha,
+                    edgeStrength: p.edgeStrength,
+                    edgeThresh: p.edgeThresh,
+                    edgeWidth: p.edgeWidth,
+                    edgeColor: p.edgeColor,
+                  )),
+            ),
+            const SizedBox(height: 6),
+            if (fp.mode == FusionMode.blend) ...[
+              _GlassSlider(
+                label: 'Alpha',
+                value: fp.alpha,
+                onChanged: (v) => setFusion((p) => FusionParams(
+                      mode: p.mode,
+                      alpha: v,
+                      gamma: p.gamma,
+                      edgeStrength: p.edgeStrength,
+                      edgeThresh: p.edgeThresh,
+                      edgeWidth: p.edgeWidth,
+                      edgeColor: p.edgeColor,
+                    )),
+              ),
+              _GlassSlider(
+                label: 'Gamma',
+                value: fp.gamma,
+                min: 0.2,
+                max: 3.0,
+                onChanged: (v) => setFusion((p) => FusionParams(
+                      mode: p.mode,
+                      alpha: p.alpha,
+                      gamma: v,
+                      edgeStrength: p.edgeStrength,
+                      edgeThresh: p.edgeThresh,
+                      edgeWidth: p.edgeWidth,
+                      edgeColor: p.edgeColor,
+                    )),
+              ),
+            ] else if (fp.mode == FusionMode.edge) ...[
+              _GlassSlider(
+                label: '强度',
+                value: fp.edgeStrength,
+                onChanged: (v) => setFusion((p) => FusionParams(
+                      mode: p.mode,
+                      alpha: p.alpha,
+                      gamma: p.gamma,
+                      edgeStrength: v,
+                      edgeThresh: p.edgeThresh,
+                      edgeWidth: p.edgeWidth,
+                      edgeColor: p.edgeColor,
+                    )),
+              ),
+              _GlassSlider(
+                label: '阈值',
+                value: fp.edgeThresh,
+                max: 0.5,
+                onChanged: (v) => setFusion((p) => FusionParams(
+                      mode: p.mode,
+                      alpha: p.alpha,
+                      gamma: p.gamma,
+                      edgeStrength: p.edgeStrength,
+                      edgeThresh: v,
+                      edgeWidth: p.edgeWidth,
+                      edgeColor: p.edgeColor,
+                    )),
+              ),
+              _GlassSlider(
+                label: '粗细',
+                value: fp.edgeWidth.clamp(1.0, 6.0),
+                min: 1,
+                max: 6,
+                divisions: 20,
+                valueLabel: '${fp.edgeWidth.toStringAsFixed(1)}px',
+                onChanged: (v) => setFusion((p) => FusionParams(
+                      mode: p.mode,
+                      alpha: p.alpha,
+                      gamma: p.gamma,
+                      edgeStrength: p.edgeStrength,
+                      edgeThresh: p.edgeThresh,
+                      edgeWidth: v,
+                      edgeColor: p.edgeColor,
+                    )),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GlassModeChips extends StatelessWidget {
+  final FusionMode value;
+  final ValueChanged<FusionMode> onChanged;
+  const _GlassModeChips({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget chip(FusionMode m, String text) {
+      final selected = value == m;
+      return Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2),
+          child: Material(
+            color: selected
+                ? Colors.white.withValues(alpha: 0.18)
+                : Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => onChanged(m),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Center(
+                  child: Text(
+                    text,
+                    style: TextStyle(
+                      color: selected ? Colors.white : Colors.white70,
+                      fontSize: 11,
+                      fontWeight:
+                          selected ? FontWeight.w800 : FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Row(
+      children: [
+        chip(FusionMode.off, '关闭'),
+        chip(FusionMode.blend, '混合'),
+        chip(FusionMode.edge, '边缘'),
+      ],
+    );
+  }
+}
+
+class _GlassSlider extends StatelessWidget {
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final int? divisions;
+  final String? valueLabel;
+  final ValueChanged<double> onChanged;
+  const _GlassSlider({
+    required this.label,
+    required this.value,
+    this.min = 0,
+    this.max = 1,
+    this.divisions,
+    this.valueLabel,
+    required this.onChanged,
+  });
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 0),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 38,
+            child: Text(label,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 11,
+                )),
+          ),
+          Expanded(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 2,
+                overlayShape:
+                    const RoundSliderOverlayShape(overlayRadius: 12),
+                thumbShape:
+                    const RoundSliderThumbShape(enabledThumbRadius: 6),
+              ),
+              child: Slider(
+                value: value,
+                min: min,
+                max: max,
+                divisions: divisions,
+                onChanged: onChanged,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 40,
+            child: Text(
+              valueLabel ?? value.toStringAsFixed(2),
+              style: const TextStyle(
+                color: Colors.white,
+                fontFamily: 'monospace',
+                fontSize: 11,
+              ),
+              textAlign: TextAlign.right,
+            ),
+          ),
+        ],
       ),
     );
   }
