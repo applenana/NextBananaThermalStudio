@@ -22,6 +22,7 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../fusion/fusion.dart';
 import '../main.dart' show appPhotoDownloadDir, appPhotoDetailOpen, appPhotoTabActive, appClosePhotoDetail;
+import '../protocol/photo_cache_index.dart';
 import '../protocol/photo_decoder.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
@@ -195,6 +196,12 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       _progressTotal = sel.size;
       _lastPartialBytes = 0;
     });
+    // 缓存指纹联动: onEarlyBytes 累计到 ~4 KB 时算 sha256 查 index,
+    // 命中即调 abortPhotoDownload, 主流程 catch PhotoDownloadAbortedException
+    // 后读 raw/ 缓存秒开. shaC 用于完成后补写 index.
+    final root = await _ensureRoot();
+    final shaC = Completer<String>();
+    final hitC = Completer<PhotoCacheEntry?>();
     try {
       final data = await app.downloadPhoto(
         sel.filename,
@@ -210,6 +217,24 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           });
           _tryPartialDecode(sel);
         },
+        onEarlyBytes: (head) {
+          () async {
+            final sha = PhotoCacheIndex.fingerprint(head);
+            if (!shaC.isCompleted) shaC.complete(sha);
+            try {
+              final idx = await PhotoCacheIndex.open(root);
+              final hit = await idx.lookup(sha);
+              if (hit != null) {
+                app.abortPhotoDownload();
+                if (!hitC.isCompleted) hitC.complete(hit);
+              } else {
+                if (!hitC.isCompleted) hitC.complete(null);
+              }
+            } catch (_) {
+              if (!hitC.isCompleted) hitC.complete(null);
+            }
+          }();
+        },
       );
 
       if (!mounted) return;
@@ -222,6 +247,18 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       final outFile = File(p.join(dir.path, sel.filename));
       await outFile.writeAsBytes(data);
 
+      // 写 / 更新缓存索引. 小文件 (<4KB) onEarlyBytes 不会触发, 这里兜底算指纹.
+      String sha;
+      if (shaC.isCompleted) {
+        sha = await shaC.future;
+      } else {
+        sha = PhotoCacheIndex.fingerprint(data);
+      }
+      try {
+        final idx = await PhotoCacheIndex.open(root);
+        await idx.remember(sha, sel.filename, sel.size);
+      } catch (_) {}
+
       // 解析 (渲染在 build 中实时计算, 以响应参数变化)
       final dec = PhotoDecoder.decode(data, sel);
 
@@ -233,6 +270,44 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         _stage = '完成';
         _statusText = '已保存: ${outFile.path}  ·  ${dec.summary}';
       });
+    } on PhotoDownloadAbortedException {
+      // 缓存命中路径: 从本地 raw 加载 + 解析 + 渲染.
+      if (!mounted) return;
+      PhotoCacheEntry? hit;
+      try {
+        hit = await hitC.future.timeout(const Duration(seconds: 5));
+      } catch (_) {}
+      if (hit == null) {
+        if (!mounted) return;
+        setState(() {
+          _stage = '失败';
+          _statusText = '缓存读取失败 (索引超时)';
+        });
+        return;
+      }
+      try {
+        final dir = await _ensureRawDir();
+        final f = File(p.join(dir.path, hit.filename));
+        final cached = await f.readAsBytes();
+        final dec = PhotoDecoder.decode(cached, sel);
+        if (!mounted) return;
+        setState(() {
+          _raw = cached;
+          _decoded = dec;
+          _markers.clear();
+          _progress = cached.length;
+          _progressTotal = cached.length;
+          _stage = '完成';
+          _statusText =
+              '秒开 · 命中缓存 (${hit!.filename})  ·  ${dec.summary}';
+        });
+      } catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _stage = '失败';
+          _statusText = '缓存读取失败: $e';
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {

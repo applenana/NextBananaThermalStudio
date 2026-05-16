@@ -617,12 +617,19 @@ class AppState extends ChangeNotifier {
   bool _photoIsJson = false;
   bool _photoIsHexDump = false;
   bool _hexDumpStarted = false;
+  /// 下载已被业务侧 abort: 仍要消费设备发来的 hex-dump 行直到 END FILE DATA,
+  /// 但不再累积字节 / 不再回调 progress, 等 END 到达再 _finishPhoto 释放 _photoMode.
+  bool _photoAborted = false;
   int _photoJsonDepth = 0;
   final BytesBuilder _photoBuf = BytesBuilder();
   final BytesBuilder _photoLineBuf = BytesBuilder();
   int _photoExpected = 0;
   Completer<Uint8List>? _photoCompleter;
   void Function(int received, int total)? _photoProgress;
+  /// 缓存指纹用: 当 _photoBuf 首次累计到 [_photoEarlyThreshold] 字节时触发一次,
+  /// 业务侧据此计算 sha256 并查 cache index. 触发后置 null 防重复.
+  void Function(Uint8List headBytes)? _photoEarly;
+  static const int _photoEarlyThreshold = 4096;
 
   void _onPhotoBytes(Uint8List data) {
     if (_photoCompleter == null) return;
@@ -672,6 +679,8 @@ class AppState extends ChangeNotifier {
       return;
     }
     if (!_hexDumpStarted) return;
+    // abort 模式: 不再累积字节, 也不回调进度, 仅等 END FILE DATA 释放占用.
+    if (_photoAborted) return;
     // 格式: "00000000: 41 20 00 00 ... |A ...|"
     final colon = text.indexOf(':');
     if (colon < 0) return;
@@ -685,6 +694,13 @@ class AppState extends ChangeNotifier {
       if (v == null) continue;
       _photoBuf.addByte(v);
     }
+    final earlyCb = _photoEarly;
+    if (earlyCb != null && _photoBuf.length >= _photoEarlyThreshold) {
+      _photoEarly = null;
+      try {
+        earlyCb(_photoBuf.toBytes());
+      } catch (_) {}
+    }
     _photoProgress?.call(_photoBuf.length, _photoExpected);
   }
 
@@ -696,12 +712,14 @@ class AppState extends ChangeNotifier {
     _photoMode = false;
     _photoCompleter = null;
     _photoProgress = null;
+    _photoEarly = null;
     _photoIsJson = false;
     _photoIsHexDump = false;
     _hexDumpStarted = false;
     _photoJsonDepth = 0;
+    _photoAborted = false;
     _photoExpected = 0;
-    c?.complete(out);
+    if (c != null && !c.isCompleted) c.complete(out);
   }
 
   void _abortPhoto(Object error) {
@@ -711,12 +729,33 @@ class AppState extends ChangeNotifier {
     _photoMode = false;
     _photoCompleter = null;
     _photoProgress = null;
+    _photoEarly = null;
     _photoIsJson = false;
     _photoIsHexDump = false;
     _hexDumpStarted = false;
     _photoJsonDepth = 0;
+    _photoAborted = false;
     _photoExpected = 0;
-    c?.completeError(error);
+    if (c != null && !c.isCompleted) c.completeError(error);
+  }
+
+  /// 业务侧标记当前 download 已被取消 (例如指纹命中本地缓存, 不需要剩余字节).
+  /// 仍保留 _photoMode=true 让设备发完剩余 hex-dump + END FILE DATA 后自然释放,
+  /// 避免下一次 check 字节流被污染. 调用后立即抛 [PhotoDownloadAbortedException]
+  /// 给 downloadPhoto 的 caller, 让其切到缓存读路径.
+  void abortPhotoDownload() {
+    if (!_photoMode || _photoCompleter == null) return;
+    if (_photoAborted) return;
+    _photoAborted = true;
+    _photoBuf.clear();
+    // 不再回调 progress / early 防止 UI 重复渲染.
+    _photoProgress = null;
+    _photoEarly = null;
+    if (!_photoCompleter!.isCompleted) {
+      _photoCompleter!
+          .completeError(const PhotoDownloadAbortedException());
+    }
+    _log('info', '下载已取消 (缓存命中, 等待设备发完 END)');
   }
 
   /// 拉取片上图片列表. 发送 `check\n`, 等待 JSON 响应, 解析为 [PhotoMeta] 列表.
@@ -778,10 +817,14 @@ class AppState extends ChangeNotifier {
   }
 
   /// 下载一张图片原始数据 (size 字节). 通过 [onProgress] 回报进度.
+  ///
+  /// [onEarlyBytes] 在累积到 ~4 KB 时一次性回调, 业务侧据此算指纹查缓存,
+  /// 命中可立即调 [abortPhotoDownload] 中止剩余传输.
   Future<Uint8List> downloadPhoto(
     String filename,
     int size, {
     void Function(int received, int total)? onProgress,
+    void Function(Uint8List headBytes)? onEarlyBytes,
     Duration timeout = const Duration(seconds: 30),
   }) async {
     if (!_serial.isOpen) throw StateError('串口未连接');
@@ -794,10 +837,12 @@ class AppState extends ChangeNotifier {
     _photoIsJson = false;
     _photoIsHexDump = true;
     _hexDumpStarted = false;
+    _photoAborted = false;
     _photoExpected = size;
     _photoBuf.clear();
     _photoLineBuf.clear();
     _photoProgress = onProgress;
+    _photoEarly = onEarlyBytes;
     _photoCompleter = Completer<Uint8List>();
     _serial.writeString('download $filename\n');
     _log('tx', '> download $filename');
@@ -827,6 +872,14 @@ class AppState extends ChangeNotifier {
     await _serial.dispose();
     super.dispose();
   }
+}
+
+/// 标记 [AppState.downloadPhoto] 被业务侧 abort (例如指纹命中本地缓存,
+/// 不再需要剩余字节). caller 应 catch 它并切换到本地缓存读路径.
+class PhotoDownloadAbortedException implements Exception {
+  const PhotoDownloadAbortedException();
+  @override
+  String toString() => 'PhotoDownloadAbortedException';
 }
 
 /// 片上单张图片元数据 (来自 `check` 命令返回的 JSON).
