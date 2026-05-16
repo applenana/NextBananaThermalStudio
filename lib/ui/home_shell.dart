@@ -47,6 +47,74 @@ class _HomeShellState extends State<HomeShell> {
   /// Android 双击返回退出: 记录上次返回键时间, 2 秒内再按一次才真正退出.
   DateTime? _lastBackAt;
 
+  /// 调试: 已注册的 streamStopDebug listener (避免 didChangeDependencies
+  /// 重复触发). 配合 dispose 释放.
+  AppState? _streamStopHookedApp;
+  void _onStreamStop() {
+    final app = _streamStopHookedApp;
+    if (app == null) return;
+    final e = app.streamStopDebug.value;
+    if (e == null) return;
+    if (!mounted) return;
+    // 一旦显示, 标记为已消费, 防止 dialog 关掉后再触发同一事件.
+    app.streamStopDebug.value = null;
+    showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('推流停止 · ${e.channel}'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('时间: ${e.timestamp.toIso8601String()}'),
+              const SizedBox(height: 6),
+              Text('来源: ${e.origin}'),
+              const SizedBox(height: 6),
+              Text('连接状态: ${e.status.name}'),
+              const SizedBox(height: 12),
+              const Text('调用栈:',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.all(8),
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: SelectableText(
+                  e.stack,
+                  style: const TextStyle(
+                      fontFamily: 'monospace', fontSize: 11),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final app = context.read<AppState>();
+    if (!identical(app, _streamStopHookedApp)) {
+      _streamStopHookedApp?.streamStopDebug.removeListener(_onStreamStop);
+      _streamStopHookedApp = app;
+      app.streamStopDebug.addListener(_onStreamStop);
+    }
+  }
+
+  @override
+  void dispose() {
+    _streamStopHookedApp?.streamStopDebug.removeListener(_onStreamStop);
+    super.dispose();
+  }
+
   /// Android 系统返回键处理. 优先级:
   /// 1) 图库详情打开 \u2192 关闭详情
   /// 2) 串口栏 / 控制台展开 \u2192 折叠

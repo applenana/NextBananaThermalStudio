@@ -57,6 +57,26 @@ class AppState extends ChangeNotifier {
   bool thermalStreamEnabled = false;
   bool visibleStreamEnabled = false;
 
+  /// 调试: 推流被关闭事件 (channel + 调用栈 + 时间戳).
+  /// UI 监听并弹 AlertDialog 定位"全屏后推流自停"真凶.
+  /// value 重置为 null 表示已被消费.
+  final ValueNotifier<StreamStopDebugEvent?> streamStopDebug =
+      ValueNotifier(null);
+
+  void _emitStreamStopDebug(String channel, String origin) {
+    final st = StackTrace.current.toString();
+    final ts = DateTime.now();
+    streamStopDebug.value = StreamStopDebugEvent(
+      channel: channel,
+      origin: origin,
+      timestamp: ts,
+      stack: st,
+      status: status,
+    );
+    _log('warn',
+        '[stream-stop-debug] $channel 被关闭 @ ${ts.toIso8601String()} via $origin');
+  }
+
   // ---------------- 数据 ----------------
   double tMax = 0, tMin = 0, tAvg = 0;
   Float32List? thermalFrame; // 24x32 (已中心镜像后的温度场)
@@ -217,6 +237,12 @@ class AppState extends ChangeNotifier {
     _stopThermalHeartbeat();
     _stopVisibleHeartbeat();
     // 同步关闭推流开关, 避免下次连接后 UI 仍显示打开状态造成困惑.
+    if (thermalStreamEnabled) {
+      _emitStreamStopDebug('thermal', '_teardownConnection: $reason');
+    }
+    if (visibleStreamEnabled) {
+      _emitStreamStopDebug('visible', '_teardownConnection: $reason');
+    }
     thermalStreamEnabled = false;
     visibleStreamEnabled = false;
     try { await _byteSub?.cancel(); } catch (_) {}
@@ -467,6 +493,11 @@ class AppState extends ChangeNotifier {
   // ============================================================
 
   void setThermalStream(bool on) {
+    // 调试: 任何把热成像推流从 true → false 的调用都抓栈并通过事件通知
+    // 弹窗, 定位"全屏后推流被停"真凶 (UI 误调 / 重连 / 图库 / ...).
+    if (!on && thermalStreamEnabled) {
+      _emitStreamStopDebug('thermal', 'setThermalStream(false)');
+    }
     thermalStreamEnabled = on;
     if (on) {
       sendCommand('stream');
@@ -479,6 +510,9 @@ class AppState extends ChangeNotifier {
   }
 
   void setVisibleStream(bool on) {
+    if (!on && visibleStreamEnabled) {
+      _emitStreamStopDebug('visible', 'setVisibleStream(false)');
+    }
     visibleStreamEnabled = on;
     if (on) {
       sendCommand('vstream');
@@ -935,6 +969,28 @@ class PhotoDownloadAbortedException implements Exception {
   const PhotoDownloadAbortedException();
   @override
   String toString() => 'PhotoDownloadAbortedException';
+}
+
+/// 推流被关闭事件 (调试用). 由 [AppState] 在任何 stream enabled true → false
+/// 的入口抛出, UI 监听并弹 AlertDialog 显示来源 + 调用栈, 定位"全屏后
+/// 推流自停"等异常.
+class StreamStopDebugEvent {
+  /// 'thermal' 或 'visible'.
+  final String channel;
+  /// 触发位置描述 (例 'setThermalStream(false)' / '_teardownConnection: xxx').
+  final String origin;
+  final DateTime timestamp;
+  /// 抓栈快照, 用于定位调用链.
+  final String stack;
+  /// 触发时的连接状态.
+  final ConnectionStatus status;
+  const StreamStopDebugEvent({
+    required this.channel,
+    required this.origin,
+    required this.timestamp,
+    required this.stack,
+    required this.status,
+  });
 }
 
 /// 片上单张图片元数据 (来自 `check` 命令返回的 JSON).
