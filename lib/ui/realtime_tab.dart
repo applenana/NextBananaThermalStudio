@@ -19,6 +19,48 @@ import 'connection_bar.dart';
 import 'widgets/rgb_image_view.dart';
 import 'widgets/thermal_canvas.dart';
 
+/// 主画面 marker / 光标模式存储 (文件级单例).
+///
+/// 提出 `_ThermalCardState` 之外, 是因为 Android 手机进入全屏会强制
+/// `setPreferredOrientations(landscape)`, 触发 home_shell 的
+/// LayoutBuilder narrow↔wide 切换, 整树重建, `_ThermalCardState` 被
+/// dispose 重 mount, 列表清空, 且全屏路由内 `widget.onAddPoint` 闭包
+/// 拿到的是已死的 state (mounted=false 直接 return) — 用户点击毫无反应.
+/// 用 ChangeNotifier 单例兜底, 跨 state 生命周期持久, 全屏视图也直接
+/// 读写它, 不再走父 state 回调.
+class _ThermalMarkersStore extends ChangeNotifier {
+  _ThermalMarkersStore._();
+  static final _ThermalMarkersStore instance = _ThermalMarkersStore._();
+
+  final List<({int x, int y})> points = [];
+
+  /// false=多点标签 (点击放置/移除 marker), true=按住拖动十字光标显示温度.
+  bool _cursorMode = false;
+  bool get cursorMode => _cursorMode;
+  set cursorMode(bool v) {
+    if (_cursorMode == v) return;
+    _cursorMode = v;
+    notifyListeners();
+  }
+
+  void add(int px, int py) {
+    points.add((x: px, y: py));
+    notifyListeners();
+  }
+
+  void removeAt(int i) {
+    if (i < 0 || i >= points.length) return;
+    points.removeAt(i);
+    notifyListeners();
+  }
+
+  void clear() {
+    if (points.isEmpty) return;
+    points.clear();
+    notifyListeners();
+  }
+}
+
 class RealtimeTab extends StatelessWidget {
   const RealtimeTab({super.key});
 
@@ -266,36 +308,31 @@ class _ThermalCard extends StatefulWidget {
 }
 
 class _ThermalCardState extends State<_ThermalCard> {
-  /// 用户点击放置的光标坐标 (帧像素). 温度不在这里存, 而是每次 build
-  /// 按当前帧的 temperatureField 实时计算, 进而随画面更新同步变化.
-  final List<({int x, int y})> _points = [];
+  /// 主画面 marker / 光标模式: 委托给文件级单例, 跨 state 重建持久.
+  /// 详见 [_ThermalMarkersStore] 注释.
+  _ThermalMarkersStore get _store => _ThermalMarkersStore.instance;
 
-  /// Android: 是否启用"单点跟随光标"模式 (类 PC 端鼠标 hover).
-  /// false=多点标签 (点击放置/移除 marker), true=按住拖动十字光标显示温度.
-  bool _cursorMode = false;
-
-  void _addPoint(int px, int py) {
-    if (!mounted) return;
-    setState(() => _points.add((x: px, y: py)));
+  @override
+  void initState() {
+    super.initState();
+    _store.addListener(_onStoreChanged);
   }
 
-  void _removePoint(int i) {
-    if (!mounted) return;
-    setState(() {
-      if (i >= 0 && i < _points.length) _points.removeAt(i);
-    });
+  @override
+  void dispose() {
+    _store.removeListener(_onStoreChanged);
+    super.dispose();
   }
 
-  void _clearPoints() {
-    if (!mounted) return;
-    setState(() => _points.clear());
+  void _onStoreChanged() {
+    if (mounted) setState(() {});
   }
 
   /// 按当前帧生成实时 markers.
   List<TempMarker> _liveMarkers(RenderedFrame? frame) {
     if (frame == null) return const [];
     return [
-      for (final p in _points)
+      for (final p in _store.points)
         if (p.x >= 0 && p.x < frame.width && p.y >= 0 && p.y < frame.height)
           TempMarker(
               p.x, p.y, frame.temperatureField[p.y * frame.width + p.x]),
@@ -323,12 +360,7 @@ class _ThermalCardState extends State<_ThermalCard> {
     await Navigator.of(context).push(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => _FullscreenThermalView(
-          points: _points,
-          onAddPoint: _addPoint,
-          onRemovePoint: _removePoint,
-          onClearPoints: _clearPoints,
-        ),
+        builder: (_) => const _FullscreenThermalView(),
       ),
     );
     if (!isTablet) {
@@ -404,14 +436,14 @@ class _ThermalCardState extends State<_ThermalCard> {
 
     // Android 双模式: false=多点标签 (点击放置/移除 marker), true=单点跟随光标
     // (按住拖动显示十字与温度, 类 PC). 切换时清空 marker 视图以免干扰.
-    final cursorMode = _cursorMode;
+    final cursorMode = _store.cursorMode;
     Widget canvas = ThermalCanvas(
       frame: frame,
       markers: cursorMode ? const [] : _liveMarkers(frame),
       onAddMarker: (isAndroid && !cursorMode)
-          ? (px, py, _) => _addPoint(px, py)
+          ? (px, py, _) => _store.add(px, py)
           : null,
-      onRemoveMarker: (isAndroid && !cursorMode) ? _removePoint : null,
+      onRemoveMarker: (isAndroid && !cursorMode) ? _store.removeAt : null,
       showCursorTemp:
           isAndroid ? cursorMode : app.renderParams.showCursorTemp,
       placeholder: '等待热像数据…',
@@ -440,13 +472,13 @@ class _ThermalCardState extends State<_ThermalCard> {
                       : Icons.my_location_rounded,
                   tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
                   highlighted: cursorMode,
-                  onTap: () => setState(() => _cursorMode = !_cursorMode),
+                  onTap: () => _store.cursorMode = !cursorMode,
                 ),
                 const SizedBox(height: 8),
                 _FloatingMiniButton(
                   icon: Icons.cleaning_services_rounded,
                   tooltip: '清理光标',
-                  onTap: _points.isEmpty ? null : _clearPoints,
+                  onTap: _store.points.isEmpty ? null : _store.clear,
                 ),
               ],
             ),
@@ -584,29 +616,25 @@ class _StreamToggleIcon extends StatelessWidget {
 }
 
 /// 全屏热像视图 (Android only). 横屏占满, 顶部右侧浮按钮: 退出 / 清理光标.
+///
+/// 不再接收外部 callbacks: 主画面 marker / 光标模式都委托给文件级单例
+/// [_ThermalMarkersStore]. 这样手机端进入全屏强制旋转触发 home_shell
+/// LayoutBuilder narrow↔wide 切换、_ThermalCardState 被 dispose 后,
+/// 全屏视图仍能正常添加/删除 marker (单例对象不会随之销毁).
 class _FullscreenThermalView extends StatefulWidget {
-  final List<({int x, int y})> points;
-  final void Function(int px, int py) onAddPoint;
-  final void Function(int index) onRemovePoint;
-  final VoidCallback onClearPoints;
-  const _FullscreenThermalView({
-    required this.points,
-    required this.onAddPoint,
-    required this.onRemovePoint,
-    required this.onClearPoints,
-  });
+  const _FullscreenThermalView();
   @override
   State<_FullscreenThermalView> createState() =>
       _FullscreenThermalViewState();
 }
 
 class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
-  /// 全屏视图独立维护一个光标模式开关 (与窗口视图互相独立).
-  bool _cursorMode = false;
+  _ThermalMarkersStore get _store => _ThermalMarkersStore.instance;
 
   @override
   void initState() {
     super.initState();
+    _store.addListener(_onStoreChanged);
     // 兜底: 首帧渲染完立即 kick 一次推流, 防止旋转动画卡顿造成心跳漏拍后
     // 固件已自停的情况.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -616,8 +644,19 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
   }
 
   @override
+  void dispose() {
+    _store.removeListener(_onStoreChanged);
+    super.dispose();
+  }
+
+  void _onStoreChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
+    final cursorMode = _store.cursorMode;
     RenderedFrame? frame;
     if (app.thermalFrame != null) {
       frame = renderPipeline(
@@ -630,10 +669,10 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
         visibleH: app.visibleHeight,
       );
     }
-    final liveMarkers = (frame == null || _cursorMode)
+    final liveMarkers = (frame == null || cursorMode)
         ? const <TempMarker>[]
         : [
-            for (final p in widget.points)
+            for (final p in _store.points)
               if (p.x >= 0 &&
                   p.x < frame.width &&
                   p.y >= 0 &&
@@ -659,19 +698,11 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                 child: ThermalCanvas(
                   frame: frame,
                   markers: liveMarkers,
-                  onAddMarker: _cursorMode
+                  onAddMarker: cursorMode
                       ? null
-                      : (px, py, _) {
-                          widget.onAddPoint(px, py);
-                          setState(() {});
-                        },
-                  onRemoveMarker: _cursorMode
-                      ? null
-                      : (i) {
-                          widget.onRemovePoint(i);
-                          setState(() {});
-                        },
-                  showCursorTemp: _cursorMode,
+                      : (px, py, _) => _store.add(px, py),
+                  onRemoveMarker: cursorMode ? null : _store.removeAt,
+                  showCursorTemp: cursorMode,
                   placeholder: '等待热像数据…',
                 ),
               ),
@@ -688,23 +719,18 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                   ),
                   const SizedBox(height: 8),
                   _FloatingMiniButton(
-                    icon: _cursorMode
+                    icon: cursorMode
                         ? Icons.touch_app_rounded
                         : Icons.my_location_rounded,
-                    tooltip: _cursorMode ? '切到多点标签' : '切到单点光标',
-                    highlighted: _cursorMode,
-                    onTap: () => setState(() => _cursorMode = !_cursorMode),
+                    tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
+                    highlighted: cursorMode,
+                    onTap: () => _store.cursorMode = !cursorMode,
                   ),
                   const SizedBox(height: 8),
                   _FloatingMiniButton(
                     icon: Icons.cleaning_services_rounded,
                     tooltip: '清理光标',
-                    onTap: widget.points.isEmpty
-                        ? null
-                        : () {
-                            widget.onClearPoints();
-                            setState(() {});
-                          },
+                    onTap: _store.points.isEmpty ? null : _store.clear,
                   ),
                 ],
               ),
