@@ -637,9 +637,12 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
   // 默认位置 (left=8/top=8, right=8/top=64) 初始化. 用户拖动后保持自定义位置.
   Offset? _leftPos;
   Offset? _rightPos;
+  bool _leftCollapsed = false;
+  bool _rightCollapsed = false;
   static const double _panelW = 200;
   static const double _bottomMargin = 8;
   static const double _minPanelH = 120;
+  static const double _collapsedH = 26;
 
   @override
   void initState() {
@@ -721,59 +724,77 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                 ),
               ),
             ),
-            // 左侧透明浮窗: 温度 KPI + 趋势曲线 (可拖动)
-            // 右侧透明浮窗: 推流开关 + 融合参数 (可拖动)
-            LayoutBuilder(
-              builder: (ctx, c) {
-                final maxW = c.maxWidth;
-                final maxH = c.maxHeight;
-                _leftPos ??= const Offset(8, 8);
-                _rightPos ??= Offset(maxW - _panelW - 8, 64);
-                final lp = _leftPos!;
-                final rp = _rightPos!;
-                final leftH = (maxH - lp.dy - _bottomMargin)
-                    .clamp(_minPanelH, maxH);
-                final rightH = (maxH - rp.dy - _bottomMargin)
-                    .clamp(_minPanelH, maxH);
-                void dragLeft(Offset d) {
-                  setState(() {
-                    final nx = (lp.dx + d.dx)
-                        .clamp(0.0, (maxW - _panelW).clamp(0.0, maxW));
-                    final ny = (lp.dy + d.dy)
-                        .clamp(0.0, (maxH - _minPanelH).clamp(0.0, maxH));
-                    _leftPos = Offset(nx, ny);
-                  });
-                }
+            // 左侧透明浮窗: 温度 KPI + 趋势曲线 (可拖动, 可折叠)
+            // 右侧透明浮窗: 推流开关 + 融合参数 (可拖动, 可折叠)
+            // 用 Positioned.fill 把 LayoutBuilder 撑满 Stack, 否则 LayoutBuilder
+            // 作为 Stack 非定位子级时尺寸退化, 右侧默认位置算不准.
+            Positioned.fill(
+              child: LayoutBuilder(
+                builder: (ctx, c) {
+                  final maxW = c.maxWidth;
+                  final maxH = c.maxHeight;
+                  _leftPos ??= const Offset(8, 8);
+                  _rightPos ??= Offset(maxW - _panelW - 8, 64);
+                  final lp = _leftPos!;
+                  final rp = _rightPos!;
+                  final leftH = _leftCollapsed
+                      ? _collapsedH
+                      : (maxH - lp.dy - _bottomMargin)
+                          .clamp(_minPanelH, maxH);
+                  final rightH = _rightCollapsed
+                      ? _collapsedH
+                      : (maxH - rp.dy - _bottomMargin)
+                          .clamp(_minPanelH, maxH);
+                  void dragLeft(Offset d) {
+                    setState(() {
+                      final nx = (lp.dx + d.dx)
+                          .clamp(0.0, (maxW - _panelW).clamp(0.0, maxW));
+                      final ny = (lp.dy + d.dy)
+                          .clamp(0.0, (maxH - _collapsedH).clamp(0.0, maxH));
+                      _leftPos = Offset(nx, ny);
+                    });
+                  }
 
-                void dragRight(Offset d) {
-                  setState(() {
-                    final nx = (rp.dx + d.dx)
-                        .clamp(0.0, (maxW - _panelW).clamp(0.0, maxW));
-                    final ny = (rp.dy + d.dy)
-                        .clamp(0.0, (maxH - _minPanelH).clamp(0.0, maxH));
-                    _rightPos = Offset(nx, ny);
-                  });
-                }
+                  void dragRight(Offset d) {
+                    setState(() {
+                      final nx = (rp.dx + d.dx)
+                          .clamp(0.0, (maxW - _panelW).clamp(0.0, maxW));
+                      final ny = (rp.dy + d.dy)
+                          .clamp(0.0, (maxH - _collapsedH).clamp(0.0, maxH));
+                      _rightPos = Offset(nx, ny);
+                    });
+                  }
 
-                return Stack(
-                  children: [
-                    Positioned(
-                      left: lp.dx,
-                      top: lp.dy,
-                      width: _panelW,
-                      height: leftH,
-                      child: _FullscreenLeftPanel(onDrag: dragLeft),
-                    ),
-                    Positioned(
-                      left: rp.dx,
-                      top: rp.dy,
-                      width: _panelW,
-                      height: rightH,
-                      child: _FullscreenRightPanel(onDrag: dragRight),
-                    ),
-                  ],
-                );
-              },
+                  return Stack(
+                    children: [
+                      Positioned(
+                        left: lp.dx,
+                        top: lp.dy,
+                        width: _panelW,
+                        height: leftH,
+                        child: _FullscreenLeftPanel(
+                          onDrag: dragLeft,
+                          collapsed: _leftCollapsed,
+                          onToggleCollapsed: () => setState(
+                              () => _leftCollapsed = !_leftCollapsed),
+                        ),
+                      ),
+                      Positioned(
+                        left: rp.dx,
+                        top: rp.dy,
+                        width: _panelW,
+                        height: rightH,
+                        child: _FullscreenRightPanel(
+                          onDrag: dragRight,
+                          collapsed: _rightCollapsed,
+                          onToggleCollapsed: () => setState(
+                              () => _rightCollapsed = !_rightCollapsed),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
             ),
             Positioned(
               right: 12,
@@ -839,25 +860,35 @@ class _GlassPanel extends StatelessWidget {
   }
 }
 
-/// 浮窗顶部拖把: 透明 hit area + 一条 22x3 的灰色短杠提示可拖动.
+/// 浮窗顶部拖把: 透明 hit area + 一条 28x3 的灰色短杠提示可拖动.
 /// onPanUpdate 把增量回传给父 state, 由父 state 累加更新 Positioned 偏移.
+/// onTap 则用于折叠/展开浮窗 (折叠态下短杠变浅).
 class _DragHandle extends StatelessWidget {
   final ValueChanged<Offset> onDrag;
-  const _DragHandle({required this.onDrag});
+  final VoidCallback? onTap;
+  final bool collapsed;
+  const _DragHandle({
+    required this.onDrag,
+    this.onTap,
+    this.collapsed = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onPanUpdate: (d) => onDrag(d.delta),
+      onTap: onTap,
       child: Container(
-        height: 18,
+        height: collapsed ? 22 : 18,
         alignment: Alignment.center,
         child: Container(
           width: 28,
           height: 3,
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.35),
+            color: collapsed
+                ? Colors.white.withValues(alpha: 0.55)
+                : Colors.white.withValues(alpha: 0.35),
             borderRadius: BorderRadius.circular(2),
           ),
         ),
@@ -946,10 +977,26 @@ class _GlassStreamRow extends StatelessWidget {
 /// 左侧透明浮窗: 当前最高/最低/平均温 + 趋势曲线.
 class _FullscreenLeftPanel extends StatelessWidget {
   final ValueChanged<Offset>? onDrag;
-  const _FullscreenLeftPanel({this.onDrag});
+  final bool collapsed;
+  final VoidCallback? onToggleCollapsed;
+  const _FullscreenLeftPanel({
+    this.onDrag,
+    this.collapsed = false,
+    this.onToggleCollapsed,
+  });
 
   @override
   Widget build(BuildContext context) {
+    if (collapsed) {
+      return _GlassPanel(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+        child: _DragHandle(
+          onDrag: onDrag ?? (_) {},
+          onTap: onToggleCollapsed,
+          collapsed: true,
+        ),
+      );
+    }
     final app = context.watch<AppState>();
     List<FlSpot> spotsOf(List<double> arr) =>
         [for (var i = 0; i < arr.length; i++) FlSpot(i.toDouble(), arr[i])];
@@ -959,7 +1006,11 @@ class _FullscreenLeftPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (onDrag != null) _DragHandle(onDrag: onDrag!),
+          if (onDrag != null)
+            _DragHandle(
+              onDrag: onDrag!,
+              onTap: onToggleCollapsed,
+            ),
           _GlassKpi(
             label: '最高',
             value: app.tMax,
@@ -1098,10 +1149,26 @@ class _GlassKpi extends StatelessWidget {
 /// 的逻辑, 但用浅色文字风格适配深色背景.
 class _FullscreenRightPanel extends StatelessWidget {
   final ValueChanged<Offset>? onDrag;
-  const _FullscreenRightPanel({this.onDrag});
+  final bool collapsed;
+  final VoidCallback? onToggleCollapsed;
+  const _FullscreenRightPanel({
+    this.onDrag,
+    this.collapsed = false,
+    this.onToggleCollapsed,
+  });
 
   @override
   Widget build(BuildContext context) {
+    if (collapsed) {
+      return _GlassPanel(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+        child: _DragHandle(
+          onDrag: onDrag ?? (_) {},
+          onTap: onToggleCollapsed,
+          collapsed: true,
+        ),
+      );
+    }
     final app = context.watch<AppState>();
     final fp = app.renderParams.fusion;
 
@@ -1117,7 +1184,11 @@ class _FullscreenRightPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (onDrag != null) _DragHandle(onDrag: onDrag!),
+            if (onDrag != null)
+              _DragHandle(
+                onDrag: onDrag!,
+                onTap: onToggleCollapsed,
+              ),
             Row(
               children: const [
                 Icon(Icons.stream_rounded, size: 14, color: Colors.white70),
