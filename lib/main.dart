@@ -53,6 +53,11 @@ final ValueNotifier<bool> appConnectionBarExpanded =
 /// 用于让 Android 系统返回键能优先关闭详情页, 由 [PhotoDownloadTab] 维护.
 final ValueNotifier<bool> appPhotoDetailOpen = ValueNotifier<bool>(false);
 
+/// 当前是否激活图库 tab. true=用户停留在图库, false=已切走或从未进入.
+/// 由 HomeShell._select 维护. PhotoTab._refresh 在重试循环里读取此值,
+/// 一旦切走立即终止后续重试 (避免与 HomeShell 恢复推流的逻辑冲突).
+final ValueNotifier<bool> appPhotoTabActive = ValueNotifier<bool>(false);
+
 /// Android 返回键请求关闭图库详情的回调. 由 PhotoDownloadTab 在 initState
 /// 内注册, dispose 内置 null. home_shell 拦截返回键时调用此回调.
 VoidCallback? appClosePhotoDetail;

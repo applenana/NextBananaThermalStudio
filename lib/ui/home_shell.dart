@@ -15,6 +15,7 @@ import '../main.dart'
         appWideBreakpoint,
         appPhotoDownloadDir,
         appPhotoDetailOpen,
+        appPhotoTabActive,
         appClosePhotoDetail,
         appConnectionBarExpanded,
         appConsoleExpanded,
@@ -26,6 +27,8 @@ import 'photo_download_tab.dart';
 import 'realtime_tab.dart';
 import 'widgets/window_title_bar.dart';
 import 'window_size_ffi.dart';
+import '../app_state.dart';
+import 'package:provider/provider.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -36,6 +39,10 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+
+  /// 进入图库 tab 前的推流开关快照, 用于离开图库时恢复.
+  /// null = 当前不在图库 tab.
+  ({bool thermal, bool visible})? _savedStreamState;
 
   /// Android 双击返回退出: 记录上次返回键时间, 2 秒内再按一次才真正退出.
   DateTime? _lastBackAt;
@@ -60,7 +67,7 @@ class _HomeShellState extends State<HomeShell> {
       return;
     }
     if (_index != 0) {
-      setState(() => _index = 0);
+      _select(0);
       return;
     }
     final now = DateTime.now();
@@ -248,10 +255,31 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   void _select(int i) {
+    final from = _index;
     setState(() => _index = i);
-    if (i == 1) {
-      // 切到图库时若已连接则自动刷新图片列表.
+    appPhotoTabActive.value = (i == 1);
+    final app = context.read<AppState>();
+    // 进入图库: 记录当前推流状态 (供离开时恢复), 并由 PhotoTab._refresh
+    // 内部 stopAllStreams 处理实际停止.
+    if (i == 1 && from != 1) {
+      _savedStreamState = (
+        thermal: app.thermalStreamEnabled,
+        visible: app.visibleStreamEnabled,
+      );
       photoTabRefreshTrigger.value++;
+    }
+    // 离开图库 (切到其他 tab): 恢复进入前的推流状态.
+    if (from == 1 && i != 1 && _savedStreamState != null) {
+      final saved = _savedStreamState!;
+      _savedStreamState = null;
+      if (app.status == ConnectionStatus.connected) {
+        if (saved.thermal && !app.thermalStreamEnabled) {
+          app.setThermalStream(true);
+        }
+        if (saved.visible && !app.visibleStreamEnabled) {
+          app.setVisibleStream(true);
+        }
+      }
     }
   }
 }

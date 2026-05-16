@@ -21,7 +21,7 @@ import 'package:provider/provider.dart';
 
 import '../app_state.dart';
 import '../fusion/fusion.dart';
-import '../main.dart' show appPhotoDownloadDir, appPhotoDetailOpen, appClosePhotoDetail;
+import '../main.dart' show appPhotoDownloadDir, appPhotoDetailOpen, appPhotoTabActive, appClosePhotoDetail;
 import '../protocol/photo_decoder.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
@@ -128,6 +128,11 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     try {
       for (int attempt = 1; attempt <= maxAttempts; attempt++) {
         if (!mounted) return;
+        // 用户已经切走图库 tab: 立即放弃, 让 HomeShell 的"恢复推流"逻辑生效.
+        if (!appPhotoTabActive.value) {
+          lastErr = StateError('已切换 tab');
+          break;
+        }
         if (app.status != ConnectionStatus.connected) {
           lastErr = StateError('已断开');
           break;

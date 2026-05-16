@@ -21,7 +21,10 @@ import 'serial_port_info.dart';
 class AndroidSerialImpl {
   UsbPort? _port;
   StreamSubscription<Uint8List>? _sub;
+  StreamSubscription<UsbEvent>? _eventSub;
   String? _portName;
+  int? _currentVid;
+  int? _currentPid;
   final StreamController<Uint8List> _byteCtrl =
       StreamController<Uint8List>.broadcast();
 
@@ -73,6 +76,8 @@ class AndroidSerialImpl {
     await port.setRTS(true);
     _port = port;
     _portName = name;
+    _currentVid = device.vid;
+    _currentPid = device.pid;
     _sub = port.inputStream?.listen(
       _byteCtrl.add,
       onError: (e) {
@@ -91,14 +96,38 @@ class AndroidSerialImpl {
       },
       cancelOnError: false,
     );
+    // 监听 USB attach/detach 广播: usb_serial 的 inputStream 在设备拔出后
+    // 不会主动 done, 必须靠 Android USB Host 广播触发清理. 命中当前设备
+    // detach 时主动 close + 抛 error, 让 AppState 进入自动重连流程.
+    try { await _eventSub?.cancel(); } catch (_) {}
+    _eventSub = UsbSerial.usbEventStream?.listen((ev) {
+      if (ev.event != UsbEvent.ACTION_USB_DETACHED) return;
+      final d = ev.device;
+      if (_port == null) return;
+      final matches = d == null ||
+          ((d.vid == _currentVid) && (d.pid == _currentPid));
+      if (!matches) return;
+      // 主动触发断开: 先把 _port 清空让 isOpen 立刻 false, 再抛 error.
+      _port = null;
+      _portName = null;
+      _currentVid = null;
+      _currentPid = null;
+      try { _sub?.cancel(); } catch (_) {}
+      _sub = null;
+      _byteCtrl.addError(StateError('USB 设备已拔出'));
+    });
   }
 
   Future<void> close() async {
     try { await _sub?.cancel(); } catch (_) {}
     _sub = null;
+    try { await _eventSub?.cancel(); } catch (_) {}
+    _eventSub = null;
     final p = _port;
     _port = null;
     _portName = null;
+    _currentVid = null;
+    _currentPid = null;
     if (p != null) {
       try { await p.close(); } catch (_) {}
     }
