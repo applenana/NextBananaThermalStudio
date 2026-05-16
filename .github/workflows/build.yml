@@ -185,31 +185,75 @@ jobs:
       - name: List assets
         run: ls -lh release-assets/
 
-      # 生成简洁更新日志: 收集上一个 tag 到当前 tag 之间的 commit 标题.
-      # 若是首个 tag (找不到 PREV), 则取该 tag 自身所有历史 commit 的标题.
+      # 生成简洁更新日志: 按 Conventional Commit 类型分组上一个 tag 到当前 tag
+      # 之间的 commit 标题. 纯内部噪音 (chore/ci/docs/style/test/build) 默认折叠到
+      # "其他" 末尾, 让 release 主体仅突出 feat/fix/perf/refactor.
+      # 若是首个 tag (找不到 PREV), 则取该 tag 自身所有历史 commit.
       - name: Generate changelog
         id: changelog
         shell: bash
         run: |
           set -euo pipefail
           CURR="${GITHUB_REF_NAME}"
-          # 找上一个 tag (按提交时间倒序, 排除当前 tag).
           PREV="$(git tag --sort=-creatordate --merged "$CURR" | grep -vx "$CURR" | head -n1 || true)"
+
+          if [ -n "$PREV" ]; then
+            RANGE="$PREV..$CURR"
+            HEADER_RANGE="**自 \`$PREV\` 以来的更新**"
+          else
+            RANGE="$CURR"
+            HEADER_RANGE="**首个 release · 历史所有提交**"
+          fi
+
+          # 取所有非 merge commit 标题 (短 hash + 标题), 一行一条.
+          mapfile -t LINES < <(git log --no-merges --pretty=format:'%h|%s' "$RANGE")
+
+          # 按 conventional prefix 分类.
+          declare -a feat fix perf refactor other noise
+          for line in "${LINES[@]}"; do
+            hash="${line%%|*}"
+            subj="${line#*|}"
+            # 去掉作用域: `feat(android): xxx` -> 类型=feat
+            type="$(echo "$subj" | sed -nE 's/^([a-zA-Z]+)(\([^)]*\))?!?:.*/\1/p' | tr '[:upper:]' '[:lower:]')"
+            entry="- $subj ($hash)"
+            case "$type" in
+              feat)     feat+=("$entry") ;;
+              fix)      fix+=("$entry") ;;
+              perf)     perf+=("$entry") ;;
+              refactor) refactor+=("$entry") ;;
+              ci|chore|docs|style|test|build) noise+=("$entry") ;;
+              *)        other+=("$entry") ;;
+            esac
+          done
+
+          emit_section() {
+            local title="$1"; shift
+            local arr=("$@")
+            [ ${#arr[@]} -eq 0 ] && return
+            echo "### $title"
+            printf '%s\n' "${arr[@]}"
+            echo
+          }
 
           {
             echo "## 🍌 BananaThermal $CURR"
             echo
-            if [ -n "$PREV" ]; then
-              echo "**自 \`$PREV\` 以来的更新**"
+            echo "$HEADER_RANGE"
+            echo
+            emit_section "✨ 新功能"   "${feat[@]+"${feat[@]}"}"
+            emit_section "🐛 修复"     "${fix[@]+"${fix[@]}"}"
+            emit_section "⚡ 性能"     "${perf[@]+"${perf[@]}"}"
+            emit_section "♻️ 重构"     "${refactor[@]+"${refactor[@]}"}"
+            emit_section "📝 其他"     "${other[@]+"${other[@]}"}"
+            if [ ${#noise[@]} -gt 0 ]; then
+              echo "<details>"
+              echo "<summary>🔧 内部 (ci/chore/docs/style/test/build · ${#noise[@]} 条)</summary>"
               echo
-              git log --no-merges --pretty=format:'- %s (%h)' "$PREV..$CURR"
-            else
-              echo "**首个 release · 历史所有提交**"
+              printf '%s\n' "${noise[@]}"
               echo
-              git log --no-merges --pretty=format:'- %s (%h)' "$CURR"
+              echo "</details>"
+              echo
             fi
-            echo
-            echo
             echo "---"
             echo
             echo "### 📦 下载"
