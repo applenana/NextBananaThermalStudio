@@ -99,6 +99,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
 
   void _onExternalRefresh() {
     if (!mounted) return;
+    // 切到图库 tab 时, Android 端强制回到列表视图 (而非停留在详情页).
+    // 桌面端不走 _phoneShowDetail.
+    if (_phoneShowDetail) _setPhoneShowDetail(false);
     final app = context.read<AppState>();
     if (app.status != ConnectionStatus.connected) return;
     if (_busy) return;
@@ -116,19 +119,54 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       _busy = true;
       _statusText = '正在获取列表 ...';
     });
+    // 进入图库后, 心跳 stream 字节还会陆续到达 ~1s 才停, 此时 check 响应可能
+    // 被污染 (FormatException) 或被 stream 帧填满缓冲 (TimeoutException).
+    // 策略: 最多重试 _maxRefreshAttempts 次, 每次失败等 1s 让残余字节排空再发.
+    const maxAttempts = 8;
+    const retryWait = Duration(seconds: 1);
+    Object? lastErr;
     try {
-      final res = await app.fetchPhotoList();
-      if (!mounted) return;
-      setState(() {
-        _list = res;
-        _statusText = '共 ${res.length} 张';
-        if (_selected != null) {
-          _selected = res.firstWhere(
-            (e) => e.filename == _selected!.filename,
-            orElse: () => res.isNotEmpty ? res.first : _selected!,
-          );
+      for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (!mounted) return;
+        if (app.status != ConnectionStatus.connected) {
+          lastErr = StateError('已断开');
+          break;
         }
-      });
+        // 每次 attempt 前先停推流: 覆盖 Android 自动重连成功后再次开流的情形,
+        // 同时给设备 ~200ms 排空残余字节, 减少 check 响应被污染的概率.
+        app.stopAllStreams();
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        try {
+          final res = await app.fetchPhotoList();
+          if (!mounted) return;
+          setState(() {
+            _list = res;
+            _statusText = '共 ${res.length} 张';
+            if (_selected != null) {
+              _selected = res.firstWhere(
+                (e) => e.filename == _selected!.filename,
+                orElse: () => res.isNotEmpty ? res.first : _selected!,
+              );
+            }
+          });
+          return;
+        } on TimeoutException catch (e) {
+          lastErr = e;
+        } on FormatException catch (e) {
+          lastErr = e;
+        } catch (e) {
+          lastErr = e;
+          rethrow;
+        }
+        if (mounted) {
+          setState(() {
+            _statusText = '等待设备响应 ... ($attempt/$maxAttempts)';
+          });
+        }
+        await Future<void>.delayed(retryWait);
+      }
+      if (!mounted) return;
+      setState(() => _statusText = '失败: $lastErr');
     } catch (e) {
       if (!mounted) return;
       setState(() => _statusText = '失败: $e');

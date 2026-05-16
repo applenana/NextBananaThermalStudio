@@ -75,7 +75,21 @@ class AndroidSerialImpl {
     _portName = name;
     _sub = port.inputStream?.listen(
       _byteCtrl.add,
-      onError: (e) => _byteCtrl.addError(e),
+      onError: (e) {
+        _port = null;
+        _portName = null;
+        _byteCtrl.addError(e);
+      },
+      onDone: () {
+        // USB 拔出 / 链路断开时 inputStream 会 done. usb_serial 没有同步通知,
+        // 这里把 _port 清空让 isOpen 立即变 false (供 AppState 端 watchdog 识别),
+        // 同时通过 _byteCtrl.addError 触发 AppState 的 _byteSub.onError ->
+        // _handleUnexpectedDisconnect -> 自动重连循环.
+        _port = null;
+        _portName = null;
+        _byteCtrl.addError(StateError('USB 设备已断开'));
+      },
+      cancelOnError: false,
     );
   }
 

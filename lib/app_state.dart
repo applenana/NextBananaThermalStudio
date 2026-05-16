@@ -4,6 +4,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -188,6 +189,15 @@ class AppState extends ChangeNotifier {
       Future.delayed(const Duration(milliseconds: 300), () {
         sendCommand('GetSysInfo');
       });
+      // Android: 自动开启热成像推流, 省去用户手动点开关.
+      // 桌面端保持原行为 (由用户主动开关) 以免拔插 / 调试时不必要的流量.
+      if (Platform.isAndroid) {
+        Future.delayed(const Duration(milliseconds: 600), () {
+          if (status == ConnectionStatus.connected && !thermalStreamEnabled) {
+            setThermalStream(true);
+          }
+        });
+      }
     } catch (e) {
       status = ConnectionStatus.disconnected;
       _log('err', '打开失败: $e');
