@@ -216,6 +216,9 @@ class AppState extends ChangeNotifier {
     _stopPortWatchdog();
     _stopThermalHeartbeat();
     _stopVisibleHeartbeat();
+    // 同步关闭推流开关, 避免下次连接后 UI 仍显示打开状态造成困惑.
+    thermalStreamEnabled = false;
+    visibleStreamEnabled = false;
     try { await _byteSub?.cancel(); } catch (_) {}
     _byteSub = null;
     await _serial.close();
