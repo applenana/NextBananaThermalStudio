@@ -458,7 +458,7 @@ class _ThermalCardState extends State<_ThermalCard> {
                 isAndroid ? cursorMode : app.renderParams.showCursorTemp,
             showHotSpot: app.renderParams.showHotSpot,
             showColdSpot: app.renderParams.showColdSpot,
-            placeholder: '等待热像数据…',
+            placeholder: '等待推流数据…',
           );
 
     Widget canvasArea;
@@ -742,7 +742,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                         showCursorTemp: cursorMode,
                         showHotSpot: app.renderParams.showHotSpot,
                         showColdSpot: app.renderParams.showColdSpot,
-                        placeholder: '等待热像数据…',
+                        placeholder: '等待推流数据…',
                       ),
               ),
             ),
