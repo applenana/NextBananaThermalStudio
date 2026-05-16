@@ -391,6 +391,9 @@ class AppState extends ChangeNotifier {
   // ============================================================
 
   void _onThermalFrame(double mx, double mn, double av, Float32List frame) {
+    // 推流已关闭: 固件心跳超时存在惯性, 仍可能发数据过来.
+    // 直接丢弃, 避免画面残留与状态污染.
+    if (!thermalStreamEnabled) return;
     // 异常剔除: 平均温度偶发大跳变, 用滚动中位数过滤.
     if (_avgRecent.length >= 3) {
       final sorted = List<double>.from(_avgRecent)..sort();
@@ -434,6 +437,8 @@ class AppState extends ChangeNotifier {
   }
 
   void _onVisibleFrame(int w, int h, Uint16List frame) {
+    // 推流已关闭: 同 _onThermalFrame, 直接丢弃, 防止残留.
+    if (!visibleStreamEnabled) return;
     visibleFrame = frame;
     if (visibleRgb888 == null) {
       _log('info', '可见光首帧: 原始 ${w}x$h, 旋转后 ${h}x$w');
