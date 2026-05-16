@@ -516,10 +516,17 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                         return _PhotoTile(
                           meta: e,
                           selected: isSel,
+                          queued: _pendingDownload?.filename == e.filename,
                           onTap: () {
-                            // 选中可在任意时刻切换. _download 自己处理排队.
+                            // 任意时刻可点. 切到新图先清画面, 避免旧帧残留 + 新元数据混淆.
                             setState(() {
                               _selected = e;
+                              if (_busy) {
+                                // 排队场景: 等待时不展示旧画面.
+                                _raw = null;
+                                _decoded = null;
+                                _markers.clear();
+                              }
                             });
                             if (phone) _setPhoneShowDetail(true);
                             _download();
@@ -740,12 +747,78 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   Widget _buildPreview(RenderedFrame? r) {
     final scheme = Theme.of(context).colorScheme;
     if (_raw == null) {
+      if (!_busy) {
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              '点击列表中的图片即可下载解析',
+              style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
+            ),
+          ),
+        );
+      }
+      // 排队 / 下载中: 显眼占位 + spinner.
+      final sel = _selected;
+      final isQueued = _pendingDownload != null &&
+          sel != null &&
+          _pendingDownload!.filename == sel.filename;
+      final title = isQueued ? '排队中' : '下载中';
+      final sub = isQueued
+          ? '等待当前下载完成后立即处理此图'
+          : (_stage ?? '请求文件…');
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Text(
-            _busy ? '下载中, 请稍候 ...' : '点击列表中的图片即可下载解析',
-            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 56,
+                height: 56,
+                child: CircularProgressIndicator(
+                  strokeWidth: 4,
+                  color: isQueued ? scheme.tertiary : scheme.primary,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: scheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                sub,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: scheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              if (sel != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    sel.filename,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: scheme.onSurfaceVariant,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       );
@@ -1064,9 +1137,11 @@ class _PhotoTile extends StatelessWidget {
     required this.meta,
     required this.selected,
     required this.onTap,
+    this.queued = false,
   });
   final PhotoMeta meta;
   final bool selected;
+  final bool queued;
   final VoidCallback onTap;
 
   @override
@@ -1132,6 +1207,26 @@ class _PhotoTile extends StatelessWidget {
                   ],
                 ),
               ),
+              if (queued) ...[
+                const SizedBox(width: 6),
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: scheme.tertiary,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  '排队',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.tertiary,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
