@@ -432,8 +432,8 @@ class _ExtremesPainter extends CustomPainter {
     required String tip,
     required bool hot,
   }) {
-    // 三角形尖端指向 anchor 像素. 边长 ~12px.
-    const double r = 7;
+    // 三角形尖端指向 anchor 像素. 边长 ~7px (紧凑).
+    const double r = 4;
     final path = Path();
     if (hot) {
       // ▼ 顶点向下指向 anchor
@@ -452,9 +452,9 @@ class _ExtremesPainter extends CustomPainter {
     canvas.drawPath(
       path,
       Paint()
-        ..color = Colors.black.withValues(alpha: 0.6)
+        ..color = Colors.black.withValues(alpha: 0.65)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.4
+        ..strokeWidth = 1.4
         ..strokeJoin = StrokeJoin.round,
     );
     canvas.drawPath(path, Paint()..color = color);
@@ -462,7 +462,7 @@ class _ExtremesPainter extends CustomPainter {
     // 中心小圆点强调像素中心
     canvas.drawCircle(
       anchor,
-      1.6,
+      1.0,
       Paint()..color = Colors.black.withValues(alpha: 0.85),
     );
 
@@ -472,9 +472,9 @@ class _ExtremesPainter extends CustomPainter {
         text: tip,
         style: const TextStyle(
           color: Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.w800,
-          letterSpacing: 0.3,
+          fontSize: 8,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.1,
           fontFamily: 'SmileySans',
         ),
       ),
@@ -482,13 +482,13 @@ class _ExtremesPainter extends CustomPainter {
     )..layout();
     final lx = (anchor.dx - tp.width / 2).clamp(2.0, size.width - tp.width - 2);
     final ly = hot
-        ? (anchor.dy - r * 1.4 - tp.height - 4)
-        : (anchor.dy + r * 1.4 + 4);
+        ? (anchor.dy - r * 1.4 - tp.height - 2)
+        : (anchor.dy + r * 1.4 + 2);
     final lyClamped = ly.clamp(2.0, size.height - tp.height - 2);
-    final rect = Rect.fromLTWH(lx - 4, lyClamped - 1, tp.width + 8, tp.height + 2);
+    final rect = Rect.fromLTWH(lx - 3, lyClamped - 1, tp.width + 6, tp.height + 2);
     canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(3)),
-      Paint()..color = Colors.black.withValues(alpha: 0.65),
+      RRect.fromRectAndRadius(rect, const Radius.circular(2.5)),
+      Paint()..color = Colors.black.withValues(alpha: 0.6),
     );
     tp.paint(canvas, Offset(lx, lyClamped));
   }
