@@ -32,9 +32,16 @@ class RealtimeTab extends StatelessWidget {
         // 窄屏: 纵向堆叠
         final wide = c.maxWidth > breakpoint;
         if (wide) {
+          // Android 平板横屏: 顶部嵌入 ConnectionBar (home_shell 在 Android
+          // 上不出全局连接栏, 而宽屏分支若不内嵌, 用户在平板横屏会找不到
+          // 串口入口). 桌面在 home_shell 顶部已有全局连接栏, 此处不重复.
           return Column(
-            children: const [
-              Expanded(
+            children: [
+              if (Platform.isAndroid) ...const [
+                ConnectionBar(),
+                SizedBox(height: 12),
+              ],
+              const Expanded(
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
@@ -44,8 +51,8 @@ class RealtimeTab extends StatelessWidget {
                   ],
                 ),
               ),
-              SizedBox(height: 12),
-              _CollapsibleConsole(expandedHeight: 180),
+              const SizedBox(height: 12),
+              const _CollapsibleConsole(expandedHeight: 180),
             ],
           );
         }
@@ -297,11 +304,17 @@ class _ThermalCardState extends State<_ThermalCard> {
 
   Future<void> _openFullscreen() async {
     // 全屏模式: 强制横屏 + 沉浸; 退出还原竖屏. 仅 Android 调用此入口.
+    //
+    // bug 修复: 旋转 + 路由 push 会让主线程阻塞数百毫秒, 推流心跳
+    // (500 ms 周期) 漏拍超 1 s, 固件保活超时自动停推流而上位机
+    // `thermalStreamEnabled` 仍为 true. 旋转完成与退出时各 kick 一次.
+    final app = context.read<AppState>();
     await SystemChrome.setPreferredOrientations([
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
     if (!mounted) return;
+    app.kickStreamsIfEnabled();
     await Navigator.of(context).push(
       MaterialPageRoute(
         fullscreenDialog: true,
@@ -317,6 +330,8 @@ class _ThermalCardState extends State<_ThermalCard> {
       DeviceOrientation.portraitUp,
       DeviceOrientation.portraitDown,
     ]);
+    if (!mounted) return;
+    app.kickStreamsIfEnabled();
   }
 
   @override
@@ -581,6 +596,17 @@ class _FullscreenThermalView extends StatefulWidget {
 class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
   /// 全屏视图独立维护一个光标模式开关 (与窗口视图互相独立).
   bool _cursorMode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 兜底: 首帧渲染完立即 kick 一次推流, 防止旋转动画卡顿造成心跳漏拍后
+    // 固件已自停的情况.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<AppState>().kickStreamsIfEnabled();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

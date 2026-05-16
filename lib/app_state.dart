@@ -526,6 +526,25 @@ class AppState extends ChangeNotifier {
     _visibleHeartbeat = null;
   }
 
+  /// 立即对已启用的推流补发一次命令并重启心跳 Timer.
+  ///
+  /// 用途: Android 全屏开关时 `setPreferredOrientations` 强转向 + 路由 push
+  /// 会让主线程阻塞数百毫秒, 心跳 Timer 漏拍超过 1 s, 固件触发保活超时
+  /// 自动停推流而上位机 `thermalStreamEnabled` 仍为 true (不一致).
+  /// 旋转完成后调用本方法立即 kick 一次, 把推流拉回.
+  /// 不修改 enabled 状态, 不触发 notifyListeners, 安全可重入.
+  void kickStreamsIfEnabled() {
+    if (!_serial.isOpen) return;
+    if (thermalStreamEnabled) {
+      sendCommand('stream');
+      _startThermalHeartbeat();
+    }
+    if (visibleStreamEnabled) {
+      sendCommand('vstream');
+      _startVisibleHeartbeat();
+    }
+  }
+
   // ============================================================
   // 显示参数 setter
   // ============================================================

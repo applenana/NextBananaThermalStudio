@@ -409,27 +409,44 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   @override
   Widget build(BuildContext context) {
     // Android 手机: 列表 / 详情单页切换, 两者之间用 fade+scale 动画.
+    // Android 平板 (宽屏): 走桌面同款双栏布局, 抛弃 phone 单页切换栈.
     if (Platform.isAndroid) {
-      return AnimatedSwitcher(
-        duration: const Duration(milliseconds: 260),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeInCubic,
-        transitionBuilder: (child, anim) => FadeTransition(
-          opacity: anim,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.96, end: 1.0).animate(anim),
-            child: child,
-          ),
-        ),
-        child: _phoneShowDetail
-            ? KeyedSubtree(
-                key: const ValueKey('photo-detail'),
-                child: _buildDetailCard(phone: true),
-              )
-            : KeyedSubtree(
-                key: const ValueKey('photo-list'),
-                child: _buildListCard(phone: true),
+      return LayoutBuilder(
+        builder: (context, c) {
+          // 安卓平板横屏 (主区宽 > 760) 走双栏; 手机/平板竖屏走 phone 切换栈.
+          final wide = c.maxWidth > 760;
+          if (wide) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(width: 320, child: _buildListCard()),
+                const SizedBox(width: 12),
+                Expanded(child: _buildDetailCard()),
+              ],
+            );
+          }
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 260),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, anim) => FadeTransition(
+              opacity: anim,
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.96, end: 1.0).animate(anim),
+                child: child,
               ),
+            ),
+            child: _phoneShowDetail
+                ? KeyedSubtree(
+                    key: const ValueKey('photo-detail'),
+                    child: _buildDetailCard(phone: true),
+                  )
+                : KeyedSubtree(
+                    key: const ValueKey('photo-list'),
+                    child: _buildListCard(phone: true),
+                  ),
+          );
+        },
       );
     }
     return LayoutBuilder(
