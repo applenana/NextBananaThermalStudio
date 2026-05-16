@@ -630,6 +630,27 @@ class AppState extends ChangeNotifier {
   /// 业务侧据此计算 sha256 并查 cache index. 触发后置 null 防重复.
   void Function(Uint8List headBytes)? _photoEarly;
   static const int _photoEarlyThreshold = 4096;
+  /// 等待"图片下载/列表请求"全部释放的等待者. 用于业务侧排队下一张:
+  /// abort 后设备仍在发送剩余 hex-dump, _photoMode 要等 END FILE DATA 才放,
+  /// 直接发新 download 会抛 "图库忙". 业务侧 [waitForPhotoIdle] 即可串行化.
+  final List<Completer<void>> _photoIdleWaiters = [];
+
+  /// 等待 [_photoMode] 释放. 若当前已空闲立即返回.
+  Future<void> waitForPhotoIdle() {
+    if (!_photoMode) return Future.value();
+    final c = Completer<void>();
+    _photoIdleWaiters.add(c);
+    return c.future;
+  }
+
+  void _signalPhotoIdle() {
+    if (_photoIdleWaiters.isEmpty) return;
+    final ws = List<Completer<void>>.from(_photoIdleWaiters);
+    _photoIdleWaiters.clear();
+    for (final w in ws) {
+      if (!w.isCompleted) w.complete();
+    }
+  }
 
   void _onPhotoBytes(Uint8List data) {
     if (_photoCompleter == null) return;
@@ -720,6 +741,7 @@ class AppState extends ChangeNotifier {
     _photoAborted = false;
     _photoExpected = 0;
     if (c != null && !c.isCompleted) c.complete(out);
+    _signalPhotoIdle();
   }
 
   void _abortPhoto(Object error) {
@@ -737,6 +759,7 @@ class AppState extends ChangeNotifier {
     _photoAborted = false;
     _photoExpected = 0;
     if (c != null && !c.isCompleted) c.completeError(error);
+    _signalPhotoIdle();
   }
 
   /// 业务侧标记当前 download 已被取消 (例如指纹命中本地缓存, 不需要剩余字节).

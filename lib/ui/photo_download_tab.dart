@@ -46,6 +46,10 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   bool _busy = false;
   String? _statusText;
 
+  /// 下载排队: 一次仅 1 个 in-flight + 1 个 pending. 用户连点 A→B→C:
+  /// A 处理中, _pending 由 B 替换为 C, B 任务直接丢弃, A 完毕后接 C.
+  PhotoMeta? _pendingDownload;
+
   Uint8List? _raw;
   PhotoDecoded? _decoded;
 
@@ -181,20 +185,59 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     }
   }
 
+  /// 排队入口: 任意时刻调用. 若当前已有 download 在跑, 把 _pendingDownload
+  /// 替换为最新选择 (旧 pending 直接丢弃); 否则启动 dispatch loop.
   Future<void> _download() async {
     final sel = _selected;
     if (sel == null) return;
-    if (_busy) return;
+    if (_busy) {
+      // 排队: 替换 pending. 旧 pending 不再处理.
+      if (!mounted) return;
+      setState(() {
+        _pendingDownload = sel;
+        _statusText = '排队中 · ${sel.filename}';
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _busy = true);
     final app = context.read<AppState>();
+    PhotoMeta? cur = sel;
+    try {
+      while (cur != null && mounted) {
+        // 进入处理前: 清掉指向自己的 pending (若有), 进入下一个时再读 _pendingDownload.
+        if (_pendingDownload?.filename == cur.filename) {
+          _pendingDownload = null;
+        }
+        await _doDownload(cur);
+        if (!mounted) break;
+        // 等设备发完 END FILE DATA, 释放 _photoMode, 否则下一次 download 抛 "图库忙".
+        try {
+          await app.waitForPhotoIdle();
+        } catch (_) {}
+        // 取下一个: 若 pending 仍在则继续, 否则结束 loop.
+        cur = _pendingDownload;
+        _pendingDownload = null;
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 实际下载一张图. 不管理 _busy / 排队, 由 [_download] dispatch loop 负责.
+  Future<void> _doDownload(PhotoMeta sel) async {
+    final app = context.read<AppState>();
+    if (!mounted) return;
     setState(() {
-      _busy = true;
+      _selected = sel;
       _stage = '请求文件…';
-      _statusText = '下载中 …';
+      _statusText = '下载中 · ${sel.filename}';
       _raw = null;
       _decoded = null;
       _progress = 0;
       _progressTotal = sel.size;
       _lastPartialBytes = 0;
+      _markers.clear();
     });
     // 缓存指纹联动: onEarlyBytes 累计到 ~4 KB 时算 sha256 查 index,
     // 命中即调 abortPhotoDownload, 主流程 catch PhotoDownloadAbortedException
@@ -314,8 +357,6 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         _stage = '失败';
         _statusText = '下载失败: $e';
       });
-    } finally {
-      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -476,12 +517,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                           meta: e,
                           selected: isSel,
                           onTap: () {
-                            if (_busy) return;
+                            // 选中可在任意时刻切换. _download 自己处理排队.
                             setState(() {
                               _selected = e;
-                              _raw = null;
-                              _decoded = null;
-                              _markers.clear();
                             });
                             if (phone) _setPhoneShowDetail(true);
                             _download();
