@@ -646,14 +646,12 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
       body: SafeArea(
         child: Stack(
           children: [
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                // 点击空白未占区域 (画面区域外的黑边) 退出全屏.
-                // 画面内部 ThermalCanvas 会自行吃掉点击事件并放置/移除光标.
-                onTap: () => Navigator.of(context).maybePop(),
-                child: Container(color: Colors.black),
-              ),
+            // 全屏底色: 纯黑容器, 不挂手势, 让点击事件能直达上层 ThermalCanvas.
+            // (历史问题: 这里曾叠 GestureDetector(onTap: pop), 在 gesture
+            //  arena 与 ThermalCanvas 的 TapGestureRecognizer 互抢, 导致
+            //  多点 marker 点击无响应. 退出全屏改由右上角浮动按钮承担.)
+            const Positioned.fill(
+              child: ColoredBox(color: Colors.black),
             ),
             Positioned.fill(
               child: Padding(
