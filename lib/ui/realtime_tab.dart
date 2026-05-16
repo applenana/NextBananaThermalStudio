@@ -633,6 +633,14 @@ class _FullscreenThermalView extends StatefulWidget {
 class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
   _ThermalMarkersStore get _store => _ThermalMarkersStore.instance;
 
+  // 浮窗位置 (左上角偏移). null 表示尚未基于布局尺寸初始化, 首次 build 时按
+  // 默认位置 (left=8/top=8, right=8/top=64) 初始化. 用户拖动后保持自定义位置.
+  Offset? _leftPos;
+  Offset? _rightPos;
+  static const double _panelW = 200;
+  static const double _bottomMargin = 8;
+  static const double _minPanelH = 120;
+
   @override
   void initState() {
     super.initState();
@@ -713,21 +721,59 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                 ),
               ),
             ),
-            // 左侧透明浮窗: 温度 KPI + 趋势曲线
-            const Positioned(
-              left: 8,
-              top: 8,
-              bottom: 8,
-              width: 200,
-              child: _FullscreenLeftPanel(),
-            ),
-            // 右侧透明浮窗: 融合参数 (顶部右侧悬浮按钮列下方留出位置)
-            const Positioned(
-              right: 8,
-              top: 200,
-              bottom: 8,
-              width: 200,
-              child: _FullscreenRightPanel(),
+            // 左侧透明浮窗: 温度 KPI + 趋势曲线 (可拖动)
+            // 右侧透明浮窗: 推流开关 + 融合参数 (可拖动)
+            LayoutBuilder(
+              builder: (ctx, c) {
+                final maxW = c.maxWidth;
+                final maxH = c.maxHeight;
+                _leftPos ??= const Offset(8, 8);
+                _rightPos ??= Offset(maxW - _panelW - 8, 64);
+                final lp = _leftPos!;
+                final rp = _rightPos!;
+                final leftH = (maxH - lp.dy - _bottomMargin)
+                    .clamp(_minPanelH, maxH);
+                final rightH = (maxH - rp.dy - _bottomMargin)
+                    .clamp(_minPanelH, maxH);
+                void dragLeft(Offset d) {
+                  setState(() {
+                    final nx = (lp.dx + d.dx)
+                        .clamp(0.0, (maxW - _panelW).clamp(0.0, maxW));
+                    final ny = (lp.dy + d.dy)
+                        .clamp(0.0, (maxH - _minPanelH).clamp(0.0, maxH));
+                    _leftPos = Offset(nx, ny);
+                  });
+                }
+
+                void dragRight(Offset d) {
+                  setState(() {
+                    final nx = (rp.dx + d.dx)
+                        .clamp(0.0, (maxW - _panelW).clamp(0.0, maxW));
+                    final ny = (rp.dy + d.dy)
+                        .clamp(0.0, (maxH - _minPanelH).clamp(0.0, maxH));
+                    _rightPos = Offset(nx, ny);
+                  });
+                }
+
+                return Stack(
+                  children: [
+                    Positioned(
+                      left: lp.dx,
+                      top: lp.dy,
+                      width: _panelW,
+                      height: leftH,
+                      child: _FullscreenLeftPanel(onDrag: dragLeft),
+                    ),
+                    Positioned(
+                      left: rp.dx,
+                      top: rp.dy,
+                      width: _panelW,
+                      height: rightH,
+                      child: _FullscreenRightPanel(onDrag: dragRight),
+                    ),
+                  ],
+                );
+              },
             ),
             Positioned(
               right: 12,
@@ -793,9 +839,114 @@ class _GlassPanel extends StatelessWidget {
   }
 }
 
+/// 浮窗顶部拖把: 透明 hit area + 一条 22x3 的灰色短杠提示可拖动.
+/// onPanUpdate 把增量回传给父 state, 由父 state 累加更新 Positioned 偏移.
+class _DragHandle extends StatelessWidget {
+  final ValueChanged<Offset> onDrag;
+  const _DragHandle({required this.onDrag});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onPanUpdate: (d) => onDrag(d.delta),
+      child: Container(
+        height: 18,
+        alignment: Alignment.center,
+        child: Container(
+          width: 28,
+          height: 3,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.35),
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 玻璃风格推流开关行: 半透明胶囊 + 图标 + 标签 + 状态点 (绿亮 / 灰暗).
+/// 与 _SwitchTile 区分: 此处主题为深色透明面板, 不复用 Material primary 色.
+class _GlassStreamRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  const _GlassStreamRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = value ? const Color(0xFFFFCC00) : Colors.white54;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => onChanged(!value),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+          decoration: BoxDecoration(
+            color: value
+                ? Colors.white.withValues(alpha: 0.10)
+                : Colors.white.withValues(alpha: 0.04),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: value
+                  ? Colors.white.withValues(alpha: 0.22)
+                  : Colors.white.withValues(alpha: 0.08),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 14, color: accent),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: value ? Colors.white : Colors.white70,
+                    fontSize: 11,
+                    fontWeight:
+                        value ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+              ),
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: value ? const Color(0xFF66BB6A) : Colors.white24,
+                  boxShadow: value
+                      ? [
+                          BoxShadow(
+                            color: const Color(0xFF66BB6A)
+                                .withValues(alpha: 0.55),
+                            blurRadius: 6,
+                          ),
+                        ]
+                      : null,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 左侧透明浮窗: 当前最高/最低/平均温 + 趋势曲线.
 class _FullscreenLeftPanel extends StatelessWidget {
-  const _FullscreenLeftPanel();
+  final ValueChanged<Offset>? onDrag;
+  const _FullscreenLeftPanel({this.onDrag});
 
   @override
   Widget build(BuildContext context) {
@@ -804,10 +955,11 @@ class _FullscreenLeftPanel extends StatelessWidget {
         [for (var i = 0; i < arr.length; i++) FlSpot(i.toDouble(), arr[i])];
 
     return _GlassPanel(
-      padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+      padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (onDrag != null) _DragHandle(onDrag: onDrag!),
           _GlassKpi(
             label: '最高',
             value: app.tMax,
@@ -942,10 +1094,11 @@ class _GlassKpi extends StatelessWidget {
   }
 }
 
-/// 右侧透明浮窗: 融合参数 (模式 + 滑杆). 复用现有 `_FusionModeDropdown` / `_FusionSliders`
+/// 右侧透明浮窗: 推流开关 + 融合参数. 复用现有 `_FusionModeDropdown` / `_FusionSliders`
 /// 的逻辑, 但用浅色文字风格适配深色背景.
 class _FullscreenRightPanel extends StatelessWidget {
-  const _FullscreenRightPanel();
+  final ValueChanged<Offset>? onDrag;
+  const _FullscreenRightPanel({this.onDrag});
 
   @override
   Widget build(BuildContext context) {
@@ -959,11 +1112,52 @@ class _FullscreenRightPanel extends StatelessWidget {
     }
 
     return _GlassPanel(
-      padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+      padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
       child: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (onDrag != null) _DragHandle(onDrag: onDrag!),
+            Row(
+              children: const [
+                Icon(Icons.stream_rounded, size: 14, color: Colors.white70),
+                SizedBox(width: 6),
+                Text('推流',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    )),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: _GlassStreamRow(
+                    icon: Icons.local_fire_department_rounded,
+                    label: '热成像',
+                    value: app.thermalStreamEnabled,
+                    onChanged: (v) => app.setThermalStream(v),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: _GlassStreamRow(
+                    icon: Icons.photo_camera_outlined,
+                    label: '可见光',
+                    value: app.visibleStreamEnabled,
+                    onChanged: (v) => app.setVisibleStream(v),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Container(
+              height: 1,
+              color: Colors.white.withValues(alpha: 0.08),
+            ),
+            const SizedBox(height: 8),
             Row(
               children: const [
                 Icon(Icons.tune_rounded, size: 14, color: Colors.white70),
