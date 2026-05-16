@@ -53,6 +53,12 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   Uint8List? _raw;
   PhotoDecoded? _decoded;
 
+  /// 图库预览专用的临时渲染参数: 每张图独立, 不与实时投屏共享
+  /// [AppState.renderParams]. 点开一张新图时重置为默认值; 如果是双光图
+  /// (visibleRgb 非空) 则解码完成后自动将 fusion 模式升为 blend.
+  /// 用户在预览详情里调参只影响本页, 切图 / 退出后丝毫不注入实时面板.
+  RenderParams _photoParams = const RenderParams();
+
   /// 用户点击固定的温度标记 (坐标以渲染后帧像素为准).
   final List<TempMarker> _markers = [];
 
@@ -243,6 +249,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       _progressTotal = sel.size;
       _lastPartialBytes = 0;
       _markers.clear();
+      // 点击新图: 重置预览参数为默认值, 不使用上一张图、也不使用实时面板的任何状态.
+      _resetPhotoParams();
     });
     // 缓存指纹联动: onEarlyBytes 累计到 ~4 KB 时算 sha256 查 index,
     // 命中即调 abortPhotoDownload, 主流程 catch PhotoDownloadAbortedException
@@ -315,6 +323,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         _raw = data;
         _decoded = dec;
         _markers.clear();
+        _upgradeFusionIfDualBand(dec);
         _stage = '完成';
         _statusText = '已保存: ${outFile.path}  ·  ${dec.summary}';
       });
@@ -343,6 +352,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           _raw = cached;
           _decoded = dec;
           _markers.clear();
+          _upgradeFusionIfDualBand(dec);
           _progress = cached.length;
           _progressTotal = cached.length;
           _stage = '完成';
@@ -362,6 +372,23 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         _stage = '失败';
         _statusText = '下载失败: $e';
       });
+    }
+  }
+
+  /// 划到一张新图时调用: 重置 _photoParams 为默认值 (不读任何实时面板状态).
+  /// 解码完成后可再调 [_upgradeFusionIfDualBand] 将双光图的 fusion 升为 blend.
+  void _resetPhotoParams() {
+    _photoParams = const RenderParams();
+  }
+
+  /// 解码完成后: 若是双光图 (visibleRgb 非空) 且用户还未手动改过 fusion mode
+  /// (仍是默认 off), 则将 fusion 升级为 blend, 默认展示混合效果.
+  void _upgradeFusionIfDualBand(PhotoDecoded dec) {
+    if (dec.visibleRgb != null &&
+        _photoParams.fusion.mode == FusionMode.off) {
+      _photoParams = _photoParams.copyWith(
+        fusion: const FusionParams(mode: FusionMode.blend),
+      );
     }
   }
 
@@ -543,6 +570,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                             // 任意时刻可点. 切到新图先清画面, 避免旧帧残留 + 新元数据混淆.
                             setState(() {
                               _selected = e;
+                              // 重置预览参数: 上一张图调过的参数不应带到下一张.
+                              _resetPhotoParams();
                               if (_busy) {
                                 // 排队场景: 等待时不展示旧画面.
                                 _raw = null;
@@ -659,7 +688,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         thermalFrame: dec!.thermal!,
         srcW: dec.srcW,
         srcH: dec.srcH,
-        params: app.renderParams,
+        params: _photoParams,
         visibleRgb: dec.visibleRgb,
         visibleW: dec.visW,
         visibleH: dec.visH,
@@ -700,6 +729,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           _ParamsRow(
             hasVisible: dec?.visibleRgb != null,
             phone: phone,
+            params: _photoParams,
+            onParamsChanged: (v) => setState(() => _photoParams = v),
           ),
         ],
         const SizedBox(height: 10),
@@ -1013,7 +1044,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         thermalFrame: dec.thermal!,
         srcW: dec.srcW,
         srcH: dec.srcH,
-        params: app.renderParams,
+        params: _photoParams,
         visibleRgb: dec.visibleRgb,
         visibleW: dec.visW,
         visibleH: dec.visH,
@@ -1313,14 +1344,19 @@ const Map<String, String> _colormapZh = {
 /// 行 1: 颜色映射 + 映射曲线 + 融合模式
 /// 行 2: 当前融合模式对应的参数 (关闭则隐藏)
 class _ParamsRow extends StatelessWidget {
-  const _ParamsRow({required this.hasVisible, this.phone = false});
+  const _ParamsRow({
+    required this.hasVisible,
+    required this.params,
+    required this.onParamsChanged,
+    this.phone = false,
+  });
   final bool hasVisible;
   final bool phone;
+  final RenderParams params;
+  final ValueChanged<RenderParams> onParamsChanged;
 
   @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-    final params = app.renderParams;
     final scheme = Theme.of(context).colorScheme;
 
     Widget label(String t) => Padding(
@@ -1337,7 +1373,7 @@ class _ParamsRow extends StatelessWidget {
       _Dropdown<String>(
         value: params.colormapName,
         items: _colormapZh.keys.toList(),
-        onChanged: (v) => app.updateRenderParams(
+        onChanged: (v) => onParamsChanged(
             params.copyWith(colormapName: v, useCustomColors: false)),
         labelOf: (v) => _colormapZh[v] ?? v,
       ),
@@ -1347,7 +1383,7 @@ class _ParamsRow extends StatelessWidget {
         value: params.mappingCurve,
         items: const ['linear', 'nonlinear'],
         onChanged: (v) =>
-            app.updateRenderParams(params.copyWith(mappingCurve: v)),
+            onParamsChanged(params.copyWith(mappingCurve: v)),
         labelOf: (v) => v == 'linear' ? '线性' : 'S 曲线',
       ),
     ];
@@ -1357,7 +1393,7 @@ class _ParamsRow extends StatelessWidget {
         _Dropdown<FusionMode>(
           value: params.fusion.mode,
           items: FusionMode.values,
-          onChanged: (v) => app.updateRenderParams(params.copyWith(
+          onChanged: (v) => onParamsChanged(params.copyWith(
               fusion: _fusionWith(params.fusion, mode: v))),
           labelOf: (v) => switch (v) {
             FusionMode.off => '关闭',
@@ -1389,7 +1425,7 @@ class _ParamsRow extends StatelessWidget {
             value: f.alpha,
             min: 0,
             max: 1,
-            onChanged: (v) => app.updateRenderParams(params.copyWith(
+            onChanged: (v) => onParamsChanged(params.copyWith(
                 fusion: _fusionWith(f, alpha: v))),
           ),
           _slider(
@@ -1398,7 +1434,7 @@ class _ParamsRow extends StatelessWidget {
             value: f.gamma,
             min: 0.3,
             max: 3.0,
-            onChanged: (v) => app.updateRenderParams(params.copyWith(
+            onChanged: (v) => onParamsChanged(params.copyWith(
                 fusion: _fusionWith(f, gamma: v))),
           ),
         ]);
@@ -1410,7 +1446,7 @@ class _ParamsRow extends StatelessWidget {
             value: f.gamma,
             min: 0.3,
             max: 3.0,
-            onChanged: (v) => app.updateRenderParams(params.copyWith(
+            onChanged: (v) => onParamsChanged(params.copyWith(
                 fusion: _fusionWith(f, gamma: v))),
           ),
           _slider(
@@ -1419,7 +1455,7 @@ class _ParamsRow extends StatelessWidget {
             value: f.edgeStrength,
             min: 0,
             max: 1,
-            onChanged: (v) => app.updateRenderParams(params.copyWith(
+            onChanged: (v) => onParamsChanged(params.copyWith(
                 fusion: _fusionWith(f, edgeStrength: v))),
           ),
           _slider(
@@ -1429,7 +1465,7 @@ class _ParamsRow extends StatelessWidget {
             min: 0,
             max: 0.5,
             digits: 3,
-            onChanged: (v) => app.updateRenderParams(params.copyWith(
+            onChanged: (v) => onParamsChanged(params.copyWith(
                 fusion: _fusionWith(f, edgeThresh: v))),
           ),
           _slider(
@@ -1438,7 +1474,7 @@ class _ParamsRow extends StatelessWidget {
             value: f.edgeWidth,
             min: 0,
             max: 6,
-            onChanged: (v) => app.updateRenderParams(params.copyWith(
+            onChanged: (v) => onParamsChanged(params.copyWith(
                 fusion: _fusionWith(f, edgeWidth: v))),
           ),
         ]);
