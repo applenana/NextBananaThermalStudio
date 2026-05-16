@@ -649,6 +649,10 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
   // 默认位置 (left=8/top=8, right=8/top=64) 初始化. 用户拖动后保持自定义位置.
   Offset? _leftPos;
   Offset? _rightPos;
+  // 手机进入全屏强制旋转, LayoutBuilder 会在旋转前后重发不同 maxW.
+  // 仅在用户未手动拖动过右侧浮窗时, 让默认位置随 maxW 重算, 避免
+  // 旋转前的窄屏 maxW 算出的位置留在画面中间贴着左侧浮窗.
+  bool _rightDragged = false;
   bool _leftCollapsed = false;
   bool _rightCollapsed = false;
   static const double _panelW = 200;
@@ -756,7 +760,11 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                   final maxW = c.maxWidth;
                   final maxH = c.maxHeight;
                   _leftPos ??= const Offset(8, 8);
-                  _rightPos ??= Offset(maxW - _panelW - 8, 64);
+                  // 右侧浮窗: 未被用户拖动过时, 随 maxW 动态重算 (修复旋转前后 maxW
+                  // 变化导致默认位置贴着左侧浮窗的问题).
+                  if (!_rightDragged) {
+                    _rightPos = Offset(maxW - _panelW - 8, 64);
+                  }
                   final lp = _leftPos!;
                   final rp = _rightPos!;
                   final leftH = _leftCollapsed
@@ -779,6 +787,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
 
                   void dragRight(Offset d) {
                     setState(() {
+                      _rightDragged = true;
                       final nx = (rp.dx + d.dx)
                           .clamp(0.0, (maxW - _panelW).clamp(0.0, maxW));
                       final ny = (rp.dy + d.dy)
