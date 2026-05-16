@@ -162,6 +162,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      # checkout 全量历史 + 所有 tags, 让 `git log PREV..CURR` 能拿到两个 tag 之间
+      # 的 commit 标题集合, 生成简洁更新日志.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
       - name: Download windows artifact
         uses: actions/download-artifact@v4
         with:
@@ -177,8 +185,48 @@ jobs:
       - name: List assets
         run: ls -lh release-assets/
 
+      # 生成简洁更新日志: 收集上一个 tag 到当前 tag 之间的 commit 标题.
+      # 若是首个 tag (找不到 PREV), 则取该 tag 自身所有历史 commit 的标题.
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURR="${GITHUB_REF_NAME}"
+          # 找上一个 tag (按提交时间倒序, 排除当前 tag).
+          PREV="$(git tag --sort=-creatordate --merged "$CURR" | grep -vx "$CURR" | head -n1 || true)"
+
+          {
+            echo "## 🍌 BananaThermal $CURR"
+            echo
+            if [ -n "$PREV" ]; then
+              echo "**自 \`$PREV\` 以来的更新**"
+              echo
+              git log --no-merges --pretty=format:'- %s (%h)' "$PREV..$CURR"
+            else
+              echo "**首个 release · 历史所有提交**"
+              echo
+              git log --no-merges --pretty=format:'- %s (%h)' "$CURR"
+            fi
+            echo
+            echo
+            echo "---"
+            echo
+            echo "### 📦 下载"
+            echo "- **Windows**: \`BananaThermal-windows-x64.zip\` — 解压后运行 \`banana_thermal.exe\`"
+            echo "- **Android**: \`BananaThermal-android.apk\` — universal apk, 三 ABI 通用"
+            if [ -n "$PREV" ]; then
+              echo
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${CURR}"
+            fi
+          } > release-notes.md
+
+          echo "----- release-notes.md -----"
+          cat release-notes.md
+          echo "----------------------------"
+
       - name: Create / update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
-          generate_release_notes: true
+          body_path: release-notes.md
