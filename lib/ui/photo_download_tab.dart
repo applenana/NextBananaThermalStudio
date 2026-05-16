@@ -84,6 +84,11 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // bug 修复: 旋转 (例 全屏入场) 会让 home_shell LayoutBuilder 从 narrow
+      // 切到 wide, IndexedStack 父级重建导致所有 children 重 mount,
+      // 此 initState 再次跑会无差别 stopAllStreams() 关掉用户正在使用的
+      // 实时 tab 推流. 守门: 仅当用户当前确实在图库 tab 才停推流.
+      if (!appPhotoTabActive.value) return;
       context.read<AppState>().stopAllStreams();
     });
     photoTabRefreshTrigger.addListener(_onExternalRefresh);
