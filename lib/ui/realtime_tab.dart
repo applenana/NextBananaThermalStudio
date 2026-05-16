@@ -303,18 +303,23 @@ class _ThermalCardState extends State<_ThermalCard> {
   }
 
   Future<void> _openFullscreen() async {
-    // 全屏模式: 强制横屏 + 沉浸; 退出还原竖屏. 仅 Android 调用此入口.
+    // 全屏模式: Android 手机强制横屏 + 沉浸; 平板 (shortestSide >= 600)
+    // 通常已是横屏使用, 不再强转向直接展开, 避免不必要的旋转动画 + 心跳
+    // 漏拍. 退出时同样仅手机还原竖屏.
     //
-    // bug 修复: 旋转 + 路由 push 会让主线程阻塞数百毫秒, 推流心跳
-    // (500 ms 周期) 漏拍超 1 s, 固件保活超时自动停推流而上位机
-    // `thermalStreamEnabled` 仍为 true. 旋转完成与退出时各 kick 一次.
+    // 推流自停 bug: 旋转 + 路由 push 主线程阻塞数百毫秒, 500 ms 心跳漏拍
+    // 超 1 s 固件保活超时自停. 入场和退场各用 `kickStreamsBurst()` 在
+    // 0/150/400/800/1300 ms 五拨补发, 必然命中保活窗口拉回推流.
     final app = context.read<AppState>();
-    await SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
+    final isTablet = MediaQuery.of(context).size.shortestSide >= 600;
+    if (!isTablet) {
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    }
     if (!mounted) return;
-    app.kickStreamsIfEnabled();
+    app.kickStreamsBurst();
     await Navigator.of(context).push(
       MaterialPageRoute(
         fullscreenDialog: true,
@@ -326,12 +331,14 @@ class _ThermalCardState extends State<_ThermalCard> {
         ),
       ),
     );
-    await SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-    ]);
+    if (!isTablet) {
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+      ]);
+    }
     if (!mounted) return;
-    app.kickStreamsIfEnabled();
+    app.kickStreamsBurst();
   }
 
   @override
@@ -604,7 +611,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
     // 固件已自停的情况.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      context.read<AppState>().kickStreamsIfEnabled();
+      context.read<AppState>().kickStreamsBurst();
     });
   }
 

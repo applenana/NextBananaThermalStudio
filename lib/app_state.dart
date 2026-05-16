@@ -545,6 +545,19 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// 分阶段连续补发推流命令, 覆盖旋转动画/路由切换期间主线程被阻塞的窗口.
+  ///
+  /// 旋转 + 路由 push 在 Android 手机上会产生 400-800 ms 的主线程繁忙期,
+  /// 单次 kick 后下次心跳要等 500 ms, 期间若卡顿固件已自停. 本方法在
+  /// 0 / 150 / 400 / 800 / 1300 ms 各补发一次, 五拨内必然命中固件保活窗口
+  /// 把推流拉回. 每拨同时 _start 心跳 Timer 重置周期起点.
+  void kickStreamsBurst() {
+    kickStreamsIfEnabled();
+    for (final ms in const [150, 400, 800, 1300]) {
+      Future.delayed(Duration(milliseconds: ms), kickStreamsIfEnabled);
+    }
+  }
+
   // ============================================================
   // 显示参数 setter
   // ============================================================
