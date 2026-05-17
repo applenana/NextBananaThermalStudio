@@ -7,6 +7,7 @@ import 'dart:io' show Platform;
 import 'app_state.dart';
 import 'ui/home_shell.dart';
 import 'ui/window_size_ffi.dart';
+import 'ui/windows_theme_ffi.dart';
 
 // ====================================================================
 // 全局设置: 默认值 + ValueNotifier + 持久化键
@@ -177,6 +178,9 @@ Future<void> resetAllSettings() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _loadPersistedSettings();
+  // Windows: 启动系统亮度轮询 (Flutter embedder 在部分 LTSC 上
+  // 读不到 platformBrightness, 这里直接读注册表兑定).
+  startWindowsBrightnessWatcher();
   // 移动端: 状态栏与导航栏沉浸 (透明背景, 图标颜色随后随主题).
   if (Platform.isAndroid) {
     SystemChrome.setSystemUIOverlayStyle(
@@ -317,12 +321,25 @@ class BananaThermalApp extends StatelessWidget {
       create: (_) => AppState(),
       child: ValueListenableBuilder<ThemeMode>(
         valueListenable: appThemeMode,
-        builder: (context, mode, _) => MaterialApp(
-          title: 'BananaThermalStudio',
-          debugShowCheckedModeBanner: false,
-          themeMode: mode,
-          theme: _buildTheme(Brightness.light),
-          darkTheme: _buildTheme(Brightness.dark),
+        builder: (context, mode, _) => ValueListenableBuilder<Brightness?>(
+          valueListenable: windowsSystemBrightness,
+          builder: (context, winBrightness, _) {
+            // Windows + 跟随系统 + FFI 拿到了兑定值时, 手动解析到 light/dark,
+            // 避开 Flutter embedder 不可靠的 platformBrightness.
+            ThemeMode effectiveMode = mode;
+            if (mode == ThemeMode.system &&
+                Platform.isWindows &&
+                winBrightness != null) {
+              effectiveMode = winBrightness == Brightness.dark
+                  ? ThemeMode.dark
+                  : ThemeMode.light;
+            }
+            return MaterialApp(
+              title: 'BananaThermalStudio',
+              debugShowCheckedModeBanner: false,
+              themeMode: effectiveMode,
+              theme: _buildTheme(Brightness.light),
+              darkTheme: _buildTheme(Brightness.dark),
           // DPI / UI 缩放: 同时缩放控件与字体.
           // 关键: 外层占位 = 父约束(窗口实际像素), 内部 child 约束 = 父约束/scale,
           //       再用 Transform.scale 把内容放大回父约束尺寸.
@@ -364,7 +381,9 @@ class BananaThermalApp extends StatelessWidget {
               },
             );
           },
-          home: const HomeShell(),
+              home: const HomeShell(),
+            );
+          },
         ),
       ),
     );

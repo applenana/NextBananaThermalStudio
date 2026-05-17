@@ -476,6 +476,14 @@ class AppState extends ChangeNotifier {
     if (on) {
       sendCommand('stream');
       _startThermalHeartbeat();
+      // 对称于 setVisibleStream: 若可见光此时已在推流且 fusion=off,
+      // 自动切换到 blend, 让双光开启顺序无关都能看到混合.
+      if (visibleStreamEnabled &&
+          renderParams.fusion.mode == FusionMode.off) {
+        renderParams = renderParams.copyWith(
+          fusion: _fusionWithMode(FusionMode.blend),
+        );
+      }
     } else {
       _stopThermalHeartbeat();
       sendCommand('streaming stoped');
