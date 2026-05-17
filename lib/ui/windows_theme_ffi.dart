@@ -107,9 +107,14 @@ void _readAppsUseLightTheme() {
   }
 }
 
-// 夜间模式 BLOB 内的特征字节序列. 开启时 BLOB 含此 8 字节.
+// 夜间模式 BLOB 内的特征字节序列. 实测 Windows 10 LTSC 21H2:
+//   OFF: ...2B 0E 13 43 42 01 00       D0 0A 02...
+//   ON : ...2B 0E 15 43 42 01 00 10 00 D0 0A 02...
+// ON 时会在第二个 "43 42 01 00" 之后插入 "10 00", 因此扫描子序列
+// 43 42 01 00 10 00 即可判定 ON. (第一个 43 42 01 00 出现在 BLOB 起始,
+// 紧跟 0A 02, 不会与之冲突.)
 const List<int> _kNightLightOnMarker = [
-  0x10, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+  0x43, 0x42, 0x01, 0x00, 0x10, 0x00,
 ];
 
 void _readNightLight() {
