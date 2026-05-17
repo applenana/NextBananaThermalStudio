@@ -8,6 +8,7 @@ import 'app_state.dart';
 import 'ui/home_shell.dart';
 import 'ui/window_size_ffi.dart';
 import 'ui/windows_theme_ffi.dart';
+import 'ui/windows_night_light_sync.dart';
 
 // ====================================================================
 // 全局设置: 默认值 + ValueNotifier + 持久化键
@@ -381,7 +382,7 @@ class BananaThermalApp extends StatelessWidget {
               },
             );
           },
-              home: const HomeShell(),
+              home: const NightLightSyncWatcher(child: HomeShell()),
             );
           },
         ),
