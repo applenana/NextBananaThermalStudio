@@ -107,15 +107,19 @@ void _readAppsUseLightTheme() {
   }
 }
 
-// 夜间模式 BLOB 内的特征字节序列. 实测 Windows 10 LTSC 21H2:
-//   OFF: ...2B 0E 13 43 42 01 00       D0 0A 02...
-//   ON : ...2B 0E 15 43 42 01 00 10 00 D0 0A 02...
-// ON 时会在第二个 "43 42 01 00" 之后插入 "10 00", 因此扫描子序列
-// 43 42 01 00 10 00 即可判定 ON. (第一个 43 42 01 00 出现在 BLOB 起始,
-// 紧跟 0A 02, 不会与之冲突.)
-const List<int> _kNightLightOnMarker = [
-  0x43, 0x42, 0x01, 0x00, 0x10, 0x00,
-];
+// 夜间模式 BLOB 判定 —— 该 REG_BINARY 是 Windows 内部未文档化的二进制结构,
+// 但社区脚本 (AutoHotkey / PowerShell 多个 NightLight 切换工具) 已稳定使用
+// 同一组特征多年, 跨 Win10 / Win11 / 多版本 LTSC 验证:
+//
+//   BLOB 末段固定包含 D0 0A 02 ... <FILETIME> 01 00 00 00 00
+//   ON 状态会在 D0 0A 02 之前插入 10 00 两字节作为 enable flag
+//   OFF 状态则没有这两字节
+//
+// 因此规则: 扫描 BLOB, 若包含子序列 [10 00 D0 0A 02] 视为 ON, 否则 OFF.
+// 若连 [D0 0A 02] 锚点都找不到 —— 说明该机器格式异常或微软改了结构,
+// 此时返回 null (notifier 保持未知), watcher 会因此跳过弹窗逻辑, 不会误判.
+const List<int> _kNightLightAnchor = [0xD0, 0x0A, 0x02];
+const List<int> _kNightLightOnFlag = [0x10, 0x00, 0xD0, 0x0A, 0x02];
 
 void _readNightLight() {
   final fn = _regGetValueW;
@@ -128,9 +132,7 @@ void _readNightLight() {
   final val = 'Data'.toNativeUtf16();
   final cb = calloc<Uint32>();
   try {
-    // 第一次: data=null, 让系统回填所需字节数.
     var status = fn(_hkcu, sub, val, _rrfRtRegBinary, nullptr, nullptr, cb);
-    // 0 = ERROR_SUCCESS, 234 = ERROR_MORE_DATA, 均拿到大小.
     if (status != 0 && status != 234) return;
     final size = cb.value;
     if (size == 0 || size > 4096) return;
@@ -140,7 +142,7 @@ void _readNightLight() {
       status = fn(_hkcu, sub, val, _rrfRtRegBinary, nullptr,
           buf.cast<Void>(), cb);
       if (status != 0) return;
-      final on = _containsMarker(buf, cb.value, _kNightLightOnMarker);
+      final on = _parseNightLight(buf, cb.value);
       if (windowsNightLightOn.value != on) {
         windowsNightLightOn.value = on;
       }
@@ -154,15 +156,22 @@ void _readNightLight() {
   }
 }
 
-bool _containsMarker(Pointer<Uint8> buf, int len, List<int> marker) {
-  if (len < marker.length) return false;
-  final end = len - marker.length;
+/// 返回 true=ON, false=OFF, null=无法识别 (格式异常).
+bool? _parseNightLight(Pointer<Uint8> buf, int len) {
+  // 找不到末段锚点 -> 未知, 不参与判定避免误弹窗.
+  if (_indexOf(buf, len, _kNightLightAnchor) < 0) return null;
+  return _indexOf(buf, len, _kNightLightOnFlag) >= 0;
+}
+
+int _indexOf(Pointer<Uint8> buf, int len, List<int> needle) {
+  if (len < needle.length) return -1;
+  final end = len - needle.length;
   outer:
   for (var i = 0; i <= end; i++) {
-    for (var j = 0; j < marker.length; j++) {
-      if (buf[i + j] != marker[j]) continue outer;
+    for (var j = 0; j < needle.length; j++) {
+      if (buf[i + j] != needle[j]) continue outer;
     }
-    return true;
+    return i;
   }
-  return false;
+  return -1;
 }
