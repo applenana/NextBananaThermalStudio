@@ -250,8 +250,15 @@ jobs:
           mapfile -t LINES < <(git log --no-merges --pretty=format:'%h|%s' "$RANGE")
 
           # 按 conventional prefix 分类.
-          declare -a feat fix perf refactor other noise
-          for line in "${LINES[@]}"; do
+          # 注意: 在 `set -u` 下 `declare -a arr` 仅声明名称, 后续 `${#arr[@]}`
+          # 访问会触发 unbound; 必须显式 `=()` 赋空数组初值.
+          feat=()
+          fix=()
+          perf=()
+          refactor=()
+          other=()
+          noise=()
+          for line in "${LINES[@]+"${LINES[@]}"}"; do
             hash="${line%%|*}"
             subj="${line#*|}"
             # 去掉作用域: `feat(android): xxx` -> 类型=feat
