@@ -303,8 +303,12 @@ class SerialService {
         onExit: exitPort.sendPort,
         errorsAreFatal: false,
       );
+      _currentSearchIsolate = isolate;
       final foundPort = await foundCompleter.future;
       final foundInfo = await resultCompleter.future;
+      if (_searchCancelled) {
+        return (port: null, info: null);
+      }
       return (port: foundPort, info: foundInfo);
     } catch (e) {
       // ignore: avoid_print
@@ -319,6 +323,8 @@ class SerialService {
       return (port: null, info: null);
     } finally {
       try { isolate?.kill(priority: Isolate.immediate); } catch (_) {}
+      _currentSearchIsolate = null;
+      _searchCancelled = false;
       await progSub.cancel();
       await errSub.cancel();
       await exitSub.cancel();
@@ -326,6 +332,21 @@ class SerialService {
       errorPort.close();
       exitPort.close();
     }
+  }
+
+  // 当前进行中的扫描 isolate (仅桌面端 isolate 路径). 用于 cancelSearch().
+  static Isolate? _currentSearchIsolate;
+  static bool _searchCancelled = false;
+
+  /// 取消正在进行的 [searchTargetDevice]. 立即 kill 后台 isolate 并让
+  /// 等待的 Completer 以 (null, null) 完成. 用于"手动连接打断自动扫描".
+  /// 桌面端有效; Android (单 isolate 实现) 暂不可中途打断, 调用会被忽略.
+  static void cancelSearch() {
+    if (_currentSearchIsolate == null) return;
+    _searchCancelled = true;
+    try {
+      _currentSearchIsolate!.kill(priority: Isolate.immediate);
+    } catch (_) {}
   }
 
   /// probeDevice 的纯实现, 不依赖任何 isolate-bound 资源, 可在主或子 isolate 调用.

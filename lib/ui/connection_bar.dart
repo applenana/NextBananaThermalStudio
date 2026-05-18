@@ -290,10 +290,10 @@ class _ConnectionBarState extends State<ConnectionBar> {
                 Expanded(
                   child: Tooltip(
                     message: app.status == ConnectionStatus.scanning
-                        ? '正在自动搜索, 请稍候'
+                        ? '中断自动搜索并连接所选端口'
                         : (connected ? '断开当前连接' : '连接所选端口'),
                     child: FilledButton.icon(
-                      onPressed: isBusy
+                      onPressed: (app.status == ConnectionStatus.connecting)
                           ? null
                           : () async {
                               if (connected) {

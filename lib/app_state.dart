@@ -154,15 +154,15 @@ class AppState extends ChangeNotifier {
 
     _log('info', '发现设备 @ ${found.port}, 准备连接');
     notifyListeners();
-    // 扫描隔中用户可能已手动连上 (当时 connect 的 scanning guard
-    // 还不能拦住 "扫描后期" 手动点击), 这里二次判定, 避免反复抹去流.
-    if (status == ConnectionStatus.connected) {
-      _log('info', '扫描期间已手动连上, 放弃自动结果');
+    // 扫描隔中用户可能已手动连上, 这里二次判定, 避免反复抹去流.
+    if (status == ConnectionStatus.connected ||
+        status == ConnectionStatus.connecting) {
+      _log('info', '扫描期间已有连接动作, 放弃自动结果');
       if (found.info != null) {
         _absorbDeviceInfo(found.info!);
         notifyListeners();
       }
-      return true;
+      return status == ConnectionStatus.connected;
     }
     await connect(found.port!, baud: baud);
     // 探测阶段已经拿到 JSON, 直接消化, 不必等连接后再 GetSysInfo
@@ -174,9 +174,18 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> connect(String portName, {int baud = 115200}) async {
+    // 手动连接优先级最高: 如果正在自动扫描, 立即打断扫描后接手.
     if (status == ConnectionStatus.scanning) {
-      _log('warn', '自动扫描进行中, 已取消手动连接请求');
-      return;
+      _log('info', '手动连接请求, 中断自动搜索');
+      SerialService.cancelSearch();
+      // 等 autoSearchAndConnect 的 finally 走完 (状态回到 disconnected),
+      // 避免两条路径同时操作 _serial.
+      final start = DateTime.now();
+      while (status == ConnectionStatus.scanning &&
+          DateTime.now().difference(start) <
+              const Duration(milliseconds: 1500)) {
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+      }
     }
     if (status == ConnectionStatus.connected) await disconnect();
     status = ConnectionStatus.connecting;
