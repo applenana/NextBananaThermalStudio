@@ -66,41 +66,49 @@ class RealtimeTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 桌面/PC: 全局左下角悬浮一个扁平天蓝色拍摄栏 (与实时画面解耦, 不挡侧栏).
+    // Android: 拍摄栏跟随实时画面下沿 (在 _ThermalCardState 的 canvasArea 内挂载).
+    final isDesktop = !Platform.isAndroid;
     return ValueListenableBuilder<double>(
       valueListenable: appWideBreakpoint,
       builder: (context, breakpoint, _) => LayoutBuilder(
-      builder: (context, c) {
-        // 宽屏: 顶部主区(左热像主画面 + 右侧栏[可见光/温度/趋势/控制]), 底部串口控制台 (全宽)
-        // 窄屏: 纵向堆叠
-        final wide = c.maxWidth > breakpoint;
-        if (wide) {
-          // Android 平板横屏: 顶部嵌入 ConnectionBar (home_shell 在 Android
-          // 上不出全局连接栏, 而宽屏分支若不内嵌, 用户在平板横屏会找不到
-          // 串口入口). 桌面在 home_shell 顶部已有全局连接栏, 此处不重复.
-          return Column(
-            children: [
-              if (Platform.isAndroid) ...const [
-                ConnectionBar(),
-                SizedBox(height: 12),
-              ],
-              const Expanded(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+        builder: (context, c) {
+          final wide = c.maxWidth > breakpoint;
+          final body = wide
+              ? Column(
                   children: [
-                    Expanded(flex: 1, child: _ThermalCard()),
-                    SizedBox(width: 12),
-                    Expanded(flex: 1, child: _RightAside()),
+                    if (Platform.isAndroid) ...const [
+                      ConnectionBar(),
+                      SizedBox(height: 12),
+                    ],
+                    const Expanded(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(flex: 1, child: _ThermalCard()),
+                          SizedBox(width: 12),
+                          Expanded(flex: 1, child: _RightAside()),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const _CollapsibleConsole(expandedHeight: 180),
                   ],
-                ),
+                )
+              : const _NarrowLayout();
+          if (!isDesktop) return body;
+          return Stack(
+            children: [
+              Positioned.fill(child: body),
+              const Positioned(
+                left: 12,
+                bottom: 12,
+                child: _CaptureBar(compact: true),
               ),
-              const SizedBox(height: 12),
-              const _CollapsibleConsole(expandedHeight: 180),
             ],
           );
-        }
-        return const _NarrowLayout();
-      },
-    ),
+        },
+      ),
     );
   }
 }
@@ -507,17 +515,8 @@ class _ThermalCardState extends State<_ThermalCard> {
         ],
       );
     } else {
-      canvasArea = Stack(
-        children: [
-          Positioned.fill(child: canvas),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 10,
-            child: Center(child: _CaptureBar()),
-          ),
-        ],
-      );
+      // 桌面端拍摄栏由 RealtimeTab 外层 Stack 挂在屏幕左下角, 此处保持 canvas 干净.
+      canvasArea = canvas;
     }
 
     final inner = Column(
@@ -3051,7 +3050,9 @@ class _ExpandedConsoleShell extends StatelessWidget {
 /// - 右按钮: 录制开始 / 停止 (帧序列 .btpkg, 文件名 VID_yyyyMMdd_HHmmss.btpkg)
 /// 录制中右按钮变为红色方块, 旁显示帧计数 / 时长.
 class _CaptureBar extends StatefulWidget {
-  const _CaptureBar();
+  const _CaptureBar({this.compact = false});
+  /// 桌面端紧凑扁平模式: 体积更小, 天蓝色实色, 去阴影.
+  final bool compact;
   @override
   State<_CaptureBar> createState() => _CaptureBarState();
 }
@@ -3148,17 +3149,37 @@ class _CaptureBarState extends State<_CaptureBar> {
     final recording = app.isRecording;
     final hasThermal = app.thermalFrame != null;
     final hasVisible = app.visibleWidth > 0;
+    final compact = widget.compact;
+    // 天蓝色 (Material LightBlue 400) + 高对比白色前景, 用于桌面紧凑模式.
+    const skyBlue = Color(0xFF29B6F6);
+    const skyBlueDim = Color(0xFF0288D1);
+    final bg = compact
+        ? skyBlue.withValues(alpha: 0.94)
+        : scheme.surface.withValues(alpha: 0.86);
+    final fg = compact ? Colors.white : scheme.primary;
+    final padH = compact ? 8.0 : 10.0;
+    final padV = compact ? 3.0 : 6.0;
+    final radius = compact ? 18.0 : 28.0;
+    final iconSize = compact ? 20.0 : 24.0;
+    final gap = compact ? 4.0 : 8.0;
     return Material(
       color: Colors.transparent,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        padding: EdgeInsets.symmetric(horizontal: padH, vertical: padV),
         decoration: BoxDecoration(
-          color: scheme.surface.withValues(alpha: 0.86),
-          borderRadius: BorderRadius.circular(28),
-          border: Border.all(color: scheme.outlineVariant),
-          boxShadow: const [
-            BoxShadow(blurRadius: 6, color: Colors.black26, offset: Offset(0, 2)),
-          ],
+          color: bg,
+          borderRadius: BorderRadius.circular(radius),
+          border: compact
+              ? null
+              : Border.all(color: scheme.outlineVariant),
+          boxShadow: compact
+              ? null
+              : const [
+                  BoxShadow(
+                      blurRadius: 6,
+                      color: Colors.black26,
+                      offset: Offset(0, 2)),
+                ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -3169,40 +3190,67 @@ class _CaptureBarState extends State<_CaptureBar> {
               color: const Color(0xFFFF8A65),
               tooltip: hasThermal ? '热成像槽位: 推流中' : '热成像槽位: 关闭',
             ),
-            const SizedBox(width: 3),
+            SizedBox(width: compact ? 2 : 3),
             _SlotDot(
               active: hasVisible,
               color: const Color(0xFF4DD0E1),
               tooltip: hasVisible ? '可见光槽位: 推流中' : '可见光槽位: 关闭',
             ),
-            const SizedBox(width: 8),
+            SizedBox(width: gap),
             if (recording) ...[
-              Icon(Icons.fiber_manual_record, size: 14, color: scheme.error),
+              Icon(
+                Icons.fiber_manual_record,
+                size: compact ? 12 : 14,
+                color: compact ? Colors.white : scheme.error,
+              ),
               const SizedBox(width: 4),
               Text(
                 '${app.recordedFrameCount}帧',
                 style: TextStyle(
-                  color: scheme.onSurface,
-                  fontSize: 12,
+                  color: compact ? Colors.white : scheme.onSurface,
+                  fontSize: compact ? 11 : 12,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
-              const SizedBox(width: 8),
+              SizedBox(width: gap),
             ],
             IconButton(
               onPressed: _busy || recording ? null : _shot,
               icon: const Icon(Icons.photo_camera_rounded),
               tooltip: '拍摄当前槽位',
-              color: scheme.primary,
+              color: fg,
+              iconSize: iconSize,
+              padding: EdgeInsets.all(compact ? 4 : 8),
+              constraints: compact
+                  ? const BoxConstraints(minWidth: 32, minHeight: 32)
+                  : const BoxConstraints(),
+              visualDensity: compact ? VisualDensity.compact : null,
             ),
             IconButton(
               onPressed: _busy ? null : _toggleRecord,
               icon: Icon(
-                recording ? Icons.stop_circle_rounded : Icons.videocam_rounded,
+                recording
+                    ? Icons.stop_circle_rounded
+                    : Icons.videocam_rounded,
               ),
               tooltip: recording ? '停止录制' : '开始录制 (跟随实时槽位)',
-              color: recording ? scheme.error : scheme.primary,
+              color: recording
+                  ? (compact ? Colors.white : scheme.error)
+                  : fg,
+              iconSize: iconSize,
+              padding: EdgeInsets.all(compact ? 4 : 8),
+              constraints: compact
+                  ? const BoxConstraints(minWidth: 32, minHeight: 32)
+                  : const BoxConstraints(),
+              visualDensity: compact ? VisualDensity.compact : null,
             ),
+            if (compact && recording)
+              // 录制时桌面紧凑模式增加一条深色描边强调录制状态.
+              Container(
+                width: 1,
+                height: 14,
+                color: skyBlueDim.withValues(alpha: 0.0),
+              ),
           ],
         ),
       ),
