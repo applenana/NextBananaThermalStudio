@@ -1480,10 +1480,15 @@ class _DetailBodyState extends State<_DetailBody> {
       }
 
       // 桌面 Windows/Linux: 通过外部 ffmpeg 编码.
-      if (!await _ffmpegAvailable()) {
+      final ffmpegPath = await _resolveFfmpegPath();
+      if (ffmpegPath == null) {
         if (!mounted) return;
-        BananaToast.show(context,
-            '未检测到 ffmpeg, 回退逐帧 PNG. 将 ffmpeg 加入 PATH 后可直接导出 MP4.');
+        BananaToast.show(
+          context,
+          '未检测到 ffmpeg, 回退逐帧 PNG. 将 ffmpeg 加入 PATH 后可直接导出 MP4.',
+          duration: const Duration(seconds: 5),
+          icon: Icons.warning_amber_rounded,
+        );
         await _exportAllFramesAsPngBatch(setExportingFlag: false);
         return;
       }
@@ -1502,7 +1507,7 @@ class _DetailBodyState extends State<_DetailBody> {
         '-b:v', '$bitrate',
         outPath,
       ];
-      final proc = await Process.start('ffmpeg', args);
+      final proc = await Process.start(ffmpegPath, args);
       final stderrBuf = StringBuffer();
       proc.stderr.transform(const SystemEncoding().decoder).listen(stderrBuf.write);
       proc.stdout.drain<void>();
@@ -1541,14 +1546,24 @@ class _DetailBodyState extends State<_DetailBody> {
     }
   }
 
-  /// 探测系统 PATH 中是否存在 ffmpeg.
-  Future<bool> _ffmpegAvailable() async {
+  /// 解析可用的 ffmpeg 可执行路径:
+  /// 1. 优先使用与 app exe 同目录的 ffmpeg(.exe) (Windows 打包随附);
+  /// 2. 否则回退到系统 PATH 中的 ffmpeg.
+  /// 若都不可用返回 null.
+  Future<String?> _resolveFfmpegPath() async {
+    final exeName = Platform.isWindows ? 'ffmpeg.exe' : 'ffmpeg';
     try {
-      final r = await Process.run('ffmpeg', ['-version']);
-      return r.exitCode == 0;
-    } catch (_) {
-      return false;
-    }
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final bundled = p.join(exeDir, exeName);
+      if (await File(bundled).exists()) {
+        return bundled;
+      }
+    } catch (_) {}
+    try {
+      final r = await Process.run(exeName, ['-version']);
+      if (r.exitCode == 0) return exeName;
+    } catch (_) {}
+    return null;
   }
 
   /// Windows/Linux 桌面回退: 逐帧 PNG 写入 exports/<base>/ 子目录.

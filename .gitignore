@@ -92,3 +92,7 @@ tools/_local_*
 /android/app/profile
 /android/app/release
 migrate_working_dir/
+
+# Bundled ffmpeg (downloaded by CMake)
+windows/runner/bundled/
+

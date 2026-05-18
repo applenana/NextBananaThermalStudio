@@ -106,3 +106,60 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# ============================================================================
+# Optional: bundle ffmpeg.exe alongside the runner so the in-app MP4 exporter
+# can call it directly (no need for the user to have ffmpeg on PATH).
+#
+# Default: OFF (keeps Windows build fast and the distributable lean).
+# To enable: set environment variable BUNDLE_FFMPEG=1 (CI release uses this).
+#
+# Strategy:
+# - Cache the binary at windows/runner/bundled/ffmpeg.exe (gitignored).
+# - First configure downloads BtbN's static GPL build (~130MB) and extracts
+#   only ffmpeg.exe into the cache dir. Subsequent builds reuse the cache.
+# - Both POST_BUILD (for `flutter run` / dev) and install() (for release
+#   packaging) place ffmpeg.exe next to banana_thermal.exe.
+# ============================================================================
+set(FFMPEG_CACHE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/runner/bundled")
+set(FFMPEG_EXE_CACHE "${FFMPEG_CACHE_DIR}/ffmpeg.exe")
+set(FFMPEG_URL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip")
+
+if(DEFINED ENV{BUNDLE_FFMPEG} AND NOT "$ENV{BUNDLE_FFMPEG}" STREQUAL "0" AND NOT EXISTS "${FFMPEG_EXE_CACHE}")
+  set(FFMPEG_ZIP "${CMAKE_BINARY_DIR}/_ffmpeg_dl/ffmpeg.zip")
+  set(FFMPEG_EXTRACT_DIR "${CMAKE_BINARY_DIR}/_ffmpeg_dl/extracted")
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/_ffmpeg_dl")
+  message(STATUS "[ffmpeg] BUNDLE_FFMPEG=1: downloading static build from BtbN (one-time, ~130MB) ...")
+  file(DOWNLOAD "${FFMPEG_URL}" "${FFMPEG_ZIP}"
+    SHOW_PROGRESS
+    STATUS _ffmpeg_dl_status
+    TLS_VERIFY ON
+  )
+  list(GET _ffmpeg_dl_status 0 _ffmpeg_dl_code)
+  if(_ffmpeg_dl_code EQUAL 0)
+    message(STATUS "[ffmpeg] Extracting ...")
+    file(MAKE_DIRECTORY "${FFMPEG_EXTRACT_DIR}")
+    file(ARCHIVE_EXTRACT INPUT "${FFMPEG_ZIP}" DESTINATION "${FFMPEG_EXTRACT_DIR}")
+    file(GLOB_RECURSE _ffmpeg_found "${FFMPEG_EXTRACT_DIR}/*/bin/ffmpeg.exe")
+    if(_ffmpeg_found)
+      list(GET _ffmpeg_found 0 _ffmpeg_src)
+      file(MAKE_DIRECTORY "${FFMPEG_CACHE_DIR}")
+      file(COPY "${_ffmpeg_src}" DESTINATION "${FFMPEG_CACHE_DIR}")
+      message(STATUS "[ffmpeg] Cached at ${FFMPEG_EXE_CACHE}")
+    else()
+      message(WARNING "[ffmpeg] ffmpeg.exe not found inside downloaded archive. MP4 export will fall back to PATH lookup.")
+    endif()
+  else()
+    message(WARNING "[ffmpeg] Download failed (${_ffmpeg_dl_status}). MP4 export will fall back to PATH lookup.")
+  endif()
+endif()
+
+if(EXISTS "${FFMPEG_EXE_CACHE}")
+  add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${FFMPEG_EXE_CACHE}" "$<TARGET_FILE_DIR:${BINARY_NAME}>/ffmpeg.exe"
+    COMMENT "Bundling ffmpeg.exe next to ${BINARY_NAME}")
+  install(FILES "${FFMPEG_EXE_CACHE}"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}"
+    COMPONENT Runtime)
+endif()
