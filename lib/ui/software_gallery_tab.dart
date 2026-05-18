@@ -45,6 +45,90 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
   String? _error;
   // 手机模式: 是否进入详情页 (列表 / 详情 单页切换).
   bool _phoneShowDetail = false;
+  // 多选模式 + 已选路径集合 (按文件路径作为唯一键).
+  bool _multiMode = false;
+  final Set<String> _selectedPaths = <String>{};
+
+  void _enterMultiWith(String path) {
+    setState(() {
+      _multiMode = true;
+      _selectedPaths.add(path);
+    });
+  }
+
+  void _exitMulti() {
+    setState(() {
+      _multiMode = false;
+      _selectedPaths.clear();
+    });
+  }
+
+  void _toggleSelectPath(String path) {
+    setState(() {
+      if (_selectedPaths.contains(path)) {
+        _selectedPaths.remove(path);
+        if (_selectedPaths.isEmpty) _multiMode = false;
+      } else {
+        _selectedPaths.add(path);
+      }
+    });
+  }
+
+  void _selectAll() {
+    setState(() {
+      _selectedPaths
+        ..clear()
+        ..addAll(_items.map((e) => e.path));
+    });
+  }
+
+  Future<void> _bulkDelete() async {
+    if (_selectedPaths.isEmpty) return;
+    final n = _selectedPaths.length;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.warning_amber_rounded, size: 30),
+        title: Text('删除 $n 个数据包?'),
+        content: const Text('该操作不可恢复. 已选中的所有 .btpkg 将从磁盘永久删除.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('删除 $n 项'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    int success = 0, fail = 0;
+    for (final pth in _selectedPaths.toList()) {
+      try {
+        await File(pth).delete();
+        _GalleryThumbCache.evict(pth);
+        success++;
+      } catch (_) {
+        fail++;
+      }
+    }
+    if (_selected != null && _selectedPaths.contains(_selected!.path)) {
+      _selected = null;
+    }
+    _exitMulti();
+    await _refresh();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(
+          '批量删除完成: 成功 $success${fail > 0 ? ", 失败 $fail" : ""}'),
+      duration: const Duration(seconds: 2),
+    ));
+  }
 
   @override
   void initState() {
@@ -282,28 +366,68 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
           children: [
             Row(
               children: [
-                const Icon(Icons.collections_bookmark_rounded, size: 18),
-                const SizedBox(width: 8),
-                const Text(
-                  '软件图库',
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
-                ),
-                const Spacer(),
-                Text(
-                  '${_items.length} 项',
-                  style: TextStyle(
-                      fontSize: 11, color: scheme.onSurfaceVariant),
-                ),
-                const SizedBox(width: 8),
-                FilledButton.icon(
-                  onPressed: _loading ? null : _refresh,
-                  icon: const Icon(Icons.refresh_rounded, size: 16),
-                  label: const Text('刷新'),
-                  style: FilledButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
+                if (_multiMode) ...[
+                  IconButton(
+                    tooltip: '退出多选',
+                    onPressed: _exitMulti,
+                    icon: const Icon(Icons.close_rounded, size: 20),
                   ),
-                ),
+                  Text(
+                    '已选 ${_selectedPaths.length}',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700, fontSize: 14),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: _items.isEmpty ? null : _selectAll,
+                    icon: const Icon(Icons.select_all_rounded, size: 16),
+                    label: const Text('全选'),
+                  ),
+                  const SizedBox(width: 4),
+                  FilledButton.icon(
+                    onPressed:
+                        _selectedPaths.isEmpty ? null : _bulkDelete,
+                    icon: const Icon(Icons.delete_sweep_rounded, size: 16),
+                    label: const Text('删除选中'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: scheme.error,
+                      foregroundColor: scheme.onError,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                    ),
+                  ),
+                ] else ...[
+                  const Icon(Icons.collections_bookmark_rounded, size: 18),
+                  const SizedBox(width: 8),
+                  const Text(
+                    '软件图库',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${_items.length} 项',
+                    style: TextStyle(
+                        fontSize: 11, color: scheme.onSurfaceVariant),
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    tooltip: '多选',
+                    onPressed: _items.isEmpty
+                        ? null
+                        : () => setState(() => _multiMode = true),
+                    icon: const Icon(Icons.checklist_rounded, size: 18),
+                  ),
+                  FilledButton.icon(
+                    onPressed: _loading ? null : _refresh,
+                    icon: const Icon(Icons.refresh_rounded, size: 16),
+                    label: const Text('刷新'),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                    ),
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 10),
@@ -332,12 +456,23 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                           itemBuilder: (_, i) {
                             final it = _items[i];
                             final isSel = _selected?.path == it.path;
+                            final inMulti = _multiMode;
+                            final checked = _selectedPaths.contains(it.path);
                             return _PkgTile(
                               item: it,
                               selected: isSel,
+                              multiMode: inMulti,
+                              checked: checked,
                               onTap: () {
+                                if (inMulti) {
+                                  _toggleSelectPath(it.path);
+                                  return;
+                                }
                                 setState(() => _selected = it);
                                 if (phone) _setPhoneShowDetail(true);
+                              },
+                              onLongPress: () {
+                                if (!inMulti) _enterMultiWith(it.path);
                               },
                               onRename: () => _onRename(it),
                               onEditNote: () => _onEditNote(it),
@@ -432,6 +567,9 @@ class _PkgTile extends StatelessWidget {
     required this.onRename,
     required this.onEditNote,
     required this.onDelete,
+    this.multiMode = false,
+    this.checked = false,
+    this.onLongPress,
   });
   final SoftwareGalleryItem item;
   final bool selected;
@@ -439,6 +577,9 @@ class _PkgTile extends StatelessWidget {
   final VoidCallback onRename;
   final VoidCallback onEditNote;
   final VoidCallback onDelete;
+  final bool multiMode;
+  final bool checked;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -448,38 +589,34 @@ class _PkgTile extends StatelessWidget {
     final type = isVideo ? '视频' : '照片';
     final place = (m?.place ?? '').trim();
     final note = (m?.note ?? '').trim();
+    // 多选高亮优先级高于单选高亮.
+    final highlight = multiMode ? checked : selected;
     return Material(
-      color: selected
+      color: highlight
           ? scheme.primary.withValues(alpha: 0.16)
           : scheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           child: Row(
             children: [
-              Container(
-                width: 30,
-                height: 30,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: selected
-                      ? scheme.primary
-                      : scheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(
-                  isVideo
-                      ? Icons.videocam_rounded
-                      : Icons.photo_rounded,
-                  size: 16,
-                  color: selected
-                      ? scheme.onPrimary
-                      : scheme.onSurfaceVariant,
-                ),
-              ),
+              // 多选模式: 复选框; 否则: 缩略图(优先) 或 类型图标.
+              if (multiMode)
+                SizedBox(
+                  width: 30,
+                  height: 30,
+                  child: Checkbox(
+                    value: checked,
+                    onChanged: (_) => onTap(),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                )
+              else
+                _TileThumb(item: item, isVideo: isVideo, selected: selected),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -522,31 +659,82 @@ class _PkgTile extends StatelessWidget {
                   ],
                 ),
               ),
-              PopupMenuButton<String>(
-                tooltip: '更多',
-                icon: Icon(Icons.more_vert_rounded,
-                    size: 18, color: scheme.onSurfaceVariant),
-                onSelected: (v) {
-                  switch (v) {
-                    case 'rename':
-                      onRename();
-                      break;
-                    case 'note':
-                      onEditNote();
-                      break;
-                    case 'delete':
-                      onDelete();
-                      break;
-                  }
-                },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'rename', child: Text('重命名')),
-                  PopupMenuItem(value: 'note', child: Text('编辑备注')),
-                  PopupMenuItem(value: 'delete', child: Text('删除')),
-                ],
-              ),
+              if (!multiMode)
+                PopupMenuButton<String>(
+                  tooltip: '更多',
+                  icon: Icon(Icons.more_vert_rounded,
+                      size: 18, color: scheme.onSurfaceVariant),
+                  onSelected: (v) {
+                    switch (v) {
+                      case 'rename':
+                        onRename();
+                        break;
+                      case 'note':
+                        onEditNote();
+                        break;
+                      case 'delete':
+                        onDelete();
+                        break;
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'rename', child: Text('重命名')),
+                    PopupMenuItem(value: 'note', child: Text('编辑备注')),
+                    PopupMenuItem(value: 'delete', child: Text('删除')),
+                  ],
+                ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// 列表磁贴缩略图: 优先显示首帧 visiblePng, 否则显示类型图标.
+class _TileThumb extends StatelessWidget {
+  const _TileThumb({
+    required this.item,
+    required this.isVideo,
+    required this.selected,
+  });
+  final SoftwareGalleryItem item;
+  final bool isVideo;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final fallbackIcon = Icon(
+      isVideo ? Icons.videocam_rounded : Icons.photo_rounded,
+      size: 16,
+      color: selected ? scheme.onPrimary : scheme.onSurfaceVariant,
+    );
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 30,
+        height: 30,
+        alignment: Alignment.center,
+        color:
+            selected ? scheme.primary : scheme.surfaceContainerHighest,
+        child: FutureBuilder<Uint8List?>(
+          future: _GalleryThumbCache.get(item.path, item.mtime),
+          builder: (_, snap) {
+            final bytes = snap.data;
+            if (bytes != null && bytes.isNotEmpty) {
+              return Image.memory(
+                bytes,
+                width: 30,
+                height: 30,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+                filterQuality: FilterQuality.low,
+                errorBuilder: (_, __, ___) => fallbackIcon,
+              );
+            }
+            return fallbackIcon;
+          },
         ),
       ),
     );
@@ -562,6 +750,65 @@ String _fmtSize(int b) {
 String _fmtTime(DateTime t) {
   String two(int n) => n < 10 ? '0$n' : '$n';
   return '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
+}
+
+// ============================================================
+// 图库缩略图缓存
+// 以 (path, mtime) 为键, 异步打开 .btpkg 取首帧 visiblePng 作为缩略图.
+// 纯热成像 / 空帧返回 null, 由调用方降级显示图标.
+// 内存级 LRU, 上限 256 项, 防止超长图库导致 OOM.
+// ============================================================
+class _GalleryThumbCache {
+  static final Map<String, Future<Uint8List?>> _futures =
+      <String, Future<Uint8List?>>{};
+  static final Map<String, int> _mtimes = <String, int>{};
+  // LRU access order: 通过 LinkedHashMap 顺序 + 移除再插入维护.
+  static const int _maxItems = 256;
+
+  static Future<Uint8List?> get(String path, DateTime mtime) {
+    final mt = mtime.millisecondsSinceEpoch;
+    final prev = _mtimes[path];
+    if (prev != null && prev != mt) {
+      // 文件被改写, 失效旧缓存.
+      _futures.remove(path);
+      _mtimes.remove(path);
+    }
+    final existing = _futures[path];
+    if (existing != null) {
+      // LRU touch: 移除再放尾.
+      _futures.remove(path);
+      _futures[path] = existing;
+      return existing;
+    }
+    final f = _load(path);
+    _futures[path] = f;
+    _mtimes[path] = mt;
+    if (_futures.length > _maxItems) {
+      final oldest = _futures.keys.first;
+      _futures.remove(oldest);
+      _mtimes.remove(oldest);
+    }
+    return f;
+  }
+
+  static void evict(String path) {
+    _futures.remove(path);
+    _mtimes.remove(path);
+  }
+
+  static Future<Uint8List?> _load(String path) async {
+    try {
+      final r = await CapturePackageReader.open(path);
+      if (r.frameCount == 0) return null;
+      final f = await r.readFrame(0);
+      if (f.visiblePng != null && f.visiblePng!.isNotEmpty) {
+        return f.visiblePng;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 // ============================================================
@@ -902,6 +1149,7 @@ class _DetailBodyState extends State<_DetailBody> {
                               f.visiblePng!,
                               fit: BoxFit.contain,
                               alignment: Alignment.topCenter,
+                              gaplessPlayback: true,
                             ),
                           ),
                         ),
@@ -994,7 +1242,9 @@ class _DetailBodyState extends State<_DetailBody> {
           : 4 / 3,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
-        child: Image.memory(vpng, fit: BoxFit.contain),
+        // gaplessPlayback: 视频连续帧刷新时保留旧画面直到新帧 decode 完成,
+        // 避免纯可见光视频回放出现"一闪一闪"的空白.
+        child: Image.memory(vpng, fit: BoxFit.contain, gaplessPlayback: true),
       ),
     );
   }

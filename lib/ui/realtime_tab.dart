@@ -66,9 +66,7 @@ class RealtimeTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        ValueListenableBuilder<double>(
+    return ValueListenableBuilder<double>(
       valueListenable: appWideBreakpoint,
       builder: (context, breakpoint, _) => LayoutBuilder(
       builder: (context, c) {
@@ -103,13 +101,6 @@ class RealtimeTab extends StatelessWidget {
         return const _NarrowLayout();
       },
     ),
-    ),
-        const Positioned(
-          right: 16,
-          bottom: 16,
-          child: _CaptureBar(),
-        ),
-      ],
     );
   }
 }
@@ -506,10 +497,27 @@ class _ThermalCardState extends State<_ThermalCard> {
               ],
             ),
           ),
+          // 拍摄/录制栏: 底部居中, 直接挂在实时画面下沿 (语义最直接: 拍的就是上面这张画面).
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 10,
+            child: Center(child: _CaptureBar()),
+          ),
         ],
       );
     } else {
-      canvasArea = canvas;
+      canvasArea = Stack(
+        children: [
+          Positioned.fill(child: canvas),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 10,
+            child: Center(child: _CaptureBar()),
+          ),
+        ],
+      );
     }
 
     final inner = Column(

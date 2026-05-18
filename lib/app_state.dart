@@ -112,6 +112,45 @@ class AppState extends ChangeNotifier {
       onVisible: _onVisibleFrame,
       onPassthrough: _onPassthrough,
     );
+    // 后台周期刷新位置缓存. 拍摄/录制点击零延迟直接读取缓存,
+    // 不再阻塞用户操作 (GPS+反向地理编码最长可能耗时 10s 量级).
+    _refreshLocationCache();
+    _locationRefreshTimer = Timer.periodic(
+      const Duration(seconds: 60),
+      (_) => _refreshLocationCache(),
+    );
+  }
+
+  // ---------------- 位置缓存 (供拍摄/录制即时使用) ----------------
+  // 计时器引用必须保留以防被 GC; 用 ignore 抑制 unused_field 警告.
+  // ignore: unused_field
+  Timer? _locationRefreshTimer;
+  double? _cachedLat;
+  double? _cachedLng;
+  double? _cachedAlt;
+  String? _cachedPlace;
+  Future<void>? _locationRefreshInFlight;
+
+  Future<void> _refreshLocationCache() async {
+    // 同时只允许一份刷新 in-flight; 后续触发直接 return.
+    if (_locationRefreshInFlight != null) return;
+    final f = () async {
+      final loc = await _tryGetLocation();
+      if (loc == null) return;
+      _cachedLat = loc.$1;
+      _cachedLng = loc.$2;
+      _cachedAlt = loc.$3;
+      final place = await _reverseGeocode(loc.$1, loc.$2);
+      if (place != null && place.isNotEmpty) {
+        _cachedPlace = place;
+      }
+    }();
+    _locationRefreshInFlight = f;
+    try {
+      await f;
+    } finally {
+      _locationRefreshInFlight = null;
+    }
   }
 
   // ============================================================
@@ -1055,8 +1094,8 @@ class AppState extends ChangeNotifier {
     final tf = thermalFrame;
     final hasThermal = tf != null && tf.isNotEmpty;
     final hasVisible = visibleRgb888 != null && visibleWidth > 0;
-    final loc = await _tryGetLocation();
-    final place = loc == null ? null : await _reverseGeocode(loc.$1, loc.$2);
+    // 触发后台刷新, 不阻塞.
+    unawaited(_refreshLocationCache());
     final path = await CaptureService.instance.takePhoto(
       thermal: hasThermal ? tf : null,
       thermalW: 32,
@@ -1064,10 +1103,10 @@ class AppState extends ChangeNotifier {
       visibleRgb888: hasVisible ? visibleRgb888 : null,
       visibleW: hasVisible ? visibleWidth : 0,
       visibleH: hasVisible ? visibleHeight : 0,
-      lat: loc?.$1,
-      lng: loc?.$2,
-      alt: loc?.$3,
-      place: place,
+      lat: _cachedLat,
+      lng: _cachedLng,
+      alt: _cachedAlt,
+      place: _cachedPlace,
       deviceSn: deviceSerial,
       note: note,
       renderParams: renderParams.toJson(),
@@ -1084,17 +1123,16 @@ class AppState extends ChangeNotifier {
   /// 开始录制. 录制期间由内部 30fps 计时器周期采样当前槽位状态, 与推流开关无耦合.
   Future<String> startRecording({String note = ''}) async {
     if (isRecording) throw StateError('已经在录制中');
-    final loc = await _tryGetLocation();
-    final place = loc == null ? null : await _reverseGeocode(loc.$1, loc.$2);
+    unawaited(_refreshLocationCache());
     final path = await CaptureService.instance.startRecording(
       thermalW: 32,
       thermalH: 24,
       visibleW: visibleWidth,
       visibleH: visibleHeight,
-      lat: loc?.$1,
-      lng: loc?.$2,
-      alt: loc?.$3,
-      place: place,
+      lat: _cachedLat,
+      lng: _cachedLng,
+      alt: _cachedAlt,
+      place: _cachedPlace,
       deviceSn: deviceSerial,
       note: note,
       renderParams: renderParams.toJson(),
