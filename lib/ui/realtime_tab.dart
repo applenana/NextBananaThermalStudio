@@ -499,10 +499,11 @@ class _ThermalCardState extends State<_ThermalCard> {
           ),
           // 拍摄/录制栏: 主画面框内右下角嵌入挂载. 桌面与 Android 共用,
           // 蓝色胶囊 + 四角圆角, 与画面边缘留 12px 间距, 不溢出 Card 边框.
+          // Android 端开启 compact 模式 (整体小一号).
           const Positioned(
-            right: 12,
-            bottom: 12,
-            child: _CaptureBar(embedded: true),
+            right: 8,
+            bottom: 8,
+            child: _CaptureBar(embedded: true, compact: true),
           ),
         ],
       );
@@ -3051,9 +3052,11 @@ class _ExpandedConsoleShell extends StatelessWidget {
 /// - 右按钮: 录制开始 / 停止 (帧序列 .btpkg, 文件名 VID_yyyyMMdd_HHmmss.btpkg)
 /// 录制中右按钮变为红色方块, 旁显示帧计数 / 时长.
 class _CaptureBar extends StatefulWidget {
-  const _CaptureBar({this.embedded = false});
+  const _CaptureBar({this.embedded = false, this.compact = false});
   /// 嵌入式胶囊模式: 蓝色实色 + 四角圆角 + 紧凑控件, 用于桌面/Android 嵌挂在主画面 box 右下角.
   final bool embedded;
+  /// 进一步压缩控件尺寸 (Android 端启用), 整体小一号.
+  final bool compact;
   @override
   State<_CaptureBar> createState() => _CaptureBarState();
 }
@@ -3149,20 +3152,23 @@ class _CaptureBarState extends State<_CaptureBar> {
     final hasThermal = app.thermalFrame != null;
     final hasVisible = app.visibleWidth > 0;
     final embedded = widget.embedded;
+    final compact = widget.compact;
     // 嵌入式胶囊 (Material LightBlue 系): 与画面边缘留 12px 嵌入主画面 box 右下角.
-    //   - bg: LightBlue 400, 高对比白色前景, 圆角 18 四角全圆 (与 Card 边角自然衔接)
+    //   - bg: LightBlue 400 + 10% alpha, 极轻盈半透明, 不遮画面
+    //   - 高对比白色前景 + 阴影, 圆角 18 四角全圆 (与 Card 边角自然衔接)
     //   - 非 embedded 走旧的浅色 surface 样式 (保留兼容)
+    //   - compact (Android): 整体小一号, padding/icon/gap 进一步压缩
     const skyBlue = Color(0xFF29B6F6);
     final Color bg = embedded
-        ? skyBlue.withValues(alpha: 0.94)
+        ? skyBlue.withValues(alpha: 0.10)
         : scheme.surface.withValues(alpha: 0.86);
     final Color fg = embedded ? Colors.white : scheme.primary;
-    final padH = embedded ? 10.0 : 10.0;
-    final padV = embedded ? 4.0 : 6.0;
-    final iconSize = embedded ? 22.0 : 24.0;
-    final gap = embedded ? 4.0 : 8.0;
+    final padH = embedded ? (compact ? 6.0 : 10.0) : 10.0;
+    final padV = embedded ? (compact ? 2.0 : 4.0) : 6.0;
+    final iconSize = embedded ? (compact ? 18.0 : 22.0) : 24.0;
+    final gap = embedded ? (compact ? 2.0 : 4.0) : 8.0;
     final BorderRadius borderRadius =
-        BorderRadius.circular(embedded ? 18.0 : 28.0);
+        BorderRadius.circular(embedded ? (compact ? 14.0 : 18.0) : 28.0);
     final Border? border =
         embedded ? null : Border.all(color: scheme.outlineVariant);
     final List<BoxShadow>? boxShadow = embedded
@@ -3225,9 +3231,12 @@ class _CaptureBarState extends State<_CaptureBar> {
               tooltip: '拍摄当前槽位',
               color: fg,
               iconSize: iconSize,
-              padding: EdgeInsets.all(embedded ? 4 : 8),
+              padding: EdgeInsets.all(embedded ? (compact ? 2 : 4) : 8),
               constraints: embedded
-                  ? const BoxConstraints(minWidth: 32, minHeight: 32)
+                  ? BoxConstraints(
+                      minWidth: compact ? 26 : 32,
+                      minHeight: compact ? 26 : 32,
+                    )
                   : const BoxConstraints(),
               visualDensity: embedded ? VisualDensity.compact : null,
             ),
@@ -3243,9 +3252,12 @@ class _CaptureBarState extends State<_CaptureBar> {
                   ? (embedded ? Colors.white : scheme.error)
                   : fg,
               iconSize: iconSize,
-              padding: EdgeInsets.all(embedded ? 4 : 8),
+              padding: EdgeInsets.all(embedded ? (compact ? 2 : 4) : 8),
               constraints: embedded
-                  ? const BoxConstraints(minWidth: 32, minHeight: 32)
+                  ? BoxConstraints(
+                      minWidth: compact ? 26 : 32,
+                      minHeight: compact ? 26 : 32,
+                    )
                   : const BoxConstraints(),
               visualDensity: embedded ? VisualDensity.compact : null,
             ),

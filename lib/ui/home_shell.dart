@@ -15,8 +15,10 @@ import '../main.dart'
         appWideBreakpoint,
         appPhotoDownloadDir,
         appPhotoDetailOpen,
+        appSoftwareDetailOpen,
         appPhotoTabActive,
         appClosePhotoDetail,
+        appCloseSoftwareDetail,
         appConnectionBarExpanded,
         appConsoleExpanded,
         setPhotoDownloadDir,
@@ -58,6 +60,10 @@ class _HomeShellState extends State<HomeShell> {
     if (!Platform.isAndroid) return;
     if (appPhotoDetailOpen.value && appClosePhotoDetail != null) {
       appClosePhotoDetail!();
+      return;
+    }
+    if (appSoftwareDetailOpen.value && appCloseSoftwareDetail != null) {
+      appCloseSoftwareDetail!();
       return;
     }
     if (appConnectionBarExpanded.value) {

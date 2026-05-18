@@ -17,6 +17,7 @@ import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../main.dart' show appCloseSoftwareDetail, appSoftwareDetailOpen;
 import '../fusion/fusion.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
@@ -136,11 +137,18 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
     super.initState();
     _refresh();
     softwareGalleryRefreshTrigger.addListener(_onTrigger);
+    // Android 返回键 / sub-tab 切换 请求关闭详情页的全局钩子.
+    appCloseSoftwareDetail = () {
+      if (!mounted) return;
+      if (_phoneShowDetail) _setPhoneShowDetail(false);
+    };
   }
 
   @override
   void dispose() {
     softwareGalleryRefreshTrigger.removeListener(_onTrigger);
+    appCloseSoftwareDetail = null;
+    appSoftwareDetailOpen.value = false;
     super.dispose();
   }
 
@@ -176,6 +184,7 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
   void _setPhoneShowDetail(bool v) {
     if (_phoneShowDetail == v) return;
     setState(() => _phoneShowDetail = v);
+    appSoftwareDetailOpen.value = v;
   }
 
   // ---------------- 列表操作 ----------------

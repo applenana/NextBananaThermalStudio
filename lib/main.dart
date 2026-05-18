@@ -65,6 +65,14 @@ final ValueNotifier<bool> appPhotoTabActive = ValueNotifier<bool>(false);
 /// 内注册, dispose 内置 null. home_shell 拦截返回键时调用此回调.
 VoidCallback? appClosePhotoDetail;
 
+/// 软件图库是否处于"详情页"状态 (与 [appPhotoDetailOpen] 平行,
+/// 由 SoftwareGalleryTab 维护). 返回键 + sub-tab 切换都需要联动关闭.
+final ValueNotifier<bool> appSoftwareDetailOpen = ValueNotifier<bool>(false);
+
+/// Android 返回键 / sub-tab 切换 请求关闭软件图库详情的回调.
+/// 由 SoftwareGalleryTab 在 initState 注册, dispose 置空.
+VoidCallback? appCloseSoftwareDetail;
+
 /// 图库文件下载根目录. null 表示用默认 `<Documents>/BananaThermalStudio`.
 final ValueNotifier<String?> appPhotoDownloadDir =
     ValueNotifier<String?>(null);
