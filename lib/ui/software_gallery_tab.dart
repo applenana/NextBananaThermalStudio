@@ -801,6 +801,13 @@ class _GalleryThumbCache {
       final r = await CapturePackageReader.open(path);
       if (r.frameCount == 0) return null;
       final f = await r.readFrame(0);
+      // 优先热成像缩略图 (即使没有可见光也能预览温度分布).
+      if (f.thermal != null && f.thermal!.isNotEmpty) {
+        final png = _renderThermalThumb(
+            f.thermal!, r.meta.thermalW, r.meta.thermalH);
+        if (png != null) return png;
+      }
+      // 次选可见光首帧.
       if (f.visiblePng != null && f.visiblePng!.isNotEmpty) {
         return f.visiblePng;
       }
@@ -808,6 +815,58 @@ class _GalleryThumbCache {
     } catch (_) {
       return null;
     }
+  }
+
+  // 极简热成像 -> Iron 调色板 -> PNG. 仅用于列表缩略图(小尺寸, 一次缓存).
+  static Uint8List? _renderThermalThumb(Float32List data, int w, int h) {
+    if (w <= 0 || h <= 0 || data.length < w * h) return null;
+    double mn = double.infinity, mx = -double.infinity;
+    for (final v in data) {
+      if (v.isNaN) continue;
+      if (v < mn) mn = v;
+      if (v > mx) mx = v;
+    }
+    if (!mn.isFinite || !mx.isFinite) return null;
+    final span = (mx - mn).abs() < 1e-6 ? 1.0 : (mx - mn);
+    final image = img.Image(width: w, height: h, numChannels: 3);
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        final v = data[y * w + x];
+        double t = (v - mn) / span;
+        if (t.isNaN) t = 0;
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
+        // Iron 调色板 5 段: 黑 -> 紫 -> 红 -> 黄 -> 白.
+        final rgb = _ironRgb(t);
+        image.setPixelRgb(x, y, rgb[0], rgb[1], rgb[2]);
+      }
+    }
+    return Uint8List.fromList(img.encodePng(image, level: 6));
+  }
+
+  // Iron 调色板查表 (近似): t in [0,1] -> RGB.
+  static List<int> _ironRgb(double t) {
+    // 5 段: (0.00) 黑(0,0,0) -> (0.25) 紫(80,0,128)
+    // -> (0.50) 红(230,40,40) -> (0.75) 黄(255,200,0) -> (1.00) 白(255,255,255).
+    const stops = <List<num>>[
+      [0.00, 0, 0, 0],
+      [0.25, 80, 0, 128],
+      [0.50, 230, 40, 40],
+      [0.75, 255, 200, 0],
+      [1.00, 255, 255, 255],
+    ];
+    for (int i = 0; i < stops.length - 1; i++) {
+      final a = stops[i];
+      final b = stops[i + 1];
+      if (t >= a[0] && t <= b[0]) {
+        final k = (t - a[0]) / (b[0] - a[0]);
+        final r = (a[1] + (b[1] - a[1]) * k).round();
+        final g = (a[2] + (b[2] - a[2]) * k).round();
+        final bb = (a[3] + (b[3] - a[3]) * k).round();
+        return [r, g, bb];
+      }
+    }
+    return [255, 255, 255];
   }
 }
 
