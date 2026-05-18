@@ -60,6 +60,7 @@ class _ActivationDialog extends StatefulWidget {
 class _ActivationDialogState extends State<_ActivationDialog> {
   final TextEditingController _ctrl = TextEditingController();
   bool _busy = false;
+  String? _errorMsg;
   Timer? _serialPollTimer;
   int _serialRetry = 0;
   static const int _kMaxSerialRetry = 5;
@@ -162,31 +163,12 @@ class _ActivationDialogState extends State<_ActivationDialog> {
 
   Future<void> _showErrorDialog(String message) async {
     if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (ctx) {
-        final scheme = Theme.of(ctx).colorScheme;
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-          ),
-          icon: Icon(
-            Icons.error_outline_rounded,
-            color: scheme.error,
-            size: 32,
-          ),
-          title: const Text('激活码错误'),
-          content: Text(message),
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('我知道了'),
-            ),
-          ],
-        );
-      },
-    );
+    setState(() => _errorMsg = message);
+  }
+
+  void _dismissError() {
+    if (!mounted) return;
+    setState(() => _errorMsg = null);
   }
 
   Future<void> _submit() async {
@@ -249,6 +231,10 @@ class _ActivationDialogState extends State<_ActivationDialog> {
             ),
           ),
         ),
+        if (_errorMsg != null)
+          Positioned.fill(
+            child: _ErrorLayer(message: _errorMsg!, onDismiss: _dismissError),
+          ),
       ],
     );
   }
@@ -570,6 +556,84 @@ class _LinkInline extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 叠加在激活弹窗之上的错误提示层 (非 Navigator 路由, 避免 Windows release
+/// 模式下 BackdropFilter + showDialog 的渲染兼容问题).
+class _ErrorLayer extends StatelessWidget {
+  final String message;
+  final VoidCallback onDismiss;
+  const _ErrorLayer({required this.message, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onDismiss,
+            child: ColoredBox(color: Colors.black.withValues(alpha: 0.35)),
+          ),
+        ),
+        Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 360),
+              child: Material(
+                color: scheme.surface,
+                elevation: 8,
+                borderRadius: BorderRadius.circular(14),
+                clipBehavior: Clip.antiAlias,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 22, 20, 14),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.error_outline_rounded,
+                        color: scheme.error,
+                        size: 36,
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        '激活码错误',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: scheme.onSurface,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        message,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 13,
+                          height: 1.5,
+                          color: scheme.onSurface.withValues(alpha: 0.78),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: FilledButton(
+                          onPressed: onDismiss,
+                          child: const Text('我知道了'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
