@@ -28,6 +28,7 @@ import 'photo_download_tab.dart' show photoTabRefreshTrigger;
 import 'realtime_tab.dart';
 import 'widgets/window_title_bar.dart';
 import 'window_size_ffi.dart';
+import 'banana_toast.dart';
 import '../app_state.dart';
 import 'package:provider/provider.dart';
 
@@ -79,23 +80,10 @@ class _HomeShellState extends State<HomeShell> {
     }
     _lastBackAt = now;
     if (!mounted) return;
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.clearSnackBars();
-    messenger.showSnackBar(
-      SnackBar(
-        content: const Text(
-          '再按一次返回键退出 App',
-          textAlign: TextAlign.center,
-        ),
-        // floating + 距底部 96 像素, 浮在 NavigationBar 上方而不是被遮挡.
-        behavior: SnackBarBehavior.floating,
-        margin: const EdgeInsets.fromLTRB(48, 0, 48, 96),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-        ),
-        duration: const Duration(milliseconds: 1800),
-        elevation: 6,
-      ),
+    BananaToast.show(
+      context,
+      '再按一次返回键退出 App',
+      icon: Icons.exit_to_app_rounded,
     );
   }
 
@@ -868,9 +856,10 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
                         final w = double.tryParse(_wCtl.text.trim());
                         final h = double.tryParse(_hCtl.text.trim());
                         if (w == null || h == null || w < 600 || h < 400) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content: Text('宽高不合法 (最小 600 × 400)')),
+                          BananaToast.show(
+                            context,
+                            '宽高不合法 (最小 600 × 400)',
+                            icon: Icons.error_outline_rounded,
                           );
                           return;
                         }
@@ -990,17 +979,13 @@ class _DownloadDirControlState extends State<_DownloadDirControl> {
     if (picked == null || picked.isEmpty) return;
     await setPhotoDownloadDir(picked);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('下载路径已更新: $picked')),
-    );
+    BananaToast.show(context, '下载路径已更新: $picked');
   }
 
   Future<void> _reset() async {
     await setPhotoDownloadDir(null);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('已恢复默认下载路径')),
-    );
+    BananaToast.show(context, '已恢复默认下载路径');
   }
 
   @override
@@ -1117,9 +1102,7 @@ class _ResetSettingsControl extends StatelessWidget {
     if (ok != true || !context.mounted) return;
     await resetAllSettings();
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('已恢复出厂设置')),
-    );
+    BananaToast.show(context, '已恢复出厂设置');
   }
 
   @override

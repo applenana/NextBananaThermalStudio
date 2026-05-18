@@ -21,6 +21,7 @@ import 'package:provider/provider.dart';
 
 import '../app_state.dart';
 import '../fusion/fusion.dart';
+import 'banana_toast.dart';
 import '../main.dart' show appPhotoDownloadDir, appPhotoDetailOpen, appPhotoTabActive, appClosePhotoDetail;
 import '../protocol/photo_cache_index.dart';
 import '../protocol/photo_decoder.dart';
@@ -433,9 +434,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   }
 
   void _toast(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
+    if (!mounted) return;
+    BananaToast.show(context, msg);
   }
 
   @override

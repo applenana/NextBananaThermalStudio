@@ -16,6 +16,7 @@ import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
 import 'connection_bar.dart';
 import 'software_gallery_tab.dart' show softwareGalleryRefreshTrigger;
+import 'banana_toast.dart';
 import 'widgets/rgb_image_view.dart';
 import 'widgets/thermal_canvas.dart';
 
@@ -496,18 +497,27 @@ class _ThermalCardState extends State<_ThermalCard> {
               ],
             ),
           ),
-          // 拍摄/录制栏: 底部居中, 直接挂在实时画面下沿 (语义最直接: 拍的就是上面这张画面).
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 10,
-            child: Center(child: _CaptureBar()),
+          // 拍摄/录制栏: 主画面框内右下角嵌入挂载. 桌面与 Android 共用,
+          // 蓝色胶囊 + 四角圆角, 与画面边缘留 12px 间距, 不溢出 Card 边框.
+          const Positioned(
+            right: 12,
+            bottom: 12,
+            child: _CaptureBar(embedded: true),
           ),
         ],
       );
     } else {
-      // 桌面端拍摄栏由 RealtimeTab 外层 Stack 挂在屏幕左下角, 此处保持 canvas 干净.
-      canvasArea = canvas;
+      // 桌面端: 同样在 canvas 内放右下角嵌入式拍摄栏, 与 Android 风格统一.
+      canvasArea = Stack(
+        children: [
+          Positioned.fill(child: canvas),
+          const Positioned(
+            right: 12,
+            bottom: 12,
+            child: _CaptureBar(embedded: true),
+          ),
+        ],
+      );
     }
 
     final inner = Column(
@@ -532,22 +542,7 @@ class _ThermalCardState extends State<_ThermalCard> {
         child: inner,
       );
     }
-    final card = Card(child: inner);
-    if (isAndroid) return card;
-    // 桌面: 把拍摄栏作为嵌入式 tab 挂在 Card 底沿正中,
-    // 与画面边框融合 (顶平底圆, 略向下溢出, 营造"挂在边框上"的视觉).
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Positioned.fill(child: card),
-        const Positioned(
-          left: 0,
-          right: 0,
-          bottom: -18,
-          child: Center(child: _CaptureBar(embedded: true)),
-        ),
-      ],
-    );
+    return Card(child: inner);
   }
 }
 
@@ -3056,11 +3051,8 @@ class _ExpandedConsoleShell extends StatelessWidget {
 /// - 右按钮: 录制开始 / 停止 (帧序列 .btpkg, 文件名 VID_yyyyMMdd_HHmmss.btpkg)
 /// 录制中右按钮变为红色方块, 旁显示帧计数 / 时长.
 class _CaptureBar extends StatefulWidget {
-  const _CaptureBar({this.compact = false, this.embedded = false});
-  /// 桌面端紧凑扁平模式: 体积更小, 天蓝色实色, 去阴影.
-  /// (与 embedded 互斥; embedded 已优先).
-  final bool compact;
-  /// 嵌入式 tab 模式: 顶平底圆, 颜色/边框与 Card 边框融合, 用于桌面端挂在主画面 Card 底沿.
+  const _CaptureBar({this.embedded = false});
+  /// 嵌入式胶囊模式: 蓝色实色 + 四角圆角 + 紧凑控件, 用于桌面/Android 嵌挂在主画面 box 右下角.
   final bool embedded;
   @override
   State<_CaptureBar> createState() => _CaptureBarState();
@@ -3146,9 +3138,7 @@ class _CaptureBarState extends State<_CaptureBar> {
 
   void _toast(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
+    BananaToast.show(context, msg);
   }
 
   @override
@@ -3158,53 +3148,34 @@ class _CaptureBarState extends State<_CaptureBar> {
     final recording = app.isRecording;
     final hasThermal = app.thermalFrame != null;
     final hasVisible = app.visibleWidth > 0;
-    final compact = widget.compact;
     final embedded = widget.embedded;
-    // 天蓝色 (Material LightBlue 400) + 高对比白色前景, 用于桌面紧凑模式.
+    // 嵌入式胶囊 (Material LightBlue 系): 与画面边缘留 12px 嵌入主画面 box 右下角.
+    //   - bg: LightBlue 400, 高对比白色前景, 圆角 18 四角全圆 (与 Card 边角自然衔接)
+    //   - 非 embedded 走旧的浅色 surface 样式 (保留兼容)
     const skyBlue = Color(0xFF29B6F6);
-    const skyBlueDim = Color(0xFF0288D1);
-    // 嵌入式 tab 样式: 与 Card 边框融合, 顶平底圆, 略亮于 surface, 仅向下投影.
-    final Color bg;
-    if (embedded) {
-      bg = scheme.surfaceContainerHighest;
-    } else if (compact) {
-      bg = skyBlue.withValues(alpha: 0.94);
-    } else {
-      bg = scheme.surface.withValues(alpha: 0.86);
-    }
-    final Color fg = embedded
-        ? scheme.primary
-        : (compact ? Colors.white : scheme.primary);
-    final padH = (compact || embedded) ? 10.0 : 10.0;
-    final padV = embedded ? 4.0 : (compact ? 3.0 : 6.0);
-    final iconSize = embedded ? 22.0 : (compact ? 20.0 : 24.0);
-    final gap = (compact || embedded) ? 4.0 : 8.0;
-    final BorderRadius borderRadius = embedded
-        ? const BorderRadius.vertical(bottom: Radius.circular(20))
-        : BorderRadius.circular(compact ? 18.0 : 28.0);
-    final Border? border = embedded
-        ? Border(
-            left: BorderSide(color: scheme.outlineVariant),
-            right: BorderSide(color: scheme.outlineVariant),
-            bottom: BorderSide(color: scheme.outlineVariant),
-          )
-        : (compact ? null : Border.all(color: scheme.outlineVariant));
-    final List<BoxShadow>? boxShadow;
-    if (embedded) {
-      boxShadow = const [
-        BoxShadow(
-          blurRadius: 8,
-          color: Colors.black26,
-          offset: Offset(0, 3),
-        ),
-      ];
-    } else if (compact) {
-      boxShadow = null;
-    } else {
-      boxShadow = const [
-        BoxShadow(blurRadius: 6, color: Colors.black26, offset: Offset(0, 2)),
-      ];
-    }
+    final Color bg = embedded
+        ? skyBlue.withValues(alpha: 0.94)
+        : scheme.surface.withValues(alpha: 0.86);
+    final Color fg = embedded ? Colors.white : scheme.primary;
+    final padH = embedded ? 10.0 : 10.0;
+    final padV = embedded ? 4.0 : 6.0;
+    final iconSize = embedded ? 22.0 : 24.0;
+    final gap = embedded ? 4.0 : 8.0;
+    final BorderRadius borderRadius =
+        BorderRadius.circular(embedded ? 18.0 : 28.0);
+    final Border? border =
+        embedded ? null : Border.all(color: scheme.outlineVariant);
+    final List<BoxShadow>? boxShadow = embedded
+        ? const [
+            BoxShadow(
+              blurRadius: 10,
+              color: Colors.black38,
+              offset: Offset(0, 3),
+            ),
+          ]
+        : const [
+            BoxShadow(blurRadius: 6, color: Colors.black26, offset: Offset(0, 2)),
+          ];
     return Material(
       color: Colors.transparent,
       child: Container(
@@ -3224,7 +3195,7 @@ class _CaptureBarState extends State<_CaptureBar> {
               color: const Color(0xFFFF8A65),
               tooltip: hasThermal ? '热成像槽位: 推流中' : '热成像槽位: 关闭',
             ),
-            SizedBox(width: compact ? 2 : 3),
+            SizedBox(width: embedded ? 2 : 3),
             _SlotDot(
               active: hasVisible,
               color: const Color(0xFF4DD0E1),
@@ -3234,15 +3205,15 @@ class _CaptureBarState extends State<_CaptureBar> {
             if (recording) ...[
               Icon(
                 Icons.fiber_manual_record,
-                size: compact ? 12 : 14,
-                color: compact ? Colors.white : scheme.error,
+                size: embedded ? 12 : 14,
+                color: embedded ? Colors.white : scheme.error,
               ),
               const SizedBox(width: 4),
               Text(
                 '${app.recordedFrameCount}帧',
                 style: TextStyle(
-                  color: compact ? Colors.white : scheme.onSurface,
-                  fontSize: compact ? 11 : 12,
+                  color: embedded ? Colors.white : scheme.onSurface,
+                  fontSize: embedded ? 11 : 12,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
@@ -3254,12 +3225,11 @@ class _CaptureBarState extends State<_CaptureBar> {
               tooltip: '拍摄当前槽位',
               color: fg,
               iconSize: iconSize,
-              padding: EdgeInsets.all((compact || embedded) ? 4 : 8),
-              constraints: (compact || embedded)
+              padding: EdgeInsets.all(embedded ? 4 : 8),
+              constraints: embedded
                   ? const BoxConstraints(minWidth: 32, minHeight: 32)
                   : const BoxConstraints(),
-              visualDensity:
-                  (compact || embedded) ? VisualDensity.compact : null,
+              visualDensity: embedded ? VisualDensity.compact : null,
             ),
             IconButton(
               onPressed: _busy ? null : _toggleRecord,
@@ -3270,23 +3240,15 @@ class _CaptureBarState extends State<_CaptureBar> {
               ),
               tooltip: recording ? '停止录制' : '开始录制 (跟随实时槽位)',
               color: recording
-                  ? (compact ? Colors.white : scheme.error)
+                  ? (embedded ? Colors.white : scheme.error)
                   : fg,
               iconSize: iconSize,
-              padding: EdgeInsets.all((compact || embedded) ? 4 : 8),
-              constraints: (compact || embedded)
+              padding: EdgeInsets.all(embedded ? 4 : 8),
+              constraints: embedded
                   ? const BoxConstraints(minWidth: 32, minHeight: 32)
                   : const BoxConstraints(),
-              visualDensity:
-                  (compact || embedded) ? VisualDensity.compact : null,
+              visualDensity: embedded ? VisualDensity.compact : null,
             ),
-            if (compact && recording)
-              // 录制时桌面紧凑模式增加一条深色描边强调录制状态.
-              Container(
-                width: 1,
-                height: 14,
-                color: skyBlueDim.withValues(alpha: 0.0),
-              ),
           ],
         ),
       ),

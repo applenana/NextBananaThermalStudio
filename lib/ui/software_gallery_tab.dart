@@ -23,6 +23,7 @@ import '../render/render_pipeline.dart';
 import '../storage/capture_package.dart';
 import '../storage/capture_service.dart';
 import 'widgets/rgb_image_view.dart';
+import 'banana_toast.dart';
 
 /// 全局软件图库刷新触发器: GalleryShell 在副 tab 切到"软件图库"时 ++,
 /// 已挂载的 SoftwareGalleryTab 监听后自动重扫目录.
@@ -123,11 +124,11 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
     _exitMulti();
     await _refresh();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(
-          '批量删除完成: 成功 $success${fail > 0 ? ", 失败 $fail" : ""}'),
-      duration: const Duration(seconds: 2),
-    ));
+    BananaToast.show(
+      context,
+      '批量删除完成: 成功 $success${fail > 0 ? ", 失败 $fail" : ""}',
+      icon: Icons.delete_sweep_rounded,
+    );
   }
 
   @override
@@ -204,9 +205,8 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
     final newBase = ctrl.text.trim();
     if (newBase.isEmpty || newBase.contains(RegExp(r'[\\/:*?"<>|]'))) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('文件名非法')),
-      );
+      BananaToast.show(context, '文件名非法',
+          icon: Icons.error_outline_rounded);
       return;
     }
     try {
@@ -215,18 +215,16 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
       if (newPath == it.path) return;
       if (await File(newPath).exists()) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('同名文件已存在')),
-        );
+        BananaToast.show(context, '同名文件已存在',
+            icon: Icons.error_outline_rounded);
         return;
       }
       await File(it.path).rename(newPath);
       await _refresh();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('重命名失败: $e')),
-      );
+      BananaToast.show(context, '重命名失败: $e',
+          icon: Icons.error_outline_rounded);
     }
   }
 
@@ -258,9 +256,8 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
       await _refresh();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('保存失败: $e')),
-      );
+      BananaToast.show(context, '保存失败: $e',
+          icon: Icons.error_outline_rounded);
     }
   }
 
@@ -288,9 +285,8 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
       await _refresh();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('删除失败: $e')),
-      );
+      BananaToast.show(context, '删除失败: $e',
+          icon: Icons.error_outline_rounded);
     }
   }
 
