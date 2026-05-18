@@ -4,7 +4,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, HttpClient;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -16,7 +16,6 @@ import 'render/render_params.dart';
 import 'serial/serial_service.dart';
 import 'storage/capture_service.dart';
 import 'package:geolocator/geolocator.dart' as geo;
-import 'package:geocoding/geocoding.dart' as gc;
 
 enum ConnectionStatus { disconnected, scanning, connecting, connected }
 
@@ -1142,25 +1141,58 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// 反向地理编码: 把经纬度查成人读地名 (如 "杭州市西湖区").
+  /// 反向地理编码: 把经纬度查成人读地名 (如 "广州市天河区").
+  /// 通过 OpenStreetMap Nominatim HTTP 接口实现, 跨平台 (Windows/Android 均可).
   /// 失败/超时/无网一律返回 null, 不阻塞拍摄主流程.
   Future<String?> _reverseGeocode(double lat, double lng) async {
+    HttpClient? client;
     try {
-      final list = await gc.placemarkFromCoordinates(lat, lng)
+      client = HttpClient()
+        ..connectionTimeout = const Duration(milliseconds: 2500);
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/reverse'
+        '?lat=$lat&lon=$lng&format=json&zoom=14&addressdetails=1'
+        '&accept-language=zh-CN',
+      );
+      final req = await client.getUrl(uri)
           .timeout(const Duration(milliseconds: 2500));
-      if (list.isEmpty) return null;
-      final p = list.first;
-      final parts = <String>[
-        if ((p.country ?? '').isNotEmpty) p.country!,
-        if ((p.administrativeArea ?? '').isNotEmpty) p.administrativeArea!,
-        if ((p.locality ?? '').isNotEmpty) p.locality!,
-        if ((p.subLocality ?? '').isNotEmpty) p.subLocality!,
-        if ((p.thoroughfare ?? '').isNotEmpty) p.thoroughfare!,
-      ];
-      final joined = parts.join(' ');
-      return joined.isEmpty ? null : joined;
+      // Nominatim 政策要求 User-Agent.
+      req.headers.set('User-Agent', 'BananaThermalStudio/1.0');
+      final resp = await req.close()
+          .timeout(const Duration(milliseconds: 3500));
+      if (resp.statusCode != 200) return null;
+      final body = await resp
+          .transform(const Utf8Decoder())
+          .join()
+          .timeout(const Duration(milliseconds: 2500));
+      final m = json.decode(body) as Map<String, dynamic>;
+      final addr = (m['address'] as Map?)?.cast<String, dynamic>();
+      if (addr != null) {
+        // 按 "国 > 省/州 > 市 > 区/县 > 街道" 顺序拼.
+        final parts = <String>[
+          for (final k in const [
+            'country',
+            'state',
+            'province',
+            'city',
+            'county',
+            'district',
+            'suburb',
+            'town',
+            'village',
+            'road',
+          ])
+            if ((addr[k] as String?)?.isNotEmpty ?? false) addr[k] as String,
+        ];
+        final joined = parts.toSet().toList().join(' ');
+        if (joined.isNotEmpty) return joined;
+      }
+      final display = (m['display_name'] as String?)?.trim();
+      return (display == null || display.isEmpty) ? null : display;
     } catch (_) {
       return null;
+    } finally {
+      client?.close(force: true);
     }
   }
 }

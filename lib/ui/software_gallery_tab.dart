@@ -429,6 +429,12 @@ class _DetailViewState extends State<_DetailView> {
       }
       if (!mounted) return;
       setState(() => _loading = false);
+      // 视频包默认自动播放, 让 "为什么不能播放" 一目了然.
+      if (r.type == CapturePackageHeader.typeVideo && r.frameCount > 1) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !_playing) _togglePlay();
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -576,6 +582,45 @@ class _DetailViewState extends State<_DetailView> {
             visibleH: _visRgbH,
           ),
         ),
+        if (reader.type == CapturePackageHeader.typeVideo &&
+            reader.frameCount > 1) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              IconButton(
+                onPressed: _togglePlay,
+                icon: Icon(_playing
+                    ? Icons.pause_circle_filled_rounded
+                    : Icons.play_circle_filled_rounded),
+                iconSize: 36,
+                color: scheme.primary,
+                tooltip: _playing ? '暂停' : '播放',
+              ),
+              Expanded(
+                child: Text(
+                  '帧 ${_frameIndex + 1} / ${reader.frameCount}  · ts ${frame.tsMs}ms',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          Slider(
+            min: 0,
+            max: (reader.frameCount - 1).toDouble(),
+            divisions: reader.frameCount - 1,
+            value: _frameIndex
+                .toDouble()
+                .clamp(0, (reader.frameCount - 1).toDouble()),
+            onChanged: (v) {
+              if (_playing) {
+                _playTimer?.cancel();
+                _playTimer = null;
+                setState(() => _playing = false);
+              }
+              _selectFrameInternal(v.round());
+            },
+          ),
+        ],
         if (hasVis && frame.visiblePng.isNotEmpty) ...[
           const SizedBox(height: 8),
           _MetaTile(
@@ -609,41 +654,7 @@ class _DetailViewState extends State<_DetailView> {
         ],
         if (reader.type == CapturePackageHeader.typeVideo &&
             reader.frameCount > 1) ...[
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              IconButton(
-                onPressed: _togglePlay,
-                icon: Icon(_playing
-                    ? Icons.pause_circle_filled_rounded
-                    : Icons.play_circle_filled_rounded),
-                iconSize: 32,
-                color: scheme.primary,
-                tooltip: _playing ? '暂停' : '播放',
-              ),
-              Expanded(
-                child: Text(
-                  '帧 ${_frameIndex + 1} / ${reader.frameCount}  · ts ${frame.tsMs}ms',
-                ),
-              ),
-            ],
-          ),
-          Slider(
-            min: 0,
-            max: (reader.frameCount - 1).toDouble(),
-            divisions: reader.frameCount - 1,
-            value: _frameIndex
-                .toDouble()
-                .clamp(0, (reader.frameCount - 1).toDouble()),
-            onChanged: (v) {
-              if (_playing) {
-                _playTimer?.cancel();
-                _playTimer = null;
-                setState(() => _playing = false);
-              }
-              _selectFrameInternal(v.round());
-            },
-          ),
+          // 播放控件已上移到热图下方, 这里不重复.
         ],
         const Divider(),
         _MetaTile(label: '创建时间', value: meta.createdAt.toLocal().toString()),

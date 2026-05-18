@@ -3051,12 +3051,42 @@ class _CaptureBar extends StatefulWidget {
 class _CaptureBarState extends State<_CaptureBar> {
   bool _busy = false;
 
+  Future<bool> _confirmNoVisible(String action) async {
+    if (!mounted) return false;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('未开启可见光'),
+        content: Text(
+          '当前未开启可见光摄像头, 本次$action将仅含热成像画面, '
+          '详情页也无法进行可见光/热融合. \n\n'
+          '如需保存双光画面, 请先在实时画面中打开可见光摄像头后重试.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('仅热成像继续$action'),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
+  }
+
   Future<void> _shot() async {
     if (_busy) return;
     final app = context.read<AppState>();
     if (app.thermalFrame == null) {
       _toast('暂无热成像数据');
       return;
+    }
+    if (app.visibleWidth == 0) {
+      final go = await _confirmNoVisible('拍摄');
+      if (!go) return;
     }
     setState(() => _busy = true);
     try {
@@ -3085,6 +3115,10 @@ class _CaptureBarState extends State<_CaptureBar> {
         if (app.thermalFrame == null) {
           _toast('暂无热成像数据');
           return;
+        }
+        if (app.visibleWidth == 0) {
+          final go = await _confirmNoVisible('录制');
+          if (!go) return;
         }
         await app.startRecording();
         _toast('开始录制');
