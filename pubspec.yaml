@@ -46,6 +46,11 @@ dependencies:
   # 仅 Android 分支使用, 桌面构建忽略.
   gal: ^2.3.0
 
+  # MP4 视频编码 (软件图库视频包 -> .mp4 导出). 使用系统硬件 H264 编码器:
+  # Android = MediaCodec, iOS/macOS = AVFoundation. 无 ffmpeg 依赖, 不支持 Windows
+  # (Windows 平台仍走逐帧 PNG 回退路径).
+  flutter_quick_video_encoder: ^1.7.2
+
   # 在外部浏览器打开 URL (激活弹窗中的售后链接). 跨平台.
   url_launcher: ^6.3.1
 

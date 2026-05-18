@@ -13,6 +13,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_quick_video_encoder/flutter_quick_video_encoder.dart';
 import 'package:gal/gal.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
@@ -1058,6 +1059,53 @@ class _DetailBodyState extends State<_DetailBody> {
     }
   }
 
+  /// 把单帧渲染结果 + (可选)温度叠加烘焙成 RGBA bytes (8-bit per channel).
+  /// 返回 (rgba, width, height). 用于 PNG / MP4 编码的统一源.
+  Future<({Uint8List rgba, int width, int height})> _renderFrameToRgba(
+    RenderedFrame r, {
+    double? overlayMin,
+    double? overlayMax,
+    double? overlayAvg,
+  }) async {
+    final rgba = Uint8List(r.width * r.height * 4);
+    for (var i = 0, j = 0; i < r.rgb.length; i += 3, j += 4) {
+      rgba[j] = r.rgb[i];
+      rgba[j + 1] = r.rgb[i + 1];
+      rgba[j + 2] = r.rgb[i + 2];
+      rgba[j + 3] = 255;
+    }
+    final hasOverlay =
+        overlayMin != null && overlayMax != null && overlayAvg != null;
+    if (!hasOverlay) {
+      return (rgba: rgba, width: r.width, height: r.height);
+    }
+    // 需要烘焙叠加: 走 Canvas, 之后再 toByteData(rawRgba).
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      rgba,
+      r.width,
+      r.height,
+      ui.PixelFormat.rgba8888,
+      completer.complete,
+    );
+    final baseImg = await completer.future;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder,
+        Rect.fromLTWH(0, 0, r.width.toDouble(), r.height.toDouble()));
+    canvas.drawImage(baseImg, Offset.zero, Paint());
+    _drawTempOverlayOnCanvas(canvas, r.width.toDouble(),
+        r.height.toDouble(), overlayMin, overlayMax, overlayAvg);
+    final picture = recorder.endRecording();
+    final outImg = await picture.toImage(r.width, r.height);
+    final bd = await outImg.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (bd == null) throw 'toByteData rawRgba null';
+    return (
+      rgba: bd.buffer.asUint8List(),
+      width: r.width,
+      height: r.height,
+    );
+  }
+
   /// 把单帧渲染结果 + (可选)温度叠加烘焙成 PNG bytes.
   Future<Uint8List> _renderFrameToPng(
     RenderedFrame r, {
@@ -1065,6 +1113,7 @@ class _DetailBodyState extends State<_DetailBody> {
     double? overlayMax,
     double? overlayAvg,
   }) async {
+    // PNG 编码路径仍走 Canvas (无叠加时也走, 以保持单一码路径并避免分支).
     final rgba = Uint8List(r.width * r.height * 4);
     for (var i = 0, j = 0; i < r.rgb.length; i += 3, j += 4) {
       rgba[j] = r.rgb[i];
@@ -1090,8 +1139,8 @@ class _DetailBodyState extends State<_DetailBody> {
           r.height.toDouble(), overlayMin, overlayMax, overlayAvg);
     }
     final picture = recorder.endRecording();
-    final img = await picture.toImage(r.width, r.height);
-    final bytes = await img.toByteData(format: ui.ImageByteFormat.png);
+    final outImg = await picture.toImage(r.width, r.height);
+    final bytes = await outImg.toByteData(format: ui.ImageByteFormat.png);
     if (bytes == null) throw 'toByteData null';
     return bytes.buffer.asUint8List();
   }
@@ -1184,65 +1233,121 @@ class _DetailBodyState extends State<_DetailBody> {
     }
   }
 
+  /// 通用: 把指定 CaptureFrame 走 renderPipeline (含热像才有效) +
+  /// 温度统计. 用于 PNG / MP4 双路径共享.
+  ///   - 返回 null: 帧无热像数据.
+  ///   - rendered: 渲染结果, t{Min,Max,Avg}: 当 _tempOverlayEnabled 时非空.
+  Future<({RenderedFrame rendered, double? tMin, double? tMax, double? tAvg})?>
+      _renderThermalFrame(CaptureFrame frame, CaptureMeta meta) async {
+    if (!(frame.hasThermal && frame.thermal != null)) return null;
+    Uint8List? visRgb;
+    int vw = 0, vh = 0;
+    final vpng = frame.visiblePng;
+    if (vpng != null && vpng.isNotEmpty) {
+      try {
+        final im = img.decodePng(vpng);
+        if (im != null) {
+          visRgb = im.getBytes(order: img.ChannelOrder.rgb);
+          vw = im.width;
+          vh = im.height;
+        }
+      } catch (_) {}
+    }
+    final r = renderPipeline(
+      thermalFrame: frame.thermal!,
+      srcW: meta.thermalW,
+      srcH: meta.thermalH,
+      params: _params ?? const RenderParams(),
+      visibleRgb: visRgb,
+      visibleW: vw,
+      visibleH: vh,
+    );
+    double? tMin, tMax, tAvg;
+    if (_tempOverlayEnabled) {
+      double mn = double.infinity;
+      double mx = -double.infinity;
+      double s = 0;
+      int n = 0;
+      for (final v in frame.thermal!) {
+        if (v.isFinite) {
+          if (v < mn) mn = v;
+          if (v > mx) mx = v;
+          s += v;
+          n++;
+        }
+      }
+      if (n > 0) {
+        tMin = mn;
+        tMax = mx;
+        tAvg = s / n;
+      }
+    }
+    return (rendered: r, tMin: tMin, tMax: tMax, tAvg: tAvg);
+  }
+
   /// 把指定 CaptureFrame 输出为 PNG bytes.
   /// - 含热成像: 走 renderPipeline + 温度叠加 (按当前 _tempOverlayEnabled).
   /// - 纯可见光: 直接返回 visiblePng (调用方决定文件扩展名).
   /// 返回 (bytes, ext: 'png' 或 'png'/'jpg').
   Future<(Uint8List bytes, String ext)?> _bakeFrame(
       CaptureFrame frame, CaptureMeta meta) async {
-    if (frame.hasThermal && frame.thermal != null) {
-      // 解码该帧对应的可见光 (若有), 用于融合.
-      Uint8List? visRgb;
-      int vw = 0, vh = 0;
-      final vpng = frame.visiblePng;
-      if (vpng != null && vpng.isNotEmpty) {
-        try {
-          final im = img.decodePng(vpng);
-          if (im != null) {
-            visRgb = im.getBytes(order: img.ChannelOrder.rgb);
-            vw = im.width;
-            vh = im.height;
-          }
-        } catch (_) {}
-      }
-      final r = renderPipeline(
-        thermalFrame: frame.thermal!,
-        srcW: meta.thermalW,
-        srcH: meta.thermalH,
-        params: _params ?? const RenderParams(),
-        visibleRgb: visRgb,
-        visibleW: vw,
-        visibleH: vh,
-      );
-      // 温度统计
-      double? tMin, tMax, tAvg;
-      if (_tempOverlayEnabled) {
-        double mn = double.infinity;
-        double mx = -double.infinity;
-        double s = 0;
-        int n = 0;
-        for (final v in frame.thermal!) {
-          if (v.isFinite) {
-            if (v < mn) mn = v;
-            if (v > mx) mx = v;
-            s += v;
-            n++;
-          }
-        }
-        if (n > 0) {
-          tMin = mn;
-          tMax = mx;
-          tAvg = s / n;
-        }
-      }
-      final png = await _renderFrameToPng(r,
-          overlayMin: tMin, overlayMax: tMax, overlayAvg: tAvg);
+    final th = await _renderThermalFrame(frame, meta);
+    if (th != null) {
+      final png = await _renderFrameToPng(th.rendered,
+          overlayMin: th.tMin, overlayMax: th.tMax, overlayAvg: th.tAvg);
       return (png, 'png');
     }
     if (frame.hasVisible && frame.visiblePng != null) {
       return (frame.visiblePng!, 'png');
     }
     return null;
+  }
+
+  /// 把指定 CaptureFrame 输出为 RGBA bytes (含可选温度叠加). 用于 MP4 编码.
+  /// - 含热像: renderPipeline + Canvas 叠加, 输出 (rgba, w, h).
+  /// - 纯可见光: 解码 PNG → RGB888 → 填充 alpha. 没有温度叠加.
+  /// - 都无: null.
+  Future<({Uint8List rgba, int width, int height})?> _bakeFrameToRgba(
+      CaptureFrame frame, CaptureMeta meta) async {
+    final th = await _renderThermalFrame(frame, meta);
+    if (th != null) {
+      return _renderFrameToRgba(th.rendered,
+          overlayMin: th.tMin, overlayMax: th.tMax, overlayAvg: th.tAvg);
+    }
+    if (frame.hasVisible && frame.visiblePng != null) {
+      try {
+        final im = img.decodePng(frame.visiblePng!);
+        if (im == null) return null;
+        final rgb = im.getBytes(order: img.ChannelOrder.rgb);
+        final rgba = Uint8List(im.width * im.height * 4);
+        for (var i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
+          rgba[j] = rgb[i];
+          rgba[j + 1] = rgb[i + 1];
+          rgba[j + 2] = rgb[i + 2];
+          rgba[j + 3] = 255;
+        }
+        return (rgba: rgba, width: im.width, height: im.height);
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /// 把 RGBA 缓冲 (srcW x srcH, stride=srcW*4) 截取出左上 dstW x dstH 子区域,
+  /// 返回新 RGBA buffer (stride=dstW*4). dstW/dstH 必须 <= srcW/srcH.
+  /// 用于 MP4 编码前把帧宽/高 floor 到偶数 (H264 要求).
+  Uint8List _cropRgba(Uint8List src, int srcW, int srcH, int dstW, int dstH) {
+    if (srcW == dstW && srcH == dstH) return src;
+    final out = Uint8List(dstW * dstH * 4);
+    final srcStride = srcW * 4;
+    final dstStride = dstW * 4;
+    for (var y = 0; y < dstH; y++) {
+      final s = y * srcStride;
+      final d = y * dstStride;
+      out.setRange(d, d + dstStride, src, s);
+    }
+    return out;
   }
 
   Future<void> _exportCurrentFrame() async {
@@ -1278,6 +1383,9 @@ class _DetailBodyState extends State<_DetailBody> {
     }
   }
 
+  /// 视频包导出: Android/iOS/macOS 使用系统硬件 H264 编码器编码为 MP4
+  /// (并在 Android 上写入相册); Windows/Linux 没有 MP4 编码插件支持时回退到
+  /// 逐帧 PNG 批量导出.
   Future<void> _exportAllFrames() async {
     final r = _reader;
     if (r == null || _exporting) return;
@@ -1285,12 +1393,108 @@ class _DetailBodyState extends State<_DetailBody> {
       await _exportCurrentFrame();
       return;
     }
-    setState(() => _exporting = true);
     if (_playing) {
       _playTimer?.cancel();
       _playTimer = null;
-      _playing = false;
+      setState(() => _playing = false);
     }
+    final supportsMp4 =
+        Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
+    if (!supportsMp4) {
+      await _exportAllFramesAsPngBatch();
+      return;
+    }
+    setState(() => _exporting = true);
+    try {
+      // 1) 探测 fps: 取首两帧时间差 (与播放节流同源).
+      int frameMs = 100;
+      try {
+        final a = await r.readFrame(0);
+        final b = await r.readFrame(1);
+        final d = (b.tsMs - a.tsMs).abs();
+        if (d > 10 && d < 2000) frameMs = d;
+      } catch (_) {}
+      final fps = (1000 / frameMs).round().clamp(1, 60);
+      // 2) 烘焙首帧, 确定画面尺寸 (强制偶数, 满足 H264 要求).
+      final first = await _bakeFrameToRgba(await r.readFrame(0), r.meta);
+      if (first == null) {
+        if (!mounted) return;
+        BananaToast.show(context, '首帧无可导出内容');
+        return;
+      }
+      final w = first.width & ~1;
+      final h = first.height & ~1;
+      if (w < 16 || h < 16) {
+        if (!mounted) return;
+        BananaToast.show(context, '画面尺寸过小, 无法编码 MP4');
+        return;
+      }
+      final base = p.basenameWithoutExtension(widget.item.path);
+      final dir = await _ensureExportRoot();
+      final outPath = p.join(dir.path, '$base.mp4');
+      // 码率: 简单按 像素*fps*0.12 估计 (热成像/可见光预览均偏低码率即可).
+      final bitrate =
+          (w * h * fps * 0.12).round().clamp(500000, 20000000);
+      await FlutterQuickVideoEncoder.setup(
+        width: w,
+        height: h,
+        fps: fps,
+        videoBitrate: bitrate,
+        profileLevel: ProfileLevel.high40,
+        audioChannels: 0,
+        audioBitrate: 0,
+        sampleRate: 0,
+        filepath: outPath,
+      );
+      // 3) 第一帧 + 后续帧逐帧 append.
+      await FlutterQuickVideoEncoder.appendVideoFrame(
+          _cropRgba(first.rgba, first.width, first.height, w, h));
+      for (var i = 1; i < r.frameCount; i++) {
+        final f = await r.readFrame(i);
+        final bake = await _bakeFrameToRgba(f, r.meta);
+        if (bake == null) continue;
+        await FlutterQuickVideoEncoder.appendVideoFrame(
+            _cropRgba(bake.rgba, bake.width, bake.height, w, h));
+        if (!mounted) {
+          await FlutterQuickVideoEncoder.finish();
+          return;
+        }
+        if (i % 10 == 0) {
+          BananaToast.show(context, '编码中 $i / ${r.frameCount} ...');
+        }
+      }
+      await FlutterQuickVideoEncoder.finish();
+      // 4) 安卓: 同步写入系统相册 (BananaThermal album).
+      bool albumOk = false;
+      if (Platform.isAndroid || Platform.isIOS) {
+        try {
+          final has = await Gal.hasAccess();
+          if (!has) await Gal.requestAccess();
+          await Gal.putVideo(outPath, album: 'BananaThermal');
+          albumOk = true;
+        } catch (e) {
+          if (mounted) BananaToast.show(context, '相册保存失败: $e');
+        }
+      }
+      if (!mounted) return;
+      BananaToast.show(
+          context,
+          albumOk
+              ? '已导出 $base.mp4 (相册已保存)'
+              : '已导出 $outPath');
+    } catch (e) {
+      if (!mounted) return;
+      BananaToast.show(context, '视频导出失败: $e');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  /// Windows/Linux 桌面回退: 逐帧 PNG 写入 exports/<base>/ 子目录.
+  Future<void> _exportAllFramesAsPngBatch() async {
+    final r = _reader;
+    if (r == null) return;
+    setState(() => _exporting = true);
     try {
       final base = p.basenameWithoutExtension(widget.item.path);
       final root = await _ensureExportRoot();
@@ -1469,18 +1673,28 @@ class _DetailBodyState extends State<_DetailBody> {
                       ),
                     ),
                   ),
-                  // 视频: 导出全部帧
+                  // 视频: 导出 MP4 (桌面回退逐帧 PNG)
                   if (isVideo && r.frameCount > 1) ...[
                     const SizedBox(width: 2),
                     Tooltip(
-                      message: '导出全部帧 (PNG)',
+                      message: (Platform.isAndroid ||
+                              Platform.isIOS ||
+                              Platform.isMacOS)
+                          ? '导出 MP4 视频'
+                          : '导出全部帧 (PNG, 桌面回退)',
                       child: InkResponse(
                         radius: 18,
                         onTap: _exporting ? null : _exportAllFrames,
                         child: Padding(
                           padding: const EdgeInsets.all(4),
-                          child: Icon(Icons.download_for_offline_rounded,
-                              size: 20, color: scheme.primary),
+                          child: Icon(
+                              (Platform.isAndroid ||
+                                      Platform.isIOS ||
+                                      Platform.isMacOS)
+                                  ? Icons.movie_creation_rounded
+                                  : Icons.download_for_offline_rounded,
+                              size: 20,
+                              color: scheme.primary),
                         ),
                       ),
                     ),
