@@ -52,6 +52,20 @@ class _GalleryShellState extends State<GalleryShell> {
             style: ButtonStyle(
               visualDensity: VisualDensity.compact,
               foregroundColor: WidgetStatePropertyAll(scheme.onSurface),
+              // 去掉默认 outline (用户反馈"黑框"过重),
+              // 走纯填充态 + 圆角, 与 Material 3 secondary tab 风格一致.
+              side: const WidgetStatePropertyAll(BorderSide.none),
+              backgroundColor: WidgetStateProperty.resolveWith((states) {
+                if (states.contains(WidgetState.selected)) {
+                  return scheme.primaryContainer;
+                }
+                return scheme.surfaceContainerHigh;
+              }),
+              shape: WidgetStatePropertyAll(
+                RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+              ),
             ),
           ),
         ),

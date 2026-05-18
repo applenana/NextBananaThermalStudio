@@ -585,6 +585,8 @@ class _DetailBodyState extends State<_DetailBody> {
   RenderParams? _params;
   Timer? _playTimer;
   bool _playing = false;
+  // 可见光画面默认隐藏, 与设备图库一致, 用户点按钮才显示.
+  bool _showVisible = false;
 
   @override
   void initState() {
@@ -736,168 +738,159 @@ class _DetailBodyState extends State<_DetailBody> {
       if (meta.note.isNotEmpty) _kv('备注', meta.note),
     ];
 
-    return ListView(
-      padding: EdgeInsets.zero,
+    // 不滚动: Column + Expanded 让"主画面"自适应剩余高度.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // ----- 元数据 chips 卡 -----
+        // ----- 元数据 chips 卡 (紧凑) -----
         Container(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
             color: scheme.surfaceContainerHigh,
             borderRadius: BorderRadius.circular(12),
           ),
           child: DefaultTextStyle(
-            style: TextStyle(fontSize: 12, color: scheme.onSurface),
+            style: TextStyle(fontSize: 11.5, color: scheme.onSurface),
             child: Wrap(
-              spacing: 18,
-              runSpacing: 6,
+              spacing: 16,
+              runSpacing: 4,
               children: metaChips,
             ),
           ),
         ),
-        const SizedBox(height: 10),
-        // ----- 参数横排 (默认展示, 紧贴预览) -----
+        const SizedBox(height: 8),
+        // ----- 参数横排 -----
         _ParamsRow(
           hasVisible: hasVisInFrame,
           params: params,
           onParamsChanged: (v) => setState(() => _params = v),
         ),
-        const SizedBox(height: 10),
-        // ----- 预览区 (热图 + 视频控件) -----
-        Container(
-          decoration: BoxDecoration(
-            color: scheme.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: scheme.outlineVariant.withValues(alpha: 0.5),
-            ),
-          ),
-          padding: const EdgeInsets.all(8),
-          child: Column(
+        const SizedBox(height: 8),
+        // ----- 主预览区 (占满剩余高度) -----
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              AspectRatio(
-                aspectRatio: meta.thermalW / meta.thermalH,
-                child: _ThermalImage(
-                  thermal: f.thermal,
-                  width: meta.thermalW,
-                  height: meta.thermalH,
-                  params: params,
-                  visibleRgb888: _visRgb888,
-                  visibleW: _visW,
-                  visibleH: _visH,
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: scheme.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: scheme.outlineVariant.withValues(alpha: 0.4),
+                    ),
+                  ),
+                  padding: const EdgeInsets.all(6),
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: Center(
+                          child: AspectRatio(
+                            aspectRatio: meta.thermalW / meta.thermalH,
+                            child: _ThermalImage(
+                              thermal: f.thermal,
+                              width: meta.thermalW,
+                              height: meta.thermalH,
+                              params: params,
+                              visibleRgb888: _visRgb888,
+                              visibleW: _visW,
+                              visibleH: _visH,
+                            ),
+                          ),
+                        ),
+                      ),
+                      // 右上: 可见光显示开关 (包内有可见光时才出现).
+                      if (hasVisInPkg && f.visiblePng.isNotEmpty)
+                        Positioned(
+                          top: 6,
+                          right: 6,
+                          child: _OverlayIconButton(
+                            tooltip: _showVisible ? '隐藏可见光' : '显示可见光',
+                            icon: _showVisible
+                                ? Icons.visibility_off_rounded
+                                : Icons.visibility_rounded,
+                            onTap: () => setState(
+                                () => _showVisible = !_showVisible),
+                          ),
+                        ),
+                      // 视频控件: 半透明叠加在画面底部 (Web 视频风格).
+                      if (isVideo && r.frameCount > 1)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: _VideoOverlay(
+                            playing: _playing,
+                            frameIndex: _frameIndex,
+                            frameCount: r.frameCount,
+                            tsMs: f.tsMs,
+                            onToggle: _togglePlay,
+                            onSeek: (i) {
+                              if (_playing) {
+                                _playTimer?.cancel();
+                                _playTimer = null;
+                                setState(() => _playing = false);
+                              }
+                              _selectFrame(i);
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
-              if (isVideo && r.frameCount > 1) ...[
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    IconButton(
-                      onPressed: _togglePlay,
-                      icon: Icon(_playing
-                          ? Icons.pause_circle_filled_rounded
-                          : Icons.play_circle_filled_rounded),
-                      iconSize: 32,
-                      color: scheme.primary,
-                      tooltip: _playing ? '暂停' : '播放',
-                    ),
-                    Expanded(
-                      child: Text(
-                        '帧 ${_frameIndex + 1} / ${r.frameCount}  ·  ts ${f.tsMs} ms',
-                        style: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w600),
+              // 可见光小窗: 仅在 _showVisible 时显示.
+              if (_showVisible && hasVisInPkg && f.visiblePng.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 220,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: scheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: scheme.outlineVariant.withValues(alpha: 0.4),
                       ),
                     ),
-                  ],
-                ),
-                SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 3,
-                    overlayShape: SliderComponentShape.noOverlay,
-                    thumbShape:
-                        const RoundSliderThumbShape(enabledThumbRadius: 6),
-                  ),
-                  child: Slider(
-                    min: 0,
-                    max: (r.frameCount - 1).toDouble(),
-                    divisions: r.frameCount - 1,
-                    value: _frameIndex
-                        .toDouble()
-                        .clamp(0, (r.frameCount - 1).toDouble()),
-                    onChanged: (v) {
-                      if (_playing) {
-                        _playTimer?.cancel();
-                        _playTimer = null;
-                        setState(() => _playing = false);
-                      }
-                      _selectFrame(v.round());
-                    },
+                    padding: const EdgeInsets.all(6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.image_outlined,
+                                size: 13, color: scheme.onSurfaceVariant),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                '可见光 · ${(f.visiblePng.length / 1024).toStringAsFixed(1)} KB',
+                                style: TextStyle(
+                                    fontSize: 10.5,
+                                    color: scheme.onSurfaceVariant),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(6),
+                            child: Image.memory(
+                              f.visiblePng,
+                              fit: BoxFit.contain,
+                              alignment: Alignment.topCenter,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],
             ],
           ),
         ),
-        // ----- 可见光小窗 -----
-        if (hasVisInPkg && f.visiblePng.isNotEmpty) ...[
-          const SizedBox(height: 10),
-          Container(
-            decoration: BoxDecoration(
-              color: scheme.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: scheme.outlineVariant.withValues(alpha: 0.5),
-              ),
-            ),
-            padding: const EdgeInsets.all(8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.image_outlined,
-                        size: 14, color: scheme.onSurfaceVariant),
-                    const SizedBox(width: 4),
-                    Text(
-                      '可见光帧 · ${(f.visiblePng.length / 1024).toStringAsFixed(1)} KB',
-                      style: TextStyle(
-                          fontSize: 11, color: scheme.onSurfaceVariant),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: Image.memory(f.visiblePng, fit: BoxFit.contain),
-                ),
-              ],
-            ),
-          ),
-        ] else if (!hasVisInPkg) ...[
-          const SizedBox(height: 10),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerHigh,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.info_outline,
-                    size: 14, color: scheme.onSurfaceVariant),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    '此包未保存可见光画面 (拍摄时未开启可见光摄像头). '
-                    '后续如需双光融合, 请先在实时画面打开可见光.',
-                    style: TextStyle(
-                        fontSize: 11, color: scheme.onSurfaceVariant),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-        const SizedBox(height: 12),
       ],
     );
   }
@@ -1017,10 +1010,16 @@ class _ParamsRow extends StatelessWidget {
         labelOf: (v) => '${v}x',
       ),
       const SizedBox(width: 14),
-      label('双边滤波'),
-      Switch(
-        value: params.bilateralEnabled,
-        onChanged: (v) =>
+      // 双边滤波: 紧凑 FilterChip, 避免大 Switch 显得不协调.
+      FilterChip(
+        label: const Text('双边滤波', style: TextStyle(fontSize: 11)),
+        selected: params.bilateralEnabled,
+        showCheckmark: true,
+        visualDensity: const VisualDensity(horizontal: -2, vertical: -3),
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: -2),
+        labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+        onSelected: (v) =>
             onParamsChanged(params.copyWith(bilateralEnabled: v)),
       ),
       if (hasVisible) ...[
@@ -1203,6 +1202,132 @@ class _Dropdown<T> extends StatelessWidget {
         onChanged: (v) {
           if (v != null) onChanged(v);
         },
+      ),
+    );
+  }
+}
+
+// ============================================================
+// 画面叠加: 右上角小圆按钮 (可见光显隐切换等).
+// ============================================================
+class _OverlayIconButton extends StatelessWidget {
+  const _OverlayIconButton({
+    required this.icon,
+    required this.onTap,
+    this.tooltip,
+  });
+  final IconData icon;
+  final VoidCallback onTap;
+  final String? tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final btn = Material(
+      color: Colors.black.withValues(alpha: 0.45),
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(icon, size: 18, color: Colors.white),
+        ),
+      ),
+    );
+    return tooltip == null ? btn : Tooltip(message: tooltip!, child: btn);
+  }
+}
+
+// ============================================================
+// 画面叠加: 底部半透明视频控件 (播放/暂停 + 帧信息 + 进度).
+// 仿 Web 视频播放器风格, 减少占用画面外的额外纵向空间.
+// ============================================================
+class _VideoOverlay extends StatelessWidget {
+  const _VideoOverlay({
+    required this.playing,
+    required this.frameIndex,
+    required this.frameCount,
+    required this.tsMs,
+    required this.onToggle,
+    required this.onSeek,
+  });
+  final bool playing;
+  final int frameIndex;
+  final int frameCount;
+  final int tsMs;
+  final VoidCallback onToggle;
+  final ValueChanged<int> onSeek;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(bottom: Radius.circular(8)),
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.black.withValues(alpha: 0.0),
+              Colors.black.withValues(alpha: 0.55),
+              Colors.black.withValues(alpha: 0.7),
+            ],
+            stops: const [0, 0.4, 1],
+          ),
+        ),
+        padding: const EdgeInsets.fromLTRB(4, 12, 8, 4),
+        child: Row(
+          children: [
+            InkResponse(
+              onTap: onToggle,
+              radius: 20,
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(
+                  playing
+                      ? Icons.pause_rounded
+                      : Icons.play_arrow_rounded,
+                  size: 22,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 88,
+              child: Text(
+                '${frameIndex + 1}/$frameCount  ${tsMs}ms',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
+              ),
+            ),
+            Expanded(
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 2,
+                  overlayShape: SliderComponentShape.noOverlay,
+                  thumbShape:
+                      const RoundSliderThumbShape(enabledThumbRadius: 5),
+                  activeTrackColor: Colors.white,
+                  inactiveTrackColor: Colors.white24,
+                  thumbColor: Colors.white,
+                ),
+                child: Slider(
+                  min: 0,
+                  max: (frameCount - 1).toDouble(),
+                  divisions: frameCount > 1 ? frameCount - 1 : null,
+                  value: frameIndex
+                      .toDouble()
+                      .clamp(0, (frameCount - 1).toDouble()),
+                  onChanged: (v) => onSeek(v.round()),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
