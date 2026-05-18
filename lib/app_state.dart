@@ -354,6 +354,18 @@ class AppState extends ChangeNotifier {
     final text = String.fromCharCodes(asAscii).trimRight();
     if (text.isEmpty) return;
 
+    // 推流期间, 帧间夹缝里频繁出现 "伪 ASCII" 二进制残片 (温度场字节恰好
+    // 落在 0x20-0x7E), 一秒可达数百条, 直接灌进日志会让 UI 卡顿. 仅放行
+    // 真正像文本的行: JSON / 含英文字母. 纯符号/数字一律丢弃.
+    final streaming = thermalStreamEnabled || visibleStreamEnabled;
+    final looksJson = text.startsWith('{') && text.endsWith('}');
+    if (streaming && !looksJson) {
+      final hasLetter = text.codeUnits.any(
+        (c) => (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A),
+      );
+      if (!hasLetter) return;
+    }
+
     _log('rx', text);
 
     // 设备信息 JSON

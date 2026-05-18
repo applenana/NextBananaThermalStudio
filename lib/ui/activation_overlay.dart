@@ -37,8 +37,13 @@ class ActivationOverlay extends StatelessWidget {
         child,
         Consumer<AppState>(
           builder: (ctx, app, _) {
+            // 必须先收到 GetSysInfo JSON 响应 (deviceInfo != null) 才能判定
+            // 激活状态. 否则手动连接刚 connected, isActivated 默认 false,
+            // 会在 SN/激活状态都还没拿到时就误弹激活框.
             final show =
-                app.status == ConnectionStatus.connected && !app.isActivated;
+                app.status == ConnectionStatus.connected &&
+                app.deviceInfo != null &&
+                !app.isActivated;
             if (!show) return const SizedBox.shrink();
             return Positioned.fill(
               child: _ActivationDialog(serial: app.deviceSerial),
