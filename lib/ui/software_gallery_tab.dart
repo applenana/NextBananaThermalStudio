@@ -1500,7 +1500,7 @@ class _DetailBodyState extends State<_DetailBody> {
         '-pix_fmt', 'rgba',
         '-s', '${w}x$h',
         '-r', '$fps',
-        '-i', '-',
+        '-i', 'pipe:0',
         '-c:v', 'libx264',
         '-pix_fmt', 'yuv420p',
         '-preset', 'medium',
