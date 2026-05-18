@@ -46,10 +46,12 @@ class CaptureService {
   }
 
   /// 把当前帧打包成 photo `.btpkg`. 返回写入路径.
+  /// 槽位独立: 不传 thermal 即纯可见光; 不传 visibleRgb888 即纯热成像;
+  /// 两个都不传也允许 (空帧, 用户主动关掉两路推流时的"占位拍摄").
   Future<String> takePhoto({
-    required Float32List thermal,
-    required int thermalW,
-    required int thermalH,
+    Float32List? thermal,
+    int thermalW = 32,
+    int thermalH = 24,
     Uint8List? visibleRgb888,
     int visibleW = 0,
     int visibleH = 0,
@@ -70,7 +72,8 @@ class CaptureService {
     final filename = 'IMG_${_ts(now)}.btpkg';
     final path = p.join(dir.path, filename);
 
-    Uint8List visPng = Uint8List(0);
+    final hasThermal = thermal != null && thermal.isNotEmpty;
+    Uint8List? visPng;
     if (visibleRgb888 != null && visibleW > 0 && visibleH > 0) {
       visPng = _encodePng(visibleRgb888, visibleW, visibleH);
     }
@@ -82,10 +85,10 @@ class CaptureService {
       place: place,
       note: note,
       deviceSn: deviceSn,
-      thermalW: thermalW,
-      thermalH: thermalH,
-      visibleW: visPng.isEmpty ? 0 : visibleW,
-      visibleH: visPng.isEmpty ? 0 : visibleH,
+      thermalW: hasThermal ? thermalW : 0,
+      thermalH: hasThermal ? thermalH : 0,
+      visibleW: visPng == null ? 0 : visibleW,
+      visibleH: visPng == null ? 0 : visibleH,
       frameCount: 1,
       renderParams: renderParams,
     );
@@ -96,17 +99,19 @@ class CaptureService {
     );
     await w.appendFrame(CaptureFrame(
       tsMs: 0,
-      thermal: Float32List.fromList(thermal),
+      thermal: hasThermal ? Float32List.fromList(thermal) : null,
       visiblePng: visPng,
     ));
     await w.close();
     return path;
   }
 
-  /// 开始录制. 返回输出文件路径. 录制期间 AppState 应周期性调 [pushFrame].
+  /// 开始录制. 录制期间槽位完全跟随实时推流, 不预设模式.
+  /// thermalW/H/visibleW/H 仅作为初始 hint (可在 pushFrame 时通过 declareVisibleSize 补);
+  /// 全 0 也允许, 由首帧落槽时回写到 meta.
   Future<String> startRecording({
-    required int thermalW,
-    required int thermalH,
+    int thermalW = 0,
+    int thermalH = 0,
     int visibleW = 0,
     int visibleH = 0,
     double? lat,
@@ -152,10 +157,10 @@ class CaptureService {
     return path;
   }
 
-  /// 录制期间, AppState 在收到新帧时调用. 帧到达回调是同步的, PNG 编码 +
-  /// 文件 IO 异步, 内部用 [_writeQueue] 串行化, 调用方 fire-and-forget.
+  /// 录制期间 AppState 周期性调用. 任意槽位可为 null (该帧此槽位缺席).
+  /// 全 null = 空帧 (10B); 用户中途关掉两路推流时记录"占位".
   void pushFrame({
-    required Float32List thermal,
+    Float32List? thermal,
     Uint8List? visibleRgb888,
     int visibleW = 0,
     int visibleH = 0,
@@ -166,16 +171,16 @@ class CaptureService {
       return;
     }
     final ts = DateTime.now().difference(start).inMilliseconds;
-    // 拷贝热帧 (调用方持有的 Float32List 会被下一帧覆写).
-    final thermalCopy = Float32List.fromList(thermal);
+    final thermalCopy =
+        thermal == null ? null : Float32List.fromList(thermal);
     final visCopy =
         visibleRgb888 == null ? null : Uint8List.fromList(visibleRgb888);
     _writeQueue = _writeQueue.then((_) async {
-      // 二次校验状态: 排队期间可能已 stop.
       if (_state != RecordingState.recording) return;
-      Uint8List visPng = Uint8List(0);
+      Uint8List? visPng;
       if (visCopy != null && visibleW > 0 && visibleH > 0) {
         visPng = _encodePng(visCopy, visibleW, visibleH);
+        w.declareVisibleSize(visibleW, visibleH);
       }
       try {
         await w.appendFrame(CaptureFrame(
@@ -185,7 +190,7 @@ class CaptureService {
         ));
         _frameCount += 1;
       } catch (_) {
-        // 静默: 后续 stopRecording 会回写 frameCount, 即使丢一帧也能正常关包.
+        // 静默: stopRecording 仍会安全 close.
       }
     });
   }

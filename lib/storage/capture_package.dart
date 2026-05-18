@@ -1,38 +1,51 @@
-/// `.btpkg` 自定义数据包格式 (BananaThermal Package v1).
+/// `.btpkg` 自定义数据包格式 (BananaThermal Package v2).
 ///
-/// 用于把"拍摄/录制"时刻的原始热成像 + 可见光帧 + 元数据 (时间/GPS/备注)
-/// 打包成单个可分发文件, 后续在"软件图库"里重新渲染查看.
+/// v2 设计 (相对 v1): 一帧由若干"槽位"组成, 每个槽位可缺席. 当前定义两个槽位:
+/// - bit0 thermal: float32 温度场 (单位 °C)
+/// - bit1 visible: PNG 编码的可见光画面
+/// 未来可扩 bit2 (depth) / bit3 (IR) 等.
 ///
-/// 二进制布局 (小端):
+/// 这种"帧 = 槽位容器"设计允许:
+/// - 拍/录 时随时切推流开关, 后续帧自动缺席对应槽位.
+/// - 单一容器同时表达 纯热 / 纯可见 / 双光 / 空帧 (用户主动关掉两路).
+/// - 拍照 = 1 帧的录制, 视频 = N 帧, 同一种容器.
+///
+/// 二进制布局 (全小端):
 ///   magic   4B   "BTPK"  (0x42 0x54 0x50 0x4B)
-///   version u16  当前 = 1
+///   version u16  当前 = 2
 ///   type    u8   0=photo (单帧)   1=video (帧序列)
 ///   _rsv    u8   保留 = 0
-///   metaLen u32  meta JSON 字节数
-///   meta    UTF-8 JSON bytes
+///   metaLen u32  meta JSON 字节数 (含 padding)
+///   meta    UTF-8 JSON bytes + 空格 padding (允许就地回写)
 ///   frames  循环 frameCount 次:
-///     tsMs       u64  相对 createdAt 毫秒
-///     thermalLen u32  通常 = 768*4 = 3072
-///     thermal    float32 LE * thermalW * thermalH (单位 °C)
-///     visLen     u32  PNG 字节数 (0 表示无可见光帧)
-///     visPng     PNG 编码 (旋转后 RGB888 -> PNG)
+///     slotMask u16  本帧槽位 bitmap
+///     tsMs     u64  相对 createdAt 毫秒
+///     若 slotMask & 1 (thermal):
+///       thermalLen u32   通常 = 32*24*4 = 3072
+///       thermal    float32 LE * thermalLen/4
+///     若 slotMask & 2 (visible):
+///       visLen     u32
+///       visPng     PNG bytes
 ///   trailer 8B  ASCII "BTPK_END"
 ///
-/// 设计取舍:
-/// - 热成像保留 float32 原值 (768 帧 ~3KB, 视频按 25fps 一分钟约 4.5MB),
-///   后续渲染可任意调参 (色板/上下限/算法).
-/// - 可见光以 PNG 编码, 比原始 RGB888 小 5-10 倍, 视频 1min 约 30-100MB 量级.
-/// - 单文件追加 (video 模式录制结束才补 trailer + 改写 frameCount).
+/// 不再向后兼容 v1: 升级期间旧包请丢弃或重新生成.
 library;
 
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+/// 槽位定义.
+class FrameSlot {
+  static const int thermal = 1 << 0; // 0x01
+  static const int visible = 1 << 1; // 0x02
+  static const int all = thermal | visible;
+}
+
 /// `.btpkg` 文件头部 + 元数据.
 class CapturePackageHeader {
   static const List<int> magic = [0x42, 0x54, 0x50, 0x4B]; // BTPK
-  static const int version = 1;
+  static const int version = 2;
   static const int typePhoto = 0;
   static const int typeVideo = 1;
   static const List<int> trailer = [
@@ -68,15 +81,19 @@ class CaptureMeta {
   final int thermalW;
   final int thermalH;
 
-  /// 可见光分辨率 (旋转后), 0 表示该包不含可见光帧.
+  /// 可见光分辨率 (旋转后), 0 表示该包从未出现过可见光帧.
   final int visibleW;
   final int visibleH;
 
   /// 视频帧数 (photo 模式恒为 1). 录制中按 0 占位, 结束时回写.
   final int frameCount;
 
-  /// 拍摄/录制时的渲染+融合参数 (序列化 RenderParams.toJson). null = 未保存 (老包).
+  /// 拍摄/录制时的渲染+融合参数 (序列化 RenderParams.toJson). null = 未保存.
   final Map<String, dynamic>? renderParams;
+
+  /// 本包内所有帧出现过的槽位并集 (bit0 thermal / bit1 visible).
+  /// 录制结束时回写; 0 表示全部帧都是空帧.
+  final int slotsUsedMask;
 
   const CaptureMeta({
     required this.createdAt,
@@ -92,7 +109,11 @@ class CaptureMeta {
     this.visibleH = 0,
     this.frameCount = 1,
     this.renderParams,
+    this.slotsUsedMask = 0,
   });
+
+  bool get hasAnyThermal => (slotsUsedMask & FrameSlot.thermal) != 0;
+  bool get hasAnyVisible => (slotsUsedMask & FrameSlot.visible) != 0;
 
   Map<String, dynamic> toJson() => {
         'createdAt': createdAt.toUtc().toIso8601String(),
@@ -107,6 +128,7 @@ class CaptureMeta {
         'visibleW': visibleW,
         'visibleH': visibleH,
         'frameCount': frameCount,
+        'slotsUsedMask': slotsUsedMask,
         if (renderParams != null) 'renderParams': renderParams,
       };
 
@@ -126,6 +148,7 @@ class CaptureMeta {
         renderParams: j['renderParams'] is Map<String, dynamic>
             ? j['renderParams'] as Map<String, dynamic>
             : null,
+        slotsUsedMask: (j['slotsUsedMask'] as num?)?.toInt() ?? 0,
       );
 
   CaptureMeta copyWith({
@@ -142,6 +165,7 @@ class CaptureMeta {
     int? visibleH,
     int? frameCount,
     Map<String, dynamic>? renderParams,
+    int? slotsUsedMask,
   }) =>
       CaptureMeta(
         createdAt: createdAt ?? this.createdAt,
@@ -157,48 +181,61 @@ class CaptureMeta {
         visibleH: visibleH ?? this.visibleH,
         frameCount: frameCount ?? this.frameCount,
         renderParams: renderParams ?? this.renderParams,
+        slotsUsedMask: slotsUsedMask ?? this.slotsUsedMask,
       );
 }
 
-/// 单帧 (内存表示).
+/// 单帧 (内存表示). 任一槽位可为 null = 该帧此槽位缺席.
 class CaptureFrame {
   /// 相对包 createdAt 的毫秒偏移.
   final int tsMs;
 
-  /// 热成像温度场 (°C), 长度 = thermalW * thermalH.
-  final Float32List thermal;
+  /// 热成像温度场 (°C), 长度 = thermalW * thermalH. null = 缺席.
+  final Float32List? thermal;
 
-  /// 可见光 PNG 字节. 长度 0 表示该帧无可见光.
-  final Uint8List visiblePng;
+  /// 可见光 PNG 字节. null 或长度 0 = 缺席.
+  final Uint8List? visiblePng;
 
   const CaptureFrame({
     required this.tsMs,
-    required this.thermal,
-    required this.visiblePng,
+    this.thermal,
+    this.visiblePng,
   });
+
+  /// 本帧槽位 bitmap.
+  int get slotMask {
+    int m = 0;
+    if (thermal != null && thermal!.isNotEmpty) m |= FrameSlot.thermal;
+    if (visiblePng != null && visiblePng!.isNotEmpty) m |= FrameSlot.visible;
+    return m;
+  }
+
+  bool get hasThermal => (slotMask & FrameSlot.thermal) != 0;
+  bool get hasVisible => (slotMask & FrameSlot.visible) != 0;
+  bool get isEmpty => slotMask == 0;
 }
 
 /// 写入器: 流式追加帧, 结束时统一回写 metaLen / frameCount + trailer.
-///
-/// 用法:
-/// ```dart
-/// final w = await CapturePackageWriter.create(
-///   path: 'out.btpkg', type: CapturePackageHeader.typeVideo, meta: meta);
-/// await w.appendFrame(CaptureFrame(...));
-/// await w.close(); // 自动回写帧数 + trailer
-/// ```
 class CapturePackageWriter {
   final RandomAccessFile _raf;
   final int _type;
   CaptureMeta _meta;
   int _frameCount = 0;
+  int _slotsUsedMask = 0;
+  // 首次见到 thermal/visible 帧时记录的分辨率; 后续不再修改.
+  int _thermalW;
+  int _thermalH;
+  int _visibleW;
+  int _visibleH;
   bool _closed = false;
-  // 文件中 metaLen u32 的偏移, 用于 close() 时校正 meta (主要是 frameCount).
   int _metaLenOffset = 0;
-  // 文件中 meta JSON 起始偏移.
   int _metaBytesOffset = 0;
 
-  CapturePackageWriter._(this._raf, this._type, this._meta);
+  CapturePackageWriter._(this._raf, this._type, this._meta)
+      : _thermalW = _meta.thermalW,
+        _thermalH = _meta.thermalH,
+        _visibleW = _meta.visibleW,
+        _visibleH = _meta.visibleH;
 
   static Future<CapturePackageWriter> create({
     required String path,
@@ -214,96 +251,104 @@ class CapturePackageWriter {
   }
 
   Future<void> _writeHeader() async {
-    // magic
     await _raf.writeFrom(CapturePackageHeader.magic);
-    // version u16 LE + type u8 + rsv u8 (共 4B)
     final bd = ByteData(4);
     bd.setUint16(0, CapturePackageHeader.version, Endian.little);
     bd.setUint8(2, _type);
     bd.setUint8(3, 0);
     await _raf.writeFrom(bd.buffer.asUint8List());
-    // metaLen u32 LE (含预留 padding, close()/editNote 时回写 meta 不会越界)
     _metaLenOffset = await _raf.position();
     final metaJson = utf8.encode(jsonEncode(_meta.toJson()));
-    // 预留 padding 让后续 close (frameCount 由 0 变成实际) + editNote (备注扩写)
-    // 都能就地覆盖, 不需要移动后续 frames. 1024B 余量足够装下:
-    //   - frameCount 位数增量 (最多 ~9 位)
-    //   - 备注扩写到约 200 字符
-    //   - renderParams JSON (约 400 字节)
-    //   - place 地名 (约 50 字符)
+    // padding 给 close() 回写 (frameCount/slotsUsedMask/分辨率/备注/renderParams)
+    // 留出充足空间.
     const int padding = 1024;
     final totalMetaLen = metaJson.length + padding;
     final lenBd = ByteData(4)..setUint32(0, totalMetaLen, Endian.little);
     await _raf.writeFrom(lenBd.buffer.asUint8List());
     _metaBytesOffset = await _raf.position();
-    // 真实 JSON + padding 个空格 (jsonDecode 时调用 trimRight 还原).
     final out = BytesBuilder(copy: false)
       ..add(metaJson)
       ..add(List<int>.filled(padding, 0x20));
     await _raf.writeFrom(out.toBytes());
   }
 
-  /// 追加一帧. thermal 长度需等于 thermalW * thermalH.
+  /// 追加一帧. thermal/visiblePng 任一可为 null (该槽位缺席).
+  /// 全 null 也允许 (空帧, 仅占用 10B = 2(mask)+8(ts)).
   Future<void> appendFrame(CaptureFrame frame) async {
     if (_closed) throw StateError('writer already closed');
-    final hdr = ByteData(8 + 4);
-    hdr.setUint64(0, frame.tsMs, Endian.little);
-    hdr.setUint32(8, frame.thermal.lengthInBytes, Endian.little);
-    await _raf.writeFrom(hdr.buffer.asUint8List());
-    // thermal float32 LE
-    final hostEndian = Endian.host;
-    if (hostEndian == Endian.little) {
-      await _raf.writeFrom(frame.thermal.buffer
-          .asUint8List(frame.thermal.offsetInBytes, frame.thermal.lengthInBytes));
-    } else {
-      // 主机大端: 逐 float 翻转再写. 实际所有目标平台都是 little endian.
-      final tmp = ByteData(frame.thermal.lengthInBytes);
-      for (int i = 0; i < frame.thermal.length; i++) {
-        tmp.setFloat32(i * 4, frame.thermal[i], Endian.little);
+    final mask = frame.slotMask;
+    _slotsUsedMask |= mask;
+    // 帧头: slotMask u16 + tsMs u64.
+    final fh = ByteData(2 + 8);
+    fh.setUint16(0, mask, Endian.little);
+    fh.setUint64(2, frame.tsMs, Endian.little);
+    await _raf.writeFrom(fh.buffer.asUint8List());
+    if ((mask & FrameSlot.thermal) != 0) {
+      final th = frame.thermal!;
+      // 首帧记录分辨率: 实际尺寸通过 thermal.length 推算 (默认 32x24, length 应=768).
+      if (_thermalW == 0 || _thermalH == 0) {
+        _thermalW = 32;
+        _thermalH = 24;
       }
-      await _raf.writeFrom(tmp.buffer.asUint8List());
+      final lenBd = ByteData(4)..setUint32(0, th.lengthInBytes, Endian.little);
+      await _raf.writeFrom(lenBd.buffer.asUint8List());
+      if (Endian.host == Endian.little) {
+        await _raf.writeFrom(
+            th.buffer.asUint8List(th.offsetInBytes, th.lengthInBytes));
+      } else {
+        final tmp = ByteData(th.lengthInBytes);
+        for (int i = 0; i < th.length; i++) {
+          tmp.setFloat32(i * 4, th[i], Endian.little);
+        }
+        await _raf.writeFrom(tmp.buffer.asUint8List());
+      }
     }
-    // visLen u32 + visPng
-    final visLen = frame.visiblePng.length;
-    final tail = ByteData(4)..setUint32(0, visLen, Endian.little);
-    await _raf.writeFrom(tail.buffer.asUint8List());
-    if (visLen > 0) {
-      await _raf.writeFrom(frame.visiblePng);
+    if ((mask & FrameSlot.visible) != 0) {
+      final png = frame.visiblePng!;
+      final lenBd = ByteData(4)..setUint32(0, png.length, Endian.little);
+      await _raf.writeFrom(lenBd.buffer.asUint8List());
+      await _raf.writeFrom(png);
     }
     _frameCount += 1;
   }
 
-  /// 关闭: 回写 meta.frameCount, 补 trailer.
+  /// 录制过程中, 调用方通知首次见到的可见光分辨率 (PNG 解码代价高, 写时不解码).
+  /// 仅在尚未记录时设置.
+  void declareVisibleSize(int w, int h) {
+    if (_visibleW == 0 || _visibleH == 0) {
+      _visibleW = w;
+      _visibleH = h;
+    }
+  }
+
+  /// 关闭: 回写 meta (frameCount/slotsUsedMask/分辨率), 补 trailer.
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
-    // 回写 meta JSON (frameCount 用真实值).
-    final updated = _meta.copyWith(frameCount: _frameCount);
+    final updated = _meta.copyWith(
+      frameCount: _frameCount,
+      slotsUsedMask: _slotsUsedMask,
+      thermalW: _thermalW,
+      thermalH: _thermalH,
+      visibleW: _visibleW,
+      visibleH: _visibleH,
+    );
     _meta = updated;
     final metaJson = utf8.encode(jsonEncode(updated.toJson()));
-    // 如果新 metaJson 长度变了 (基本会变, 因为 frameCount 从 0 变成实际值),
-    // 需要把后续 frames 整体移位. 简化做法: 预留 32B padding (空白空格 + ' ').
-    // 真实实现里, 我们写入定长字段: 用 padding 把 metaJson 凑到原长度.
-    final origLen = _metaBytesOffset == 0
-        ? metaJson.length
-        : (await _readU32(_metaLenOffset));
+    final origLen = await _readU32(_metaLenOffset);
     Uint8List toWrite;
     if (metaJson.length <= origLen) {
       final pad = origLen - metaJson.length;
       final builder = BytesBuilder(copy: false)
         ..add(metaJson)
-        ..add(List<int>.filled(pad, 0x20)); // 空格填充
+        ..add(List<int>.filled(pad, 0x20));
       toWrite = builder.toBytes();
     } else {
-      // 新 meta 比旧的长 (frameCount 位数增加), 罕见 case: 录制超过 1e? 帧.
-      // 直接 seek 到 frames 起点, 把后面拷贝出来再回写.
-      // 这里偷懒: 写入截短到原长 (略丢 note 末尾字符). 录制几小时不会触发.
       toWrite = Uint8List.fromList(metaJson.sublist(0, origLen));
     }
     final endPos = await _raf.length();
     await _raf.setPosition(_metaBytesOffset);
     await _raf.writeFrom(toWrite);
-    // 跳到文件末尾追加 trailer.
     await _raf.setPosition(endPos);
     await _raf.writeFrom(CapturePackageHeader.trailer);
     await _raf.flush();
@@ -326,10 +371,14 @@ class CapturePackageReader {
   final CaptureMeta meta;
   // 各帧在文件内的字节偏移 (frame header 起点), 顺序与 meta.frameCount 一致.
   final List<int> _frameOffsets;
+  // 每帧的 slotMask, 与 _frameOffsets 一一对应 (供 UI 时间轴使用).
+  final List<int> _frameSlotMasks;
 
-  CapturePackageReader._(this.file, this.type, this.meta, this._frameOffsets);
+  CapturePackageReader._(
+      this.file, this.type, this.meta, this._frameOffsets, this._frameSlotMasks);
 
   int get frameCount => _frameOffsets.length;
+  List<int> get frameSlotMasks => List.unmodifiable(_frameSlotMasks);
 
   static Future<CapturePackageReader> open(String path) async {
     final f = File(path);
@@ -345,40 +394,49 @@ class CapturePackageReader {
       }
       final hdr = await raf.read(4);
       final version = ByteData.sublistView(hdr).getUint16(0, Endian.little);
-      if (version != 1) {
-        throw FormatException('unsupported BTPK version: $version');
+      if (version != CapturePackageHeader.version) {
+        throw FormatException(
+            'unsupported BTPK version: $version (expected ${CapturePackageHeader.version})');
       }
       final type = hdr[2];
       final lenBuf = await raf.read(4);
       final metaLen =
           ByteData.sublistView(lenBuf).getUint32(0, Endian.little);
       final metaBuf = await raf.read(metaLen);
-      // 去掉尾部空格 padding 再 decode.
       final raw = String.fromCharCodes(metaBuf).trimRight();
       final meta = CaptureMeta.fromJson(jsonDecode(raw) as Map<String, dynamic>);
-      // 扫描 frames: 顺序读出每帧的偏移.
+      // 扫描 frames.
       final offsets = <int>[];
+      final masks = <int>[];
       for (int i = 0; i < meta.frameCount; i++) {
         final p = await raf.position();
+        // 帧头: u16 slotMask + u64 tsMs = 10 bytes.
+        final fh = await raf.read(10);
+        if (fh.length < 10) break;
         offsets.add(p);
-        final fh = await raf.read(8 + 4);
-        if (fh.length < 12) break;
-        final thermalLen =
-            ByteData.sublistView(fh).getUint32(8, Endian.little);
-        await raf.setPosition(p + 12 + thermalLen);
-        final visLenBuf = await raf.read(4);
-        if (visLenBuf.length < 4) break;
-        final visLen =
-            ByteData.sublistView(visLenBuf).getUint32(0, Endian.little);
-        await raf.setPosition(await raf.position() + visLen);
+        final slotMask =
+            ByteData.sublistView(fh).getUint16(0, Endian.little);
+        masks.add(slotMask);
+        if ((slotMask & FrameSlot.thermal) != 0) {
+          final lb = await raf.read(4);
+          if (lb.length < 4) break;
+          final len = ByteData.sublistView(lb).getUint32(0, Endian.little);
+          await raf.setPosition(await raf.position() + len);
+        }
+        if ((slotMask & FrameSlot.visible) != 0) {
+          final lb = await raf.read(4);
+          if (lb.length < 4) break;
+          final len = ByteData.sublistView(lb).getUint32(0, Endian.little);
+          await raf.setPosition(await raf.position() + len);
+        }
       }
-      return CapturePackageReader._(f, type, meta, offsets);
+      return CapturePackageReader._(f, type, meta, offsets, masks);
     } finally {
       await raf.close();
     }
   }
 
-  /// 读取第 [i] 帧 (返回 Float32List 热成像 + Uint8List PNG).
+  /// 读取第 [i] 帧.
   Future<CaptureFrame> readFrame(int i) async {
     if (i < 0 || i >= _frameOffsets.length) {
       throw RangeError.index(i, _frameOffsets, 'frame');
@@ -386,19 +444,22 @@ class CapturePackageReader {
     final raf = await file.open(mode: FileMode.read);
     try {
       await raf.setPosition(_frameOffsets[i]);
-      final hb = await raf.read(12);
-      final tsMs = ByteData.sublistView(hb).getUint64(0, Endian.little);
-      final thermalLen =
-          ByteData.sublistView(hb).getUint32(8, Endian.little);
-      final tBytes = await raf.read(thermalLen);
-      final thermal = Float32List.view(
-        Uint8List.fromList(tBytes).buffer,
-      );
-      final vlb = await raf.read(4);
-      final visLen = ByteData.sublistView(vlb).getUint32(0, Endian.little);
-      final visPng = visLen == 0
-          ? Uint8List(0)
-          : Uint8List.fromList(await raf.read(visLen));
+      final hb = await raf.read(10);
+      final slotMask = ByteData.sublistView(hb).getUint16(0, Endian.little);
+      final tsMs = ByteData.sublistView(hb).getUint64(2, Endian.little);
+      Float32List? thermal;
+      Uint8List? visPng;
+      if ((slotMask & FrameSlot.thermal) != 0) {
+        final lb = await raf.read(4);
+        final len = ByteData.sublistView(lb).getUint32(0, Endian.little);
+        final tBytes = await raf.read(len);
+        thermal = Float32List.view(Uint8List.fromList(tBytes).buffer);
+      }
+      if ((slotMask & FrameSlot.visible) != 0) {
+        final lb = await raf.read(4);
+        final len = ByteData.sublistView(lb).getUint32(0, Endian.little);
+        visPng = Uint8List.fromList(await raf.read(len));
+      }
       return CaptureFrame(tsMs: tsMs, thermal: thermal, visiblePng: visPng);
     } finally {
       await raf.close();
@@ -406,7 +467,6 @@ class CapturePackageReader {
   }
 
   /// 仅修改 meta.note (重命名/备注编辑场景). 其他字段保持原值.
-  /// 注: meta JSON 区有 padding, 长度允许小幅增长.
   static Future<void> editNote(String path, String newNote) async {
     final raf = await File(path).open(mode: FileMode.append);
     try {
@@ -419,7 +479,7 @@ class CapturePackageReader {
           m[3] != 0x4B) {
         throw const FormatException('not a BTPK package');
       }
-      await raf.setPosition(8); // skip header(8) -> metaLen
+      await raf.setPosition(8);
       final lenBuf = await raf.read(4);
       final metaLen =
           ByteData.sublistView(lenBuf).getUint32(0, Endian.little);

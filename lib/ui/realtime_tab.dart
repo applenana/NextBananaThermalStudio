@@ -3051,16 +3051,16 @@ class _CaptureBar extends StatefulWidget {
 class _CaptureBarState extends State<_CaptureBar> {
   bool _busy = false;
 
-  Future<bool> _confirmNoVisible(String action) async {
+  Future<bool> _confirmEmpty(String action) async {
     if (!mounted) return false;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('未开启可见光'),
+        title: const Text('两路推流均已关闭'),
         content: Text(
-          '当前未开启可见光摄像头, 本次$action将仅含热成像画面, '
-          '详情页也无法进行可见光/热融合. \n\n'
-          '如需保存双光画面, 请先在实时画面中打开可见光摄像头后重试.',
+          '当前热成像与可见光推流都未开启, 本次$action将得到一个空帧 '
+          '(仅时间戳, 无任何画面). \n\n'
+          '确认继续? 或先在实时画面打开任意一路推流后再$action.',
         ),
         actions: [
           TextButton(
@@ -3069,7 +3069,7 @@ class _CaptureBarState extends State<_CaptureBar> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: Text('仅热成像继续$action'),
+            child: Text('仍然$action'),
           ),
         ],
       ),
@@ -3080,12 +3080,10 @@ class _CaptureBarState extends State<_CaptureBar> {
   Future<void> _shot() async {
     if (_busy) return;
     final app = context.read<AppState>();
-    if (app.thermalFrame == null) {
-      _toast('暂无热成像数据');
-      return;
-    }
-    if (app.visibleWidth == 0) {
-      final go = await _confirmNoVisible('拍摄');
+    final hasT = app.thermalFrame != null;
+    final hasV = app.visibleWidth > 0;
+    if (!hasT && !hasV) {
+      final go = await _confirmEmpty('拍摄');
       if (!go) return;
     }
     setState(() => _busy = true);
@@ -3112,12 +3110,10 @@ class _CaptureBarState extends State<_CaptureBar> {
           _toast('录制已保存: ${path.split(RegExp(r"[\\/]")).last}');
         }
       } else {
-        if (app.thermalFrame == null) {
-          _toast('暂无热成像数据');
-          return;
-        }
-        if (app.visibleWidth == 0) {
-          final go = await _confirmNoVisible('录制');
+        final hasT = app.thermalFrame != null;
+        final hasV = app.visibleWidth > 0;
+        if (!hasT && !hasV) {
+          final go = await _confirmEmpty('录制');
           if (!go) return;
         }
         await app.startRecording();
@@ -3142,6 +3138,8 @@ class _CaptureBarState extends State<_CaptureBar> {
     final app = context.watch<AppState>();
     final scheme = Theme.of(context).colorScheme;
     final recording = app.isRecording;
+    final hasThermal = app.thermalFrame != null;
+    final hasVisible = app.visibleWidth > 0;
     return Material(
       color: Colors.transparent,
       child: Container(
@@ -3157,6 +3155,19 @@ class _CaptureBarState extends State<_CaptureBar> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // 槽位指示灯 (始终显示, 录制中亦同步): 热=橙, 可见=青. 暗色=该槽位关闭.
+            _SlotDot(
+              active: hasThermal,
+              color: const Color(0xFFFF8A65),
+              tooltip: hasThermal ? '热成像槽位: 推流中' : '热成像槽位: 关闭',
+            ),
+            const SizedBox(width: 3),
+            _SlotDot(
+              active: hasVisible,
+              color: const Color(0xFF4DD0E1),
+              tooltip: hasVisible ? '可见光槽位: 推流中' : '可见光槽位: 关闭',
+            ),
+            const SizedBox(width: 8),
             if (recording) ...[
               Icon(Icons.fiber_manual_record, size: 14, color: scheme.error),
               const SizedBox(width: 4),
@@ -3173,7 +3184,7 @@ class _CaptureBarState extends State<_CaptureBar> {
             IconButton(
               onPressed: _busy || recording ? null : _shot,
               icon: const Icon(Icons.photo_camera_rounded),
-              tooltip: '拍摄',
+              tooltip: '拍摄当前槽位',
               color: scheme.primary,
             ),
             IconButton(
@@ -3181,10 +3192,40 @@ class _CaptureBarState extends State<_CaptureBar> {
               icon: Icon(
                 recording ? Icons.stop_circle_rounded : Icons.videocam_rounded,
               ),
-              tooltip: recording ? '停止录制' : '开始录制',
+              tooltip: recording ? '停止录制' : '开始录制 (跟随实时槽位)',
               color: recording ? scheme.error : scheme.primary,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 拍摄栏的"槽位指示灯": 小圆点 + 颜色, active=亮色, 否则灰度.
+class _SlotDot extends StatelessWidget {
+  const _SlotDot({
+    required this.active,
+    required this.color,
+    required this.tooltip,
+  });
+  final bool active;
+  final Color color;
+  final String tooltip;
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: tooltip,
+      child: Container(
+        width: 8,
+        height: 8,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: active ? color : scheme.outlineVariant.withValues(alpha: 0.5),
+          boxShadow: active
+              ? [BoxShadow(color: color.withValues(alpha: 0.6), blurRadius: 4)]
+              : null,
         ),
       ),
     );

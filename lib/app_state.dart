@@ -498,16 +498,8 @@ class AppState extends ChangeNotifier {
       historyMin.removeAt(0);
       historyAvg.removeAt(0);
     }
-    // 录制: 把 (热成像 + 当前最新可见光) 追加进当前 .btpkg.
-    // 推流回调主线程触发, CaptureService 内部串行化, 这里 fire-and-forget.
-    if (CaptureService.instance.state == RecordingState.recording) {
-      CaptureService.instance.pushFrame(
-        thermal: mirrored,
-        visibleRgb888: visibleRgb888,
-        visibleW: visibleWidth,
-        visibleH: visibleHeight,
-      );
-    }
+    // 录制由 30fps 计时器统一驱动 (见 _recordTick), 不再随热成像回调追加,
+    // 这样关掉热成像后仍能继续录制纯可见光 / 空帧.
     notifyListeners();
   }
 
@@ -1057,21 +1049,21 @@ class AppState extends ChangeNotifier {
   String? get recordingPath => CaptureService.instance.activePath;
 
   /// 把当前最新一帧打包成 photo `.btpkg`. 返回写入路径.
-  /// 若当前没有有效热成像帧, 抛 [StateError].
+  /// 槽位独立: 当前没有热成像就只存可见光, 没有可见光就只存热成像,
+  /// 两者都没有时会写出一个空帧 (slotMask=0) — 用户主动关停两路推流时仍可"占位拍摄".
   Future<String> capturePhoto({String note = ''}) async {
     final tf = thermalFrame;
-    if (tf == null || tf.isEmpty) {
-      throw StateError('当前无热成像帧, 请先连接设备并开启热成像推流');
-    }
+    final hasThermal = tf != null && tf.isNotEmpty;
+    final hasVisible = visibleRgb888 != null && visibleWidth > 0;
     final loc = await _tryGetLocation();
     final place = loc == null ? null : await _reverseGeocode(loc.$1, loc.$2);
     final path = await CaptureService.instance.takePhoto(
-      thermal: tf,
+      thermal: hasThermal ? tf : null,
       thermalW: 32,
       thermalH: 24,
-      visibleRgb888: visibleRgb888,
-      visibleW: visibleWidth,
-      visibleH: visibleHeight,
+      visibleRgb888: hasVisible ? visibleRgb888 : null,
+      visibleW: hasVisible ? visibleWidth : 0,
+      visibleH: hasVisible ? visibleHeight : 0,
       lat: loc?.$1,
       lng: loc?.$2,
       alt: loc?.$3,
@@ -1080,12 +1072,16 @@ class AppState extends ChangeNotifier {
       note: note,
       renderParams: renderParams.toJson(),
     );
-    _log('info', '拍摄成功: $path');
+    final slotsLabel = [
+      if (hasThermal) '热',
+      if (hasVisible) '可见',
+    ].join('+');
+    _log('info', '拍摄成功 [${slotsLabel.isEmpty ? "空帧" : slotsLabel}]: $path');
     notifyListeners();
     return path;
   }
 
-  /// 开始录制. 录制期间每帧 (热) 进来都会被 fire-and-forget 追加到包内.
+  /// 开始录制. 录制期间由内部 30fps 计时器周期采样当前槽位状态, 与推流开关无耦合.
   Future<String> startRecording({String note = ''}) async {
     if (isRecording) throw StateError('已经在录制中');
     final loc = await _tryGetLocation();
@@ -1103,18 +1099,43 @@ class AppState extends ChangeNotifier {
       note: note,
       renderParams: renderParams.toJson(),
     );
+    _startRecordTicker();
     _log('info', '开始录制: $path');
     notifyListeners();
     return path;
   }
 
   Future<String?> stopRecording() async {
+    _stopRecordTicker();
     final path = await CaptureService.instance.stopRecording();
     if (path != null) {
       _log('info', '录制结束: $path');
     }
     notifyListeners();
     return path;
+  }
+
+  // 录制采样器: 固定 ~30 FPS, 每 tick 把当前槽位 (任一可缺席) 推给 CaptureService.
+  Timer? _recordTicker;
+  void _startRecordTicker() {
+    _recordTicker?.cancel();
+    _recordTicker = Timer.periodic(const Duration(milliseconds: 33), (_) {
+      if (!isRecording) return;
+      final tf = thermalFrame;
+      final hasThermal = tf != null && tf.isNotEmpty;
+      final hasVisible = visibleRgb888 != null && visibleWidth > 0;
+      CaptureService.instance.pushFrame(
+        thermal: hasThermal ? tf : null,
+        visibleRgb888: hasVisible ? visibleRgb888 : null,
+        visibleW: hasVisible ? visibleWidth : 0,
+        visibleH: hasVisible ? visibleHeight : 0,
+      );
+    });
+  }
+
+  void _stopRecordTicker() {
+    _recordTicker?.cancel();
+    _recordTicker = null;
   }
 
   /// 尝试拿 GPS. 失败/拒绝/超时一律返回 null, 不阻塞拍摄主流程.

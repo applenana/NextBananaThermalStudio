@@ -644,9 +644,10 @@ class _DetailBodyState extends State<_DetailBody> {
     final f = await r.readFrame(i);
     Uint8List? rgb;
     int w = 0, h = 0;
-    if (f.visiblePng.isNotEmpty) {
+    final vpng = f.visiblePng;
+    if (vpng != null && vpng.isNotEmpty) {
       try {
-        final im = img.decodePng(f.visiblePng);
+        final im = img.decodePng(vpng);
         if (im != null) {
           rgb = im.getBytes(order: img.ChannelOrder.rgb);
           w = im.width;
@@ -716,21 +717,37 @@ class _DetailBodyState extends State<_DetailBody> {
     }
     final scheme = Theme.of(context).colorScheme;
     final meta = r.meta;
-    final hasVisInPkg = meta.visibleW > 0 && meta.visibleH > 0;
+    // 包级是否含可见光/热成像 (用于元数据 chips 与录制时间轴色条).
+    final hasVisInPkg = meta.hasAnyVisible;
+    final hasThermalInPkg = meta.hasAnyThermal;
+    // 当前帧的槽位状态.
+    final fHasT = f.hasThermal;
+    final fHasV = f.hasVisible;
     final hasVisInFrame = _visRgb888 != null;
     final isVideo = r.type == CapturePackageHeader.typeVideo;
+
+    String pkgSlotDesc() {
+      if (hasThermalInPkg && hasVisInPkg) return '双光 (热+可见)';
+      if (hasThermalInPkg) return '纯热成像';
+      if (hasVisInPkg) return '纯可见光';
+      return '空包 (无任何槽位)';
+    }
 
     // 顶部元数据 chips.
     final metaChips = <Widget>[
       _kv('文件', widget.item.name),
       _kv('类型', '${isVideo ? '视频' : '照片'} · ${r.frameCount} 帧'),
+      _kv('槽位', pkgSlotDesc()),
       _kv('创建', _fmtTime(meta.createdAt.toLocal())),
       if (meta.deviceSn != null) _kv('设备', meta.deviceSn!),
       _kv('位置', (meta.place ?? '').isEmpty ? '未知' : meta.place!),
       if (meta.lat != null && meta.lng != null)
         _kv('经纬',
             '${meta.lat!.toStringAsFixed(5)}, ${meta.lng!.toStringAsFixed(5)}'),
-      _kv('热成像', '${meta.thermalW} × ${meta.thermalH}'),
+      if (hasThermalInPkg)
+        _kv('热成像', '${meta.thermalW} × ${meta.thermalH}')
+      else
+        _kv('热成像', '未保存'),
       if (hasVisInPkg)
         _kv('可见光', '${meta.visibleW} × ${meta.visibleH}')
       else
@@ -783,24 +800,19 @@ class _DetailBodyState extends State<_DetailBody> {
                   padding: const EdgeInsets.all(6),
                   child: Stack(
                     children: [
+                      // 主画面: 按帧槽位分支.
                       Positioned.fill(
                         child: Center(
-                          child: AspectRatio(
-                            aspectRatio: meta.thermalW / meta.thermalH,
-                            child: _ThermalImage(
-                              thermal: f.thermal,
-                              width: meta.thermalW,
-                              height: meta.thermalH,
-                              params: params,
-                              visibleRgb888: _visRgb888,
-                              visibleW: _visW,
-                              visibleH: _visH,
-                            ),
+                          child: _buildMainPreview(
+                            f: f,
+                            meta: meta,
+                            params: params,
+                            scheme: scheme,
                           ),
                         ),
                       ),
-                      // 右上: 可见光显示开关 (包内有可见光时才出现).
-                      if (hasVisInPkg && f.visiblePng.isNotEmpty)
+                      // 右上: 可见光显示开关 (仅本帧含可见光时才出现).
+                      if (fHasV && fHasT)
                         Positioned(
                           top: 6,
                           right: 6,
@@ -819,28 +831,38 @@ class _DetailBodyState extends State<_DetailBody> {
                           left: 0,
                           right: 0,
                           bottom: 0,
-                          child: _VideoOverlay(
-                            playing: _playing,
-                            frameIndex: _frameIndex,
-                            frameCount: r.frameCount,
-                            tsMs: f.tsMs,
-                            onToggle: _togglePlay,
-                            onSeek: (i) {
-                              if (_playing) {
-                                _playTimer?.cancel();
-                                _playTimer = null;
-                                setState(() => _playing = false);
-                              }
-                              _selectFrame(i);
-                            },
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // 槽位色条: 每帧一个细格, 颜色=该帧实际槽位.
+                              _SlotTimelineBar(
+                                masks: r.frameSlotMasks,
+                                cursor: _frameIndex,
+                              ),
+                              _VideoOverlay(
+                                playing: _playing,
+                                frameIndex: _frameIndex,
+                                frameCount: r.frameCount,
+                                tsMs: f.tsMs,
+                                onToggle: _togglePlay,
+                                onSeek: (i) {
+                                  if (_playing) {
+                                    _playTimer?.cancel();
+                                    _playTimer = null;
+                                    setState(() => _playing = false);
+                                  }
+                                  _selectFrame(i);
+                                },
+                              ),
+                            ],
                           ),
                         ),
                     ],
                   ),
                 ),
               ),
-              // 可见光小窗: 仅在 _showVisible 时显示.
-              if (_showVisible && hasVisInPkg && f.visiblePng.isNotEmpty) ...[
+              // 可见光小窗: 仅当本帧含可见光 + 同时含热成像 + 用户开关开启时显示.
+              if (_showVisible && fHasT && fHasV) ...[
                 const SizedBox(width: 8),
                 SizedBox(
                   width: 220,
@@ -863,7 +885,7 @@ class _DetailBodyState extends State<_DetailBody> {
                             const SizedBox(width: 4),
                             Expanded(
                               child: Text(
-                                '可见光 · ${(f.visiblePng.length / 1024).toStringAsFixed(1)} KB',
+                                '可见光 · ${(f.visiblePng!.length / 1024).toStringAsFixed(1)} KB',
                                 style: TextStyle(
                                     fontSize: 10.5,
                                     color: scheme.onSurfaceVariant),
@@ -877,7 +899,7 @@ class _DetailBodyState extends State<_DetailBody> {
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(6),
                             child: Image.memory(
-                              f.visiblePng,
+                              f.visiblePng!,
                               fit: BoxFit.contain,
                               alignment: Alignment.topCenter,
                             ),
@@ -908,6 +930,139 @@ class _DetailBodyState extends State<_DetailBody> {
           ),
           TextSpan(text: v),
         ],
+      ),
+    );
+  }
+
+  /// 主预览区: 按本帧槽位状态分支渲染.
+  ///
+  /// - 双光: 热成像主画面 + 可见光融合参数生效.
+  /// - 纯热: 仅热成像 (融合相关参数忽略).
+  /// - 纯可见: 直接 Image.memory 显示可见光 PNG.
+  /// - 空帧: 占位文案, 提示该帧无任何槽位数据.
+  Widget _buildMainPreview({
+    required CaptureFrame f,
+    required CaptureMeta meta,
+    required RenderParams params,
+    required ColorScheme scheme,
+  }) {
+    final hasT = f.hasThermal;
+    final hasV = f.hasVisible;
+    if (!hasT && !hasV) {
+      return Container(
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.layers_clear_rounded,
+                size: 40, color: scheme.onSurfaceVariant),
+            const SizedBox(height: 6),
+            Text(
+              '本帧无任何数据 (空槽位)',
+              style: TextStyle(
+                  fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+      );
+    }
+    if (hasT) {
+      // 含热成像: 走原渲染管线; 是否融合可见光由 _visRgb888/_showVisible 控制.
+      final useFusionRgb = (hasV && _visRgb888 != null) ? _visRgb888 : null;
+      return AspectRatio(
+        aspectRatio: meta.thermalW / meta.thermalH,
+        child: _ThermalImage(
+          thermal: f.thermal!,
+          width: meta.thermalW,
+          height: meta.thermalH,
+          params: params,
+          visibleRgb888: useFusionRgb,
+          visibleW: useFusionRgb != null ? _visW : 0,
+          visibleH: useFusionRgb != null ? _visH : 0,
+        ),
+      );
+    }
+    // 纯可见光帧.
+    final vpng = f.visiblePng!;
+    return AspectRatio(
+      aspectRatio: meta.visibleW > 0 && meta.visibleH > 0
+          ? meta.visibleW / meta.visibleH
+          : 4 / 3,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.memory(vpng, fit: BoxFit.contain),
+      ),
+    );
+  }
+}
+
+/// 帧时间轴下方的槽位色条: 每帧一个细格, 颜色反映该帧实际包含的槽位.
+///
+/// - 热成像 only: 橙色.
+/// - 可见光 only: 青色.
+/// - 双光: 蓝绿(theme primary).
+/// - 空帧: 半透明灰.
+/// - 当前帧位置叠加一条白色游标.
+class _SlotTimelineBar extends StatelessWidget {
+  const _SlotTimelineBar({required this.masks, required this.cursor});
+  final List<int> masks;
+  final int cursor;
+
+  static const Color _cThermal = Color(0xFFFF8A65);
+  static const Color _cVisible = Color(0xFF4DD0E1);
+  static const Color _cBoth = Color(0xFF4DB6AC);
+
+  Color _colorOf(int mask, ColorScheme scheme) {
+    final hasT = (mask & FrameSlot.thermal) != 0;
+    final hasV = (mask & FrameSlot.visible) != 0;
+    if (hasT && hasV) return _cBoth;
+    if (hasT) return _cThermal;
+    if (hasV) return _cVisible;
+    return scheme.outlineVariant.withValues(alpha: 0.4);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (masks.isEmpty) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8),
+      height: 6,
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(3),
+        child: LayoutBuilder(builder: (ctx, box) {
+          return Stack(
+            children: [
+              Row(
+                children: [
+                  for (final m in masks)
+                    Expanded(
+                      child: Container(color: _colorOf(m, scheme)),
+                    ),
+                ],
+              ),
+              // 游标
+              if (cursor >= 0 && cursor < masks.length)
+                Positioned(
+                  left: (cursor / masks.length) * box.maxWidth,
+                  top: 0,
+                  bottom: 0,
+                  child: Container(
+                    width: 2,
+                    color: Colors.white.withValues(alpha: 0.95),
+                  ),
+                ),
+            ],
+          );
+        }),
       ),
     );
   }
