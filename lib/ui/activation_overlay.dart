@@ -12,6 +12,9 @@
 ///   - 激活: `activate <key>\n` → 等 ~1.5s 后再次 GetSysInfo 刷新状态
 library;
 
+import 'dart:async';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -56,18 +59,49 @@ class _ActivationDialog extends StatefulWidget {
 class _ActivationDialogState extends State<_ActivationDialog> {
   final TextEditingController _ctrl = TextEditingController();
   bool _busy = false;
-  bool _querySent = false;
+  Timer? _serialPollTimer;
+  int _serialRetry = 0;
+  static const int _kMaxSerialRetry = 5;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
+      _requestSerialIfMissing();
+      _startSerialPolling();
+    });
+  }
+
+  void _requestSerialIfMissing() {
+    if (!mounted) return;
+    final app = context.read<AppState>();
+    if (app.status != ConnectionStatus.connected) return;
+    final s = app.deviceSerial;
+    if (s == null || s.isEmpty) {
+      app.sendCommand('GetSysInfo');
+    }
+  }
+
+  /// 序列号每 3s 轮询一次, 直到拿到或达到上限 (避免无限刷).
+  void _startSerialPolling() {
+    _serialPollTimer?.cancel();
+    _serialPollTimer = Timer.periodic(const Duration(seconds: 3), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
       final app = context.read<AppState>();
-      if (!_querySent &&
-          app.status == ConnectionStatus.connected &&
-          (app.deviceSerial == null || app.deviceSerial!.isEmpty)) {
-        _querySent = true;
+      final s = app.deviceSerial;
+      if (s != null && s.isNotEmpty) {
+        t.cancel();
+        return;
+      }
+      if (_serialRetry >= _kMaxSerialRetry) {
+        t.cancel();
+        return;
+      }
+      _serialRetry++;
+      if (app.status == ConnectionStatus.connected) {
         app.sendCommand('GetSysInfo');
       }
     });
@@ -75,6 +109,7 @@ class _ActivationDialogState extends State<_ActivationDialog> {
 
   @override
   void dispose() {
+    _serialPollTimer?.cancel();
     _ctrl.dispose();
     super.dispose();
   }
@@ -124,12 +159,15 @@ class _ActivationDialogState extends State<_ActivationDialog> {
 
     return Stack(
       children: [
-        // 半透 scrim, 拦截点击.
+        // 背景毛玻璃 + 半透深色 scrim, 拦截点击.
         Positioned.fill(
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () {},
-            child: ColoredBox(color: Colors.black.withValues(alpha: 0.45)),
+            child: BackdropFilter(
+              filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+              child: ColoredBox(color: Colors.black.withValues(alpha: 0.32)),
+            ),
           ),
         ),
         Center(
