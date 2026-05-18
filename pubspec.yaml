@@ -46,6 +46,9 @@ dependencies:
   # 仅 Android 分支使用, 桌面构建忽略.
   gal: ^2.3.0
 
+  # 在外部浏览器打开 URL (激活弹窗中的售后链接). 跨平台.
+  url_launcher: ^6.3.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

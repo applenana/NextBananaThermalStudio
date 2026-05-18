@@ -18,6 +18,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_state.dart';
 
@@ -67,6 +68,18 @@ class _ActivationDialogState extends State<_ActivationDialog> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // 首次立即请求 (补发一次 GetSysInfo), 如果~1.2s 后仍未拿到
+      // 才进入 3s 重试循环, 避免正常路径频繁重复轮询.
+      _requestSerialIfMissing();
+      _scheduleFirstFollowUp();
+    });
+  }
+
+  void _scheduleFirstFollowUp() {
+    Future.delayed(const Duration(milliseconds: 1200), () {
+      if (!mounted) return;
+      final s = context.read<AppState>().deviceSerial;
+      if (s != null && s.isNotEmpty) return;
       _requestSerialIfMissing();
       _startSerialPolling();
     });
@@ -128,6 +141,54 @@ class _ActivationDialogState extends State<_ActivationDialog> {
     _toast(okMsg);
   }
 
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      _toast('链接不合法');
+      return;
+    }
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok && mounted) {
+        await Clipboard.setData(ClipboardData(text: url));
+        _toast('无法启动浏览器, 链接已复制');
+      }
+    } catch (_) {
+      await Clipboard.setData(ClipboardData(text: url));
+      if (!mounted) return;
+      _toast('无法启动浏览器, 链接已复制');
+    }
+  }
+
+  Future<void> _showErrorDialog(String message) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        final scheme = Theme.of(ctx).colorScheme;
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          icon: Icon(
+            Icons.error_outline_rounded,
+            color: scheme.error,
+            size: 32,
+          ),
+          title: const Text('激活码错误'),
+          content: Text(message),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('我知道了'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _submit() async {
     final key = _ctrl.text.trim();
     if (key.isEmpty) {
@@ -148,7 +209,7 @@ class _ActivationDialogState extends State<_ActivationDialog> {
     if (!mounted) return;
     setState(() => _busy = false);
     if (!context.read<AppState>().isActivated) {
-      _toast('激活未成功, 请确认激活码后再试');
+      await _showErrorDialog('激活码不正确或设备未确认, 请确认后再试.');
     }
   }
 
@@ -233,10 +294,10 @@ class _ActivationDialogState extends State<_ActivationDialog> {
             runSpacing: 4,
             children: [
               Text('闲鱼购买:', style: subStyle),
-              _CopyableInline(
+              _LinkInline(
                 text: _kAftersaleUrl,
-                tooltip: '复制链接',
-                onCopy: () => _copy(_kAftersaleUrl, '链接已复制'),
+                tooltip: '在浏览器中打开',
+                onTap: () => _openUrl(_kAftersaleUrl),
               ),
               Text('凭订单号自助获取.', style: subStyle),
             ],
@@ -462,6 +523,49 @@ class _CopyableInline extends StatelessWidget {
               ),
               const SizedBox(width: 3),
               Icon(Icons.copy_rounded, size: 13, color: scheme.primary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LinkInline extends StatelessWidget {
+  final String text;
+  final String tooltip;
+  final VoidCallback onTap;
+  const _LinkInline({
+    required this.text,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                text,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: scheme.primary,
+                  decoration: TextDecoration.underline,
+                  decorationColor: scheme.primary,
+                ),
+              ),
+              const SizedBox(width: 3),
+              Icon(Icons.open_in_new_rounded, size: 13, color: scheme.primary),
             ],
           ),
         ),
