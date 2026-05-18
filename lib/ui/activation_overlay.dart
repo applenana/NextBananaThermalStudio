@@ -1,14 +1,17 @@
-/// 设备激活遮罩.
+/// 设备激活遮罩 (通用端).
 ///
-/// 通用端: 当串口连接成功 + 设备返回 `isActivated=false` 时, 在窗口/屏幕
-/// 正中央弹出一个毛玻璃风格的激活对话框. 用户复制序列号、输入激活码,
-/// 点 "激活" 后:
-///   1. 发送 `activate <key>` 到设备
-///   2. 1.5s 后主动 `GetSysInfo` 刷新激活状态
-///   3. AppState.isActivated 变 true → Consumer 重建 → 遮罩自动消失
+/// 当串口连接成功且设备返回 `isActivated=false` 时, 在窗口中央覆盖一层
+/// 毛玻璃风格的提示卡片. 视觉风格与香蕉橙色主题 + 全局圆角 (14-20) 保持
+/// 一致, 仅作为温和提醒.
 ///
-/// 与设备协议参见 D:\Github_project\全能上位机\thermal_dual_app.py 中的
-/// `_do_activate` / `_handle_device_info`.
+/// 协议参考 (D:\Github_project\全能上位机\thermal_dual_app.py):
+///   - 查询: `GetSysInfo\n` → JSON {SerialNum, isActivated, ...}
+///   - 激活: `activate <key>\n` → 等 ~1.5s 后再次 GetSysInfo 刷新状态
+///
+/// 兼容自动 / 手动连接两种路径: 一旦 [AppState.status] = connected 且
+/// `isActivated=false`, 立即展示卡片. 若此时 SerialNum 尚未到达, 显示占位
+/// 并在卡片首次构建时再发一次 GetSysInfo, 兜底手动连接路径下 JSON 错过
+/// 的极小概率.
 library;
 
 import 'dart:ui' as ui;
@@ -19,7 +22,6 @@ import 'package:provider/provider.dart';
 
 import '../app_state.dart';
 
-/// 把整棵子树包起来; 满足条件时在正中央覆盖一层毛玻璃激活对话框.
 class ActivationOverlay extends StatelessWidget {
   final Widget child;
   const ActivationOverlay({super.key, required this.child});
@@ -31,14 +33,11 @@ class ActivationOverlay extends StatelessWidget {
         child,
         Consumer<AppState>(
           builder: (ctx, app, _) {
-            final needShow = app.status == ConnectionStatus.connected &&
-                !app.isActivated &&
-                (app.deviceSerial != null &&
-                    app.deviceSerial!.isNotEmpty &&
-                    app.deviceSerial != '未获取');
-            if (!needShow) return const SizedBox.shrink();
+            final show =
+                app.status == ConnectionStatus.connected && !app.isActivated;
+            if (!show) return const SizedBox.shrink();
             return Positioned.fill(
-              child: _ActivationDialog(serial: app.deviceSerial!),
+              child: _ActivationCard(serial: app.deviceSerial),
             );
           },
         ),
@@ -47,18 +46,37 @@ class ActivationOverlay extends StatelessWidget {
   }
 }
 
-class _ActivationDialog extends StatefulWidget {
-  final String serial;
-  const _ActivationDialog({required this.serial});
+class _ActivationCard extends StatefulWidget {
+  /// null 或空字符串表示 SerialNum 还没回来.
+  final String? serial;
+  const _ActivationCard({required this.serial});
 
   @override
-  State<_ActivationDialog> createState() => _ActivationDialogState();
+  State<_ActivationCard> createState() => _ActivationCardState();
 }
 
-class _ActivationDialogState extends State<_ActivationDialog> {
+class _ActivationCardState extends State<_ActivationCard> {
   final TextEditingController _ctrl = TextEditingController();
   bool _busy = false;
-  String? _hint; // 状态提示文本
+  String? _hint;
+  bool _ok = false; // 提示是否为成功类
+  bool _querySent = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 若首次出现时 SerialNum 还没回来, 主动再发一次, 兜底手动连接路径.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final app = context.read<AppState>();
+      if (!_querySent &&
+          app.status == ConnectionStatus.connected &&
+          (app.deviceSerial == null || app.deviceSerial!.isEmpty)) {
+        _querySent = true;
+        app.sendCommand('GetSysInfo');
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -67,65 +85,76 @@ class _ActivationDialogState extends State<_ActivationDialog> {
   }
 
   Future<void> _copySerial() async {
-    await Clipboard.setData(ClipboardData(text: widget.serial));
+    final s = widget.serial;
+    if (s == null || s.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: s));
     if (!mounted) return;
-    setState(() => _hint = '序列号已复制到剪贴板');
+    setState(() {
+      _ok = true;
+      _hint = '序列号已复制';
+    });
   }
 
   Future<void> _submit() async {
     final key = _ctrl.text.trim();
     if (key.isEmpty) {
-      setState(() => _hint = '请输入激活码');
+      setState(() {
+        _ok = false;
+        _hint = '请输入激活码';
+      });
       return;
     }
     final app = context.read<AppState>();
     if (app.status != ConnectionStatus.connected) {
-      setState(() => _hint = '设备未连接');
+      setState(() {
+        _ok = false;
+        _hint = '设备未连接';
+      });
       return;
     }
     setState(() {
       _busy = true;
-      _hint = '正在激活...';
+      _hint = '正在激活…';
+      _ok = true;
     });
     app.sendCommand('activate $key');
-    // 与参考实现一致: 1.5s 后主动查询设备状态.
     await Future.delayed(const Duration(milliseconds: 1500));
     if (!mounted) return;
     app.sendCommand('GetSysInfo');
-    // 再给设备一点时间回复 JSON, AppState 监听到 isActivated=true 后,
-    // 上层 Consumer 会自动卸载本弹窗.
     await Future.delayed(const Duration(milliseconds: 1500));
     if (!mounted) return;
     setState(() {
       _busy = false;
-      // 走到这里还在 = 没成功
       if (!context.read<AppState>().isActivated) {
-        _hint = '激活失败, 请检查激活码后重试';
+        _ok = false;
+        _hint = '激活未成功, 请确认激活码后再试';
       }
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final cardColor = (isDark ? Colors.black : Colors.white).withValues(
-      alpha: 0.55,
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
+
+    final cardBg = (isDark ? const Color(0xFF1F1A17) : Colors.white).withValues(
+      alpha: isDark ? 0.78 : 0.82,
     );
-    final borderColor = scheme.outline.withValues(alpha: 0.3);
+    final borderColor = scheme.outlineVariant.withValues(alpha: 0.45);
 
     return Stack(
       children: [
-        // 全屏毛玻璃 + 半透明遮罩, 不可点击穿透.
+        // 背景毛玻璃 + 半透蒙版.
         Positioned.fill(
           child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: () {}, // 拦截点击, 不穿透
+              onTap: () {},
               child: Container(
                 color: (isDark ? Colors.black : Colors.white).withValues(
-                  alpha: 0.25,
+                  alpha: 0.18,
                 ),
               ),
             ),
@@ -134,28 +163,29 @@ class _ActivationDialogState extends State<_ActivationDialog> {
         // 居中卡片.
         Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 460),
+            constraints: const BoxConstraints(maxWidth: 440),
             child: Padding(
               padding: const EdgeInsets.all(24),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(20),
                 child: BackdropFilter(
-                  filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                  filter: ui.ImageFilter.blur(sigmaX: 22, sigmaY: 22),
                   child: Container(
                     decoration: BoxDecoration(
-                      color: cardColor,
+                      color: cardBg,
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(color: borderColor, width: 1),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.22),
-                          blurRadius: 32,
-                          offset: const Offset(0, 12),
+                          color: Colors.black.withValues(
+                            alpha: isDark ? 0.55 : 0.18,
+                          ),
+                          blurRadius: 28,
+                          offset: const Offset(0, 10),
                         ),
                       ],
                     ),
-                    padding: const EdgeInsets.fromLTRB(28, 24, 28, 22),
-                    child: _buildContent(scheme),
+                    child: _buildContent(theme),
                   ),
                 ),
               ),
@@ -166,124 +196,208 @@ class _ActivationDialogState extends State<_ActivationDialog> {
     );
   }
 
-  Widget _buildContent(ColorScheme scheme) {
+  Widget _buildContent(ThemeData theme) {
+    final scheme = theme.colorScheme;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            Icon(Icons.verified_user_outlined,
-                color: scheme.primary, size: 26),
-            const SizedBox(width: 10),
-            const Expanded(
-              child: Text(
-                '设备未激活',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-              ),
+        // 顶部色带: 香蕉橙色渐变, 与 App Logo 同源.
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [scheme.primary, const Color(0xFFFFB199)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
-          ],
-        ),
-        const SizedBox(height: 14),
-        const Text(
-          '请把下方设备序列号发给客服, 获取激活码后填入下方输入框完成激活.',
-          style: TextStyle(fontSize: 13, height: 1.5),
-        ),
-        const SizedBox(height: 18),
-        _LabeledBox(
-          label: '设备序列号',
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
           child: Row(
             children: [
-              Expanded(
-                child: SelectableText(
-                  widget.serial,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w500,
-                    fontFeatures: [FontFeature.tabularFigures()],
+              const Text('🍌', style: TextStyle(fontSize: 22)),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  '激活设备',
+                  style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
                   ),
                 ),
               ),
-              IconButton(
-                tooltip: '复制',
-                icon: const Icon(Icons.copy_rounded, size: 18),
-                onPressed: _copySerial,
+              Text(
+                '尚未激活',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.white.withValues(alpha: 0.9),
+                ),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 12),
-        _LabeledBox(
-          label: '激活码',
-          child: TextField(
-            controller: _ctrl,
-            enabled: !_busy,
-            autofocus: true,
-            decoration: const InputDecoration(
-              border: InputBorder.none,
-              isCollapsed: true,
-              contentPadding: EdgeInsets.symmetric(vertical: 4),
-              hintText: '请输入激活码',
-            ),
-            onSubmitted: (_) => _busy ? null : _submit(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '把下方序列号发给客服换取激活码, 填入即可启用设备.',
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.5,
+                  color: scheme.onSurface.withValues(alpha: 0.75),
+                ),
+              ),
+              const SizedBox(height: 14),
+              _Field(
+                label: '设备序列号',
+                child: _SerialRow(serial: widget.serial, onCopy: _copySerial),
+              ),
+              const SizedBox(height: 10),
+              _Field(
+                label: '激活码',
+                child: TextField(
+                  controller: _ctrl,
+                  enabled: !_busy,
+                  autofocus: true,
+                  style: const TextStyle(fontSize: 14),
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    isCollapsed: true,
+                    contentPadding: EdgeInsets.symmetric(vertical: 6),
+                    hintText: '在此粘贴激活码',
+                    hintStyle: TextStyle(fontSize: 13),
+                  ),
+                  onSubmitted: (_) => _busy ? null : _submit(),
+                ),
+              ),
+              SizedBox(
+                height: 22,
+                child: _hint == null
+                    ? null
+                    : Align(
+                        alignment: Alignment.centerLeft,
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(
+                            _hint!,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: _ok ? scheme.primary : scheme.error,
+                            ),
+                          ),
+                        ),
+                      ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: _busy
+                        ? null
+                        : () => context.read<AppState>().disconnect(),
+                    child: const Text('断开'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: _busy ? null : _submit,
+                    icon: _busy
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.key_rounded, size: 18),
+                    label: Text(_busy ? '激活中' : '激活'),
+                  ),
+                ],
+              ),
+            ],
           ),
-        ),
-        if (_hint != null) ...[
-          const SizedBox(height: 10),
-          Text(
-            _hint!,
-            style: TextStyle(
-              fontSize: 12,
-              color: _hint!.contains('失败')
-                  ? scheme.error
-                  : scheme.onSurface.withValues(alpha: 0.7),
-            ),
-          ),
-        ],
-        const SizedBox(height: 18),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            TextButton(
-              onPressed: _busy
-                  ? null
-                  : () => context.read<AppState>().disconnect(),
-              child: const Text('断开'),
-            ),
-            const SizedBox(width: 8),
-            FilledButton.icon(
-              onPressed: _busy ? null : _submit,
-              icon: _busy
-                  ? const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.key_rounded, size: 18),
-              label: Text(_busy ? '激活中' : '激活'),
-            ),
-          ],
         ),
       ],
     );
   }
 }
 
-class _LabeledBox extends StatelessWidget {
-  final String label;
-  final Widget child;
-  const _LabeledBox({required this.label, required this.child});
+class _SerialRow extends StatelessWidget {
+  final String? serial;
+  final VoidCallback onCopy;
+  const _SerialRow({required this.serial, required this.onCopy});
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final s = serial;
+    final hasSerial = s != null && s.isNotEmpty;
+    return Row(
+      children: [
+        Expanded(
+          child: hasSerial
+              ? SelectableText(
+                  s,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                )
+              : Row(
+                  children: [
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.8,
+                        color: scheme.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '正在读取设备信息…',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: scheme.onSurface.withValues(alpha: 0.55),
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+        IconButton(
+          tooltip: hasSerial ? '复制' : '尚未获取',
+          icon: const Icon(Icons.copy_rounded, size: 18),
+          onPressed: hasSerial ? onCopy : null,
+        ),
+      ],
+    );
+  }
+}
+
+class _Field extends StatelessWidget {
+  final String label;
+  final Widget child;
+  const _Field({required this.label, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+      padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
       decoration: BoxDecoration(
-        color: scheme.surface.withValues(alpha: 0.55),
+        color: (isDark ? Colors.white : Colors.black).withValues(
+          alpha: isDark ? 0.05 : 0.035,
+        ),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: scheme.outline.withValues(alpha: 0.25),
+          color: scheme.outlineVariant.withValues(alpha: 0.4),
           width: 1,
         ),
       ),
@@ -294,11 +408,10 @@ class _LabeledBox extends StatelessWidget {
             label,
             style: TextStyle(
               fontSize: 11,
-              color: scheme.onSurface.withValues(alpha: 0.6),
-              letterSpacing: 0.3,
+              color: scheme.onSurface.withValues(alpha: 0.55),
+              letterSpacing: 0.2,
             ),
           ),
-          const SizedBox(height: 2),
           child,
         ],
       ),
