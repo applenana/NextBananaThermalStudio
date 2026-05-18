@@ -24,6 +24,7 @@ import '../render/render_pipeline.dart';
 import '../storage/capture_package.dart';
 import '../storage/capture_service.dart';
 import 'widgets/rgb_image_view.dart';
+import 'widgets/temp_overlay.dart';
 import 'banana_toast.dart';
 
 /// 全局软件图库刷新触发器: GalleryShell 在副 tab 切到"软件图库"时 ++,
@@ -898,6 +899,10 @@ class _DetailBodyState extends State<_DetailBody> {
   bool _playing = false;
   // 可见光画面默认隐藏, 与设备图库一致, 用户点按钮才显示.
   bool _showVisible = false;
+  // 左上角温度叠加 (MAX/MIN/AVG) 开关, 默认开. 视频回放每帧 setState 触发刷新.
+  bool _tempOverlayEnabled = true;
+  // 顶部元数据卡是否展开 (默认折叠, 单行摘要).
+  bool _metaExpanded = false;
 
   @override
   void initState() {
@@ -1067,22 +1072,85 @@ class _DetailBodyState extends State<_DetailBody> {
     ];
 
     // 不滚动: Column + Expanded 让"主画面"自适应剩余高度.
+    // 计算本帧温度统计 (MAX/MIN/AVG) 用于左上角温度叠加. 视频回放每帧自动重算.
+    double? tMin, tMax, tAvg;
+    if (fHasT && f.thermal != null) {
+      double mn = double.infinity;
+      double mx = -double.infinity;
+      double s = 0;
+      int n = 0;
+      for (final v in f.thermal!) {
+        if (v.isFinite) {
+          if (v < mn) mn = v;
+          if (v > mx) mx = v;
+          s += v;
+          n++;
+        }
+      }
+      if (n > 0) {
+        tMin = mn;
+        tMax = mx;
+        tAvg = s / n;
+      }
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // ----- 元数据 chips 卡 (紧凑) -----
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHigh,
+        // ----- 元数据卡: 默认折叠到单行摘要, 点击展开/收起 -----
+        Material(
+          color: scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(12),
+          child: InkWell(
             borderRadius: BorderRadius.circular(12),
-          ),
-          child: DefaultTextStyle(
-            style: TextStyle(fontSize: 11.5, color: scheme.onSurface),
-            child: Wrap(
-              spacing: 16,
-              runSpacing: 4,
-              children: metaChips,
+            onTap: () => setState(() => _metaExpanded = !_metaExpanded),
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 180),
+                      child: _metaExpanded
+                          ? DefaultTextStyle(
+                              key: const ValueKey('soft-meta-expanded'),
+                              style: TextStyle(
+                                  fontSize: 11.5, color: scheme.onSurface),
+                              child: Wrap(
+                                spacing: 16,
+                                runSpacing: 4,
+                                children: metaChips,
+                              ),
+                            )
+                          : Padding(
+                              key: const ValueKey('soft-meta-collapsed'),
+                              padding: const EdgeInsets.symmetric(vertical: 2),
+                              child: Text(
+                                '${widget.item.name}  ·  '
+                                '${isVideo ? '视频' : '照片'} · ${r.frameCount} 帧'
+                                '${meta.deviceSn != null ? '  ·  ${meta.deviceSn}' : ''}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: scheme.onSurface,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    _metaExpanded
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                    size: 20,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -1134,6 +1202,34 @@ class _DetailBodyState extends State<_DetailBody> {
                                 : Icons.visibility_rounded,
                             onTap: () => setState(
                                 () => _showVisible = !_showVisible),
+                          ),
+                        ),
+                      // 左上: 温度叠加 (MAX/MIN/AVG) - 视频每帧自动更新.
+                      if (_tempOverlayEnabled && tMin != null && tMax != null && tAvg != null)
+                        Positioned(
+                          top: 8,
+                          left: 8,
+                          child: TempOverlay(
+                            tMax: tMax,
+                            tMin: tMin,
+                            tAvg: tAvg,
+                            compact: MediaQuery.of(context).size.shortestSide < 600,
+                          ),
+                        ),
+                      // 左上偏右: 温度叠加开关 (仅含热成像才出现).
+                      if (fHasT)
+                        Positioned(
+                          top: 6,
+                          right: (fHasV && fHasT) ? 44 : 6,
+                          child: _OverlayIconButton(
+                            tooltip: _tempOverlayEnabled
+                                ? '隐藏温度叠加'
+                                : '显示温度叠加',
+                            icon: _tempOverlayEnabled
+                                ? Icons.thermostat
+                                : Icons.thermostat_outlined,
+                            onTap: () => setState(() =>
+                                _tempOverlayEnabled = !_tempOverlayEnabled),
                           ),
                         ),
                       // 视频控件: 半透明叠加在画面底部 (Web 视频风格).

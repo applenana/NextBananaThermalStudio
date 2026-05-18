@@ -28,6 +28,7 @@ import '../protocol/photo_decoder.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
 import 'widgets/rgb_image_view.dart';
+import 'widgets/temp_overlay.dart';
 import 'widgets/thermal_canvas.dart';
 
 /// 外部触发图库刷新的通道. 每次 value++ 表示请求一次刷新,
@@ -65,6 +66,17 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
 
   /// 可见光小窗显示开关 (默认隐藏, 主视图只显示热成像).
   bool _showVisible = false;
+
+  /// 详情页温度叠加 (左上角 MAX/MIN/AVG 半透明胶囊) 开关, 默认开.
+  bool _tempOverlayEnabled = true;
+
+  /// 详情页顶部“详细元数据”是否展开 (默认折叠, 只显单行摘要).
+  bool _metaExpanded = false;
+
+  /// 单次会话缓存: filename → (raw, decoded, thumb).
+  /// 仅当前 tab state 生命周期内生效, 刷新按钮 / dispose 都会清空.
+  /// 与位于磁盘 raw/ 目录 + sha256 指纹的「持久缓存」 (PhotoCacheIndex) 互不干涉.
+  final Map<String, _PhotoSessionEntry> _session = <String, _PhotoSessionEntry>{};
 
   /// 下载阶段描述: 请求中 / 接收数据 / 解析中 / 完成.
   String? _stage;
@@ -111,7 +123,88 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     photoTabRefreshTrigger.removeListener(_onExternalRefresh);
     appClosePhotoDetail = null;
     appPhotoDetailOpen.value = false;
+    _clearSession();
     super.dispose();
+  }
+
+  /// 清空单次缓存 + dispose 所有缩略图 ui.Image.
+  /// 不调 setState —— 调用方 (_refresh / dispose) 自行决定是否重建画面.
+  void _clearSession() {
+    for (final e in _session.values) {
+      e.thumb?.dispose();
+    }
+    _session.clear();
+  }
+
+  /// 把刚下完的 raw + decoded 写入单次缓存, 并异步生成列表缩略图.
+  void _storeSession(PhotoMeta sel, Uint8List raw, PhotoDecoded dec) {
+    final entry = _PhotoSessionEntry(raw: raw, decoded: dec);
+    _session[sel.filename] = entry;
+    if (dec.thermal != null) {
+      entry.thermalAvgC = computeAvgC(dec.thermal!);
+    }
+    // ignore: unawaited_futures
+    _buildSessionThumb(sel.filename);
+  }
+
+  /// 为单次缓存条目异步渲染列表缩略图: 优先热成像, 退化到 JPEG.
+  Future<void> _buildSessionThumb(String key) async {
+    final entry = _session[key];
+    if (entry == null) return;
+    final dec = entry.decoded;
+    try {
+      ui.Image? img;
+      if (dec.thermal != null) {
+        // 列表缩略 —— 关掉融合, 只展示热成像本身, 用当前 _photoParams 的颜色映射.
+        final r = renderPipeline(
+          thermalFrame: dec.thermal!,
+          srcW: dec.srcW,
+          srcH: dec.srcH,
+          params: _photoParams,
+          visibleRgb: null,
+          visibleW: 0,
+          visibleH: 0,
+          minOverride: dec.tMin,
+          maxOverride: dec.tMax,
+        );
+        img = await _rgbToUiImage(r.rgb, r.width, r.height);
+      } else if (dec.jpegBytes != null) {
+        final codec = await ui.instantiateImageCodec(dec.jpegBytes!,
+            targetWidth: 96);
+        final frame = await codec.getNextFrame();
+        img = frame.image;
+      }
+      if (!mounted || img == null) {
+        img?.dispose();
+        return;
+      }
+      // tab dispose 之后 _session 已 clear, 这里写入会变成野指针, 守一下:
+      final cur = _session[key];
+      if (cur == null) {
+        img.dispose();
+        return;
+      }
+      cur.thumb?.dispose();
+      cur.thumb = img;
+      setState(() {});
+    } catch (_) {
+      // 缩略图失败不阻断主流程, 列表保留索引数字.
+    }
+  }
+
+  Future<ui.Image> _rgbToUiImage(Uint8List rgb888, int w, int h) async {
+    final rgba = Uint8List(w * h * 4);
+    for (var i = 0, j = 0; i < rgb888.length; i += 3, j += 4) {
+      rgba[j] = rgb888[i];
+      rgba[j + 1] = rgb888[i + 1];
+      rgba[j + 2] = rgb888[i + 2];
+      rgba[j + 3] = 255;
+    }
+    final c = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      rgba, w, h, ui.PixelFormat.rgba8888, c.complete,
+    );
+    return c.future;
   }
 
   void _onExternalRefresh() {
@@ -135,6 +228,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     setState(() {
       _busy = true;
       _statusText = '正在获取列表 ...';
+      // 刷新即销毁单次会话缓存 (列表缩略图 + 已下载 raw/decoded), 但保留
+      // 位于磁盘 + sha256 指纹的「持久缓存」, 让命中热成像头数据时依旧秒拉.
+      _clearSession();
     });
     // 进入图库后, 心跳 stream 字节还会陆续到达 ~1s 才停, 此时 check 响应可能
     // 被污染 (FormatException) 或被 stream 帧填满缓冲 (TimeoutException).
@@ -202,6 +298,26 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   Future<void> _download() async {
     final sel = _selected;
     if (sel == null) return;
+    // 单次会话缓存命中: 跳过设备 IO + 协议解析, 直接复用上次的 raw + decoded.
+    // 注意此处不读「持久缓存」(那条路径在 _doDownload 中由 fetchPhotoBytes 命中),
+    // 这里只关心同一次 tab state 内反复点同一张图的秒开体验.
+    final hit = _session[sel.filename];
+    if (hit != null && !_busy) {
+      if (!mounted) return;
+      setState(() {
+        _selected = sel;
+        _raw = hit.raw;
+        _decoded = hit.decoded;
+        _markers.clear();
+        _resetPhotoParams();
+        _statusText = '秒开 · 内存缓存 · ${sel.filename}';
+        _stage = '完成';
+        _progress = hit.raw.length;
+        _progressTotal = hit.raw.length;
+      });
+      _upgradeFusionIfDualBand(hit.decoded);
+      return;
+    }
     if (_busy) {
       // 排队: 替换 pending. 旧 pending 不再处理.
       if (!mounted) return;
@@ -328,6 +444,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         _stage = '完成';
         _statusText = '已保存: ${outFile.path}  ·  ${dec.summary}';
       });
+      _storeSession(sel, data, dec);
     } on PhotoDownloadAbortedException {
       // 缓存命中路径: 从本地 raw 加载 + 解析 + 渲染.
       if (!mounted) return;
@@ -360,6 +477,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           _statusText =
               '秒开 · 命中缓存 (${hit!.filename})  ·  ${dec.summary}';
         });
+        _storeSession(sel, cached, dec);
       } catch (e) {
         if (!mounted) return;
         setState(() {
@@ -566,6 +684,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                           meta: e,
                           selected: isSel,
                           queued: _pendingDownload?.filename == e.filename,
+                          thumb: _session[e.filename]?.thumb,
                           onTap: () {
                             // 任意时刻可点. 切到新图先清画面, 避免旧帧残留 + 新元数据混淆.
                             setState(() {
@@ -699,31 +818,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: DefaultTextStyle(
-            style: TextStyle(fontSize: 12, color: scheme.onSurface),
-            child: Wrap(
-              spacing: 18,
-              runSpacing: 6,
-              children: [
-                _kv('索引', '#${sel.index}'),
-                _kv('文件名', sel.filename),
-                _kv('大小', _fmtSize(sel.size)),
-                if (sel.mode != null) _kv('模式', sel.mode!),
-                if (sel.dataFormat != null) _kv('格式', sel.dataFormat!),
-                if (rendered != null)
-                  _kv('温度范围',
-                      '${rendered.tMin.toStringAsFixed(2)} ~ ${rendered.tMax.toStringAsFixed(2)} °C'),
-                if (dec != null) _kv('类型', dec.summary),
-              ],
-            ),
-          ),
-        ),
+        _buildMetaCard(sel, dec, rendered, scheme),
         if (rendered != null) ...[
           const SizedBox(height: 10),
           _ParamsRow(
@@ -790,7 +885,54 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 color: scheme.outlineVariant.withValues(alpha: 0.5),
               ),
             ),
-            child: _buildPreview(rendered),
+            child: Stack(
+              children: [
+                Positioned.fill(child: _buildPreview(rendered)),
+                // 左上角: 半透明温度叠加 (MAX/MIN/AVG). 视频在 software_gallery
+                // 里跟随每帧更新; 这里是单帧图, 仅 rendered 非空即显示.
+                if (rendered != null && _tempOverlayEnabled)
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    child: TempOverlay(
+                      tMax: rendered.tMax,
+                      tMin: rendered.tMin,
+                      tAvg: _session[sel.filename]?.thermalAvgC ??
+                          (dec?.thermal != null
+                              ? computeAvgC(dec!.thermal!)
+                              : (rendered.tMin + rendered.tMax) / 2),
+                      compact: phone,
+                    ),
+                  ),
+                // 右上角: 叠加开关按钮 (只在能显示叠加时出现).
+                if (rendered != null)
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: Material(
+                      color: Colors.black.withValues(alpha: 0.42),
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: () => setState(
+                            () => _tempOverlayEnabled = !_tempOverlayEnabled),
+                        child: Padding(
+                          padding: const EdgeInsets.all(6),
+                          child: Icon(
+                            _tempOverlayEnabled
+                                ? Icons.thermostat
+                                : Icons.thermostat_outlined,
+                            size: 16,
+                            color: _tempOverlayEnabled
+                                ? const Color(0xFFFF6E40)
+                                : Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ],
@@ -994,6 +1136,81 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         TextSpan(text: v, style: const TextStyle(fontWeight: FontWeight.w600)),
       ]));
 
+  /// 详情顶部的元数据卡: 默认折叠到单行摘要, 点击右侧 ▶ 展开全部 _kv chips.
+  /// 折叠态: '#索引 · 文件名 · 大小' 一行 ellipsis, 不挡参数面板.
+  Widget _buildMetaCard(
+    PhotoMeta sel,
+    PhotoDecoded? dec,
+    RenderedFrame? rendered,
+    ColorScheme scheme,
+  ) {
+    final summary = '#${sel.index}  ·  ${sel.filename}  ·  ${_fmtSize(sel.size)}';
+    return Material(
+      color: scheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => setState(() => _metaExpanded = !_metaExpanded),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 180),
+                  child: _metaExpanded
+                      ? DefaultTextStyle(
+                          key: const ValueKey('meta-expanded'),
+                          style: TextStyle(fontSize: 12, color: scheme.onSurface),
+                          child: Wrap(
+                            spacing: 18,
+                            runSpacing: 6,
+                            children: [
+                              _kv('索引', '#${sel.index}'),
+                              _kv('文件名', sel.filename),
+                              _kv('大小', _fmtSize(sel.size)),
+                              if (sel.mode != null) _kv('模式', sel.mode!),
+                              if (sel.dataFormat != null)
+                                _kv('格式', sel.dataFormat!),
+                              if (rendered != null)
+                                _kv('温度范围',
+                                    '${rendered.tMin.toStringAsFixed(2)} ~ ${rendered.tMax.toStringAsFixed(2)} °C'),
+                              if (dec != null) _kv('类型', dec.summary),
+                            ],
+                          ),
+                        )
+                      : Padding(
+                          key: const ValueKey('meta-collapsed'),
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Text(
+                            summary,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: scheme.onSurface,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                _metaExpanded
+                    ? Icons.expand_less_rounded
+                    : Icons.expand_more_rounded,
+                size: 20,
+                color: scheme.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   static bool _isReasonableTemp(double? v) =>
       v != null && v.isFinite && v > -200 && v < 1000;
 
@@ -1051,7 +1268,15 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         minOverride: dec.tMin,
         maxOverride: dec.tMax,
       );
-      final pngBytes = await _renderToPng(r, _markers);
+      final pngBytes = await _renderToPng(
+        r,
+        _markers,
+        overlayMin: _tempOverlayEnabled ? r.tMin : null,
+        overlayMax: _tempOverlayEnabled ? r.tMax : null,
+        overlayAvg: _tempOverlayEnabled
+            ? (dec.thermal != null ? computeAvgC(dec.thermal!) : null)
+            : null,
+      );
       final out = await _exportDir();
       final f = File(p.join(out.path,
           '${p.basenameWithoutExtension(sel.filename)}.png'));
@@ -1101,8 +1326,12 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   }
 
   /// 把渲染后的 RGB + markers 画到 ui.Canvas, 输出 PNG bytes.
+  ///
+  /// [overlayMin]/[overlayMax]/[overlayAvg] 同时非 null 时, 在左上角烘焙一
+  /// 条半透明温度补丁 (MAX/MIN/AVG), 与详情页看到的叠加保持一致.
   Future<Uint8List> _renderToPng(
-      RenderedFrame r, List<TempMarker> markers) async {
+      RenderedFrame r, List<TempMarker> markers,
+      {double? overlayMin, double? overlayMax, double? overlayAvg}) async {
     // 先把 RGB888 转成 ui.Image
     final rgba = Uint8List(r.width * r.height * 4);
     for (var i = 0, j = 0; i < r.rgb.length; i += 3, j += 4) {
@@ -1171,11 +1400,116 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       tp.paint(canvas, Offset(bx, by));
     }
 
+    // 烘焙温度叠加 (与详情页一致). 三项必须同时非 null 才绘制.
+    if (overlayMin != null && overlayMax != null && overlayAvg != null) {
+      _drawTempOverlayOnCanvas(
+        canvas,
+        r.width.toDouble(),
+        r.height.toDouble(),
+        overlayMin,
+        overlayMax,
+        overlayAvg,
+      );
+    }
+
     final picture = recorder.endRecording();
     final img = await picture.toImage(r.width, r.height);
     final bytes = await img.toByteData(format: ui.ImageByteFormat.png);
     if (bytes == null) throw 'toByteData null';
     return bytes.buffer.asUint8List();
+  }
+
+  /// 把温度叠加 (MAX/MIN/AVG) 烘焙到导出画布的左上角. 与详情页 TempOverlay
+  /// 视觉一致 (黑底 45% 透明 + 圆角胶囊 + 三色圆点).
+  void _drawTempOverlayOnCanvas(
+    Canvas canvas,
+    double canvasW,
+    double canvasH,
+    double tMin,
+    double tMax,
+    double tAvg,
+  ) {
+    final shortSide = canvasW < canvasH ? canvasW : canvasH;
+    final fontSize = (shortSide / 26).clamp(9.0, 22.0);
+    final labelSize = (fontSize * 0.72).clamp(7.0, 16.0);
+    final padH = fontSize * 0.85;
+    final padV = fontSize * 0.55;
+    final gap = fontSize * 0.7;
+    final dotR = (fontSize * 0.28).clamp(2.0, 6.0);
+
+    TextPainter mk(String s, double size, FontWeight w, Color c) => TextPainter(
+          text: TextSpan(
+            text: s,
+            style: TextStyle(
+              fontSize: size,
+              fontWeight: w,
+              color: c,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+
+    final items = <({Color color, TextPainter label, TextPainter value})>[
+      (
+        color: const Color(0xFFFF6E40),
+        label: mk('MAX', labelSize, FontWeight.w600, Colors.white70),
+        value: mk('${tMax.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
+            Colors.white),
+      ),
+      (
+        color: const Color(0xFF40C4FF),
+        label: mk('MIN', labelSize, FontWeight.w600, Colors.white70),
+        value: mk('${tMin.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
+            Colors.white),
+      ),
+      (
+        color: const Color(0xFFFFD740),
+        label: mk('AVG', labelSize, FontWeight.w600, Colors.white70),
+        value: mk('${tAvg.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
+            Colors.white),
+      ),
+    ];
+
+    // 每个 item 宽度 = 圆点 + 间隔 + max(label, value) 宽
+    double itemW(({Color color, TextPainter label, TextPainter value}) it) {
+      final textW = it.label.width > it.value.width ? it.label.width : it.value.width;
+      return dotR * 2 + 4 + textW;
+    }
+
+    double totalW = 0;
+    for (var i = 0; i < items.length; i++) {
+      totalW += itemW(items[i]);
+      if (i != items.length - 1) totalW += gap;
+    }
+    final itemH = items.first.value.height + items.first.label.height + 2;
+    final boxW = totalW + padH * 2;
+    final boxH = itemH + padV * 2;
+    const margin = 8.0;
+
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(margin, margin, boxW, boxH),
+        const Radius.circular(10),
+      ),
+      Paint()..color = Colors.black.withValues(alpha: 0.45),
+    );
+
+    double x = margin + padH;
+    final yTop = margin + padV;
+    for (final it in items) {
+      final w = itemW(it);
+      // 圆点垂直居中
+      canvas.drawCircle(
+        Offset(x + dotR, yTop + itemH / 2),
+        dotR,
+        Paint()..color = it.color,
+      );
+      final textX = x + dotR * 2 + 4;
+      it.label.paint(canvas, Offset(textX, yTop));
+      it.value.paint(canvas, Offset(textX, yTop + it.label.height + 2));
+      x += w + gap;
+    }
   }
 
   static String _fmtSize(int b) {
@@ -1191,15 +1525,20 @@ class _PhotoTile extends StatelessWidget {
     required this.selected,
     required this.onTap,
     this.queued = false,
+    this.thumb,
   });
   final PhotoMeta meta;
   final bool selected;
   final bool queued;
   final VoidCallback onTap;
 
+  /// 单次会话缓存生成的缩略图. 非空时序号位置替换为热成像 / JPEG 缩略.
+  final ui.Image? thumb;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final hasThumb = thumb != null;
     return Material(
       color: selected
           ? scheme.primary.withValues(alpha: 0.16)
@@ -1216,20 +1555,32 @@ class _PhotoTile extends StatelessWidget {
                 width: 28,
                 height: 28,
                 alignment: Alignment.center,
+                clipBehavior: hasThumb ? Clip.antiAlias : Clip.none,
                 decoration: BoxDecoration(
                   color: selected
                       ? scheme.primary
                       : scheme.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(8),
+                  border: hasThumb && selected
+                      ? Border.all(color: scheme.primary, width: 1.5)
+                      : null,
                 ),
-                child: Text(
-                  '${meta.index}',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: selected ? scheme.onPrimary : scheme.onSurfaceVariant,
-                  ),
-                ),
+                child: hasThumb
+                    ? RawImage(
+                        image: thumb,
+                        fit: BoxFit.cover,
+                        filterQuality: FilterQuality.low,
+                      )
+                    : Text(
+                        '${meta.index}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: selected
+                              ? scheme.onPrimary
+                              : scheme.onSurfaceVariant,
+                        ),
+                      ),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -1601,3 +1952,23 @@ class _Dropdown<T> extends StatelessWidget {  const _Dropdown({
     );
   }
 }
+
+/// 设备图库单次会话缓存条目: filename → 已下载/已解码资源 + 列表缩略图.
+///
+/// - [raw] / [decoded]: 用户再次点击同一张图时秒开 (跳过设备 IO + 协议解析).
+/// - [thumb] / [thumbBytes]: 列表项左侧 28×28 缩略图 (优先热成像渲染结果, 否则 JPEG).
+/// - [thermalAvgC]: 平均温度 (从 thermal Float32List 求平均), 用于温度叠加.
+/// - 与位于 `<download_root>/raw/` + sha256 指纹的「持久缓存」 (PhotoCacheIndex) 互不干涉:
+///   持久缓存跨进程存活, 单次缓存仅当前 tab state 生命周期内, 刷新按钮即清空.
+class _PhotoSessionEntry {
+  _PhotoSessionEntry({
+    required this.raw,
+    required this.decoded,
+  });
+
+  final Uint8List raw;
+  final PhotoDecoded decoded;
+  ui.Image? thumb;
+  double? thermalAvgC;
+}
+
