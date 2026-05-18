@@ -258,6 +258,7 @@ jobs:
           refactor=()
           other=()
           noise=()
+          noise_n=0
           for line in "${LINES[@]+"${LINES[@]}"}"; do
             hash="${line%%|*}"
             subj="${line#*|}"
@@ -269,7 +270,7 @@ jobs:
               fix)      fix+=("$entry") ;;
               perf)     perf+=("$entry") ;;
               refactor) refactor+=("$entry") ;;
-              ci|chore|docs|style|test|build) noise+=("$entry") ;;
+              ci|chore|docs|style|test|build) noise+=("$entry"); noise_n=$((noise_n + 1)) ;;
               *)        other+=("$entry") ;;
             esac
           done
@@ -293,11 +294,13 @@ jobs:
             emit_section "⚡ 性能"     "${perf[@]+"${perf[@]}"}"
             emit_section "♻️ 重构"     "${refactor[@]+"${refactor[@]}"}"
             emit_section "📝 其他"     "${other[@]+"${other[@]}"}"
-            if [ ${#noise[@]} -gt 0 ]; then
+            # Bash 4.x 在 set -u 下对空数组 ${#arr[@]} 会误报 unbound,
+            # 这里改用计数器 noise_n 旁路兼容 (在上面 case 里同步累加).
+            if [ "${noise_n:-0}" -gt 0 ]; then
               echo "<details>"
-              echo "<summary>🔧 内部 (ci/chore/docs/style/test/build · ${#noise[@]} 条)</summary>"
+              echo "<summary>🔧 内部 (ci/chore/docs/style/test/build · ${noise_n} 条)</summary>"
               echo
-              printf '%s\n' "${noise[@]}"
+              printf '%s\n' "${noise[@]+"${noise[@]}"}"
               echo
               echo "</details>"
               echo
