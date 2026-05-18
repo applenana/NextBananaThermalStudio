@@ -154,6 +154,16 @@ class AppState extends ChangeNotifier {
 
     _log('info', '发现设备 @ ${found.port}, 准备连接');
     notifyListeners();
+    // 扫描隔中用户可能已手动连上 (当时 connect 的 scanning guard
+    // 还不能拦住 "扫描后期" 手动点击), 这里二次判定, 避免反复抹去流.
+    if (status == ConnectionStatus.connected) {
+      _log('info', '扫描期间已手动连上, 放弃自动结果');
+      if (found.info != null) {
+        _absorbDeviceInfo(found.info!);
+        notifyListeners();
+      }
+      return true;
+    }
     await connect(found.port!, baud: baud);
     // 探测阶段已经拿到 JSON, 直接消化, 不必等连接后再 GetSysInfo
     if (found.info != null) {
@@ -164,6 +174,10 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> connect(String portName, {int baud = 115200}) async {
+    if (status == ConnectionStatus.scanning) {
+      _log('warn', '自动扫描进行中, 已取消手动连接请求');
+      return;
+    }
     if (status == ConnectionStatus.connected) await disconnect();
     status = ConnectionStatus.connecting;
     notifyListeners();
@@ -350,8 +364,10 @@ class AppState extends ChangeNotifier {
     _maybeScheduleJsonFlush();
   }
 
-  /// 若 _textBuf 当前内容看起来是个完整 JSON ({...}), 安排 100ms 后 flush,
-  /// 兜底固件不发 \n / FrameParser 滞留尾字节的边界情况.
+  /// 若 _textBuf 首字节是 '{', 安排 100ms 后 flush. flush 时交给
+  /// _consumeTextLine 里的 jsonDecode 去验证: 合法 JSON 才消费, 否则丢弃.
+  /// 不要求尾字节 '}' — FrameParser 最大会留 4 字节作跨 chunk 防护,
+  /// 尾 '}\n' 可能被抦在里面, 不能误以此判定 JSON 未到齐.
   void _maybeScheduleJsonFlush() {
     _jsonFlushTimer?.cancel();
     _jsonFlushTimer = null;
@@ -362,7 +378,6 @@ class AppState extends ChangeNotifier {
       final cur = _textBuf.toBytes();
       if (cur.isEmpty) return;
       if (cur.first != 0x7B) return;
-      if (cur.last != 0x7D /* '}' */) return;
       _textBuf.clear();
       _consumeTextLine(cur);
     });
@@ -378,15 +393,19 @@ class AppState extends ChangeNotifier {
     if (text.isEmpty) return;
 
     // 推流期间, 帧间夹缝里频繁出现 "伪 ASCII" 二进制残片 (温度场字节恰好
-    // 落在 0x20-0x7E), 一秒可达数百条, 直接灌进日志会让 UI 卡顿. 仅放行
-    // 真正像文本的行: JSON / 含英文字母. 纯符号/数字一律丢弃.
+    // 落在 0x20-0x7E), 一秒可达数百条, 直接灌进日志会让 UI 卡顿.
+    // 768 个 float 的高字节大量是 0x41 ('A') / 0x42 ('B') / 0x43 ('C'), "含字母"
+    // 这类软伐点拦不住. 使用双骤: 长度 ≤ 256 且字母占比 ≥ 40% 才放行.
+    // JSON / 真实文本响应占比远高于 40%, 伪 ASCII 残片纯字母占比约 15-25%.
     final streaming = thermalStreamEnabled || visibleStreamEnabled;
     final looksJson = text.startsWith('{') && text.endsWith('}');
     if (streaming && !looksJson) {
-      final hasLetter = text.codeUnits.any(
-        (c) => (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A),
-      );
-      if (!hasLetter) return;
+      if (text.length > 256) return;
+      int letters = 0;
+      for (final c in text.codeUnits) {
+        if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A)) letters++;
+      }
+      if (letters * 100 < text.length * 40) return;
     }
 
     _log('rx', text);

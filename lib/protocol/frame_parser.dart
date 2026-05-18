@@ -122,14 +122,23 @@ class FrameParser {
     _consume(n2);
   }
 
-  /// 返回 [bytes] 末尾"可作为 BEGIN/VBEG 前缀"的字节数 (0..3).
+  /// 返回 [bytes] 末尾"可作为 BEGIN/VBEG 前缀"的字节数 (0..4).
   /// 用于决定跨 chunk 该保留多少字节防止 magic 被切断.
-  /// 真实文本响应 (JSON 结尾 "}\n" 等) 不命中任何前缀 -> 返回 0, 立刻 passthrough.
+  /// BEGIN(5) 最长需保留 4, VBEG(4) 最长需保留 3. 真实文本响应 (JSON 结尾
+  /// "}\n" 等) 不命中任何前缀 -> 返回 0, 立刻 passthrough.
   static int _magicPrefixTailLen(Uint8List bytes) {
     final n = bytes.length;
     if (n == 0) return 0;
-    // 检查 k=3,2,1 三种尾长是否分别匹配 BEGIN 或 VBEG 的前 k 字节.
     // BEGIN = 'B','E','G','I','N'; VBEG = 'V','B','E','G'.
+    // 优先匹配更长前缀.
+    if (n >= 4) {
+      final b0 = bytes[n - 4],
+          b1 = bytes[n - 3],
+          b2 = bytes[n - 2],
+          b3 = bytes[n - 1];
+      // 'BEGI' (BEGIN 前 4 字节)
+      if (b0 == 0x42 && b1 == 0x45 && b2 == 0x47 && b3 == 0x49) return 4;
+    }
     if (n >= 3) {
       final b0 = bytes[n - 3], b1 = bytes[n - 2], b2 = bytes[n - 1];
       if (b0 == 0x42 && b1 == 0x45 && b2 == 0x47) return 3; // 'BEG'

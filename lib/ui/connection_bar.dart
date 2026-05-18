@@ -288,30 +288,35 @@ class _ConnectionBarState extends State<ConnectionBar> {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: FilledButton.icon(
-                    onPressed: isBusy
-                        ? null
-                        : () async {
-                            if (connected) {
-                              await app.disconnect();
-                            } else if (_selected != null) {
-                              await app.connect(_selected!, baud: _baud);
-                            }
-                          },
-                    icon: Icon(
-                      connected ? Icons.link_off_rounded : Icons.bolt_rounded,
-                      size: 16,
-                    ),
-                    label: Text(connected ? '断开' : '连接'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: connected
-                          ? scheme.errorContainer
-                          : scheme.primary,
-                      foregroundColor: connected
-                          ? scheme.onErrorContainer
-                          : scheme.onPrimary,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 10),
+                  child: Tooltip(
+                    message: app.status == ConnectionStatus.scanning
+                        ? '正在自动搜索, 请稍候'
+                        : (connected ? '断开当前连接' : '连接所选端口'),
+                    child: FilledButton.icon(
+                      onPressed: isBusy
+                          ? null
+                          : () async {
+                              if (connected) {
+                                await app.disconnect();
+                              } else if (_selected != null) {
+                                await app.connect(_selected!, baud: _baud);
+                              }
+                            },
+                      icon: Icon(
+                        connected ? Icons.link_off_rounded : Icons.bolt_rounded,
+                        size: 16,
+                      ),
+                      label: Text(connected ? '断开' : '连接'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: connected
+                            ? scheme.errorContainer
+                            : scheme.primary,
+                        foregroundColor: connected
+                            ? scheme.onErrorContainer
+                            : scheme.onPrimary,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 10),
+                      ),
                     ),
                   ),
                 ),
