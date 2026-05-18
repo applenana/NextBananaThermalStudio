@@ -56,8 +56,10 @@ class CaptureService {
     double? lat,
     double? lng,
     double? alt,
+    String? place,
     String? deviceSn,
     String note = '',
+    Map<String, dynamic>? renderParams,
     Directory? outDir,
   }) async {
     if (_state != RecordingState.idle) {
@@ -77,6 +79,7 @@ class CaptureService {
       lat: lat,
       lng: lng,
       alt: alt,
+      place: place,
       note: note,
       deviceSn: deviceSn,
       thermalW: thermalW,
@@ -84,6 +87,7 @@ class CaptureService {
       visibleW: visPng.isEmpty ? 0 : visibleW,
       visibleH: visPng.isEmpty ? 0 : visibleH,
       frameCount: 1,
+      renderParams: renderParams,
     );
     final w = await CapturePackageWriter.create(
       path: path,
@@ -108,8 +112,10 @@ class CaptureService {
     double? lat,
     double? lng,
     double? alt,
+    String? place,
     String? deviceSn,
     String note = '',
+    Map<String, dynamic>? renderParams,
     Directory? outDir,
   }) async {
     if (_state != RecordingState.idle) {
@@ -124,6 +130,7 @@ class CaptureService {
       lat: lat,
       lng: lng,
       alt: alt,
+      place: place,
       note: note,
       deviceSn: deviceSn,
       thermalW: thermalW,
@@ -131,6 +138,7 @@ class CaptureService {
       visibleW: visibleW,
       visibleH: visibleH,
       frameCount: 0,
+      renderParams: renderParams,
     );
     _writer = await CapturePackageWriter.create(
       path: path,

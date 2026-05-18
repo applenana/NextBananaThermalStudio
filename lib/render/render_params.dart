@@ -118,4 +118,57 @@ class RenderParams {
       showColdSpot: showColdSpot ?? this.showColdSpot,
     );
   }
+
+  /// 序列化为可写入 .btpkg meta 的 JSON Map (字段名稳定, 增加新字段时保持向后兼容).
+  Map<String, dynamic> toJson() => {
+        'upsampleScale': upsampleScale,
+        'upsampleMethod': upsampleMethod.name,
+        'bilateralEnabled': bilateralEnabled,
+        'bilateralSigmaSpatial': bilateralSigmaSpatial,
+        'bilateralSigmaIntensity': bilateralSigmaIntensity,
+        'colormapName': colormapName,
+        'mappingCurve': mappingCurve,
+        'useCustomColors': useCustomColors,
+        'coldColor': coldColor,
+        'midColor': midColor,
+        'hotColor': hotColor,
+        'fusion': fusion.toJson(),
+        'showInfoOverlay': showInfoOverlay,
+        'showCursorTemp': showCursorTemp,
+        'showHotSpot': showHotSpot,
+        'showColdSpot': showColdSpot,
+      };
+
+  factory RenderParams.fromJson(Map<String, dynamic> j) {
+    UpsampleMethod parseMethod(String? s) {
+      for (final m in UpsampleMethod.values) {
+        if (m.name == s) return m;
+      }
+      return UpsampleMethod.bicubic;
+    }
+
+    final fusionJson = j['fusion'];
+    return RenderParams(
+      upsampleScale: (j['upsampleScale'] as num?)?.toInt() ?? 8,
+      upsampleMethod: parseMethod(j['upsampleMethod'] as String?),
+      bilateralEnabled: j['bilateralEnabled'] as bool? ?? true,
+      bilateralSigmaSpatial:
+          (j['bilateralSigmaSpatial'] as num?)?.toDouble() ?? 1.5,
+      bilateralSigmaIntensity:
+          (j['bilateralSigmaIntensity'] as num?)?.toDouble() ?? 1.5,
+      colormapName: j['colormapName'] as String? ?? 'jet',
+      mappingCurve: j['mappingCurve'] as String? ?? 'linear',
+      useCustomColors: j['useCustomColors'] as bool? ?? false,
+      coldColor: (j['coldColor'] as num?)?.toInt() ?? 0x0000FF,
+      midColor: (j['midColor'] as num?)?.toInt() ?? 0x00FF00,
+      hotColor: (j['hotColor'] as num?)?.toInt() ?? 0xFF0000,
+      fusion: fusionJson is Map<String, dynamic>
+          ? FusionParams.fromJson(fusionJson)
+          : const FusionParams(),
+      showInfoOverlay: j['showInfoOverlay'] as bool? ?? false,
+      showCursorTemp: j['showCursorTemp'] as bool? ?? true,
+      showHotSpot: j['showHotSpot'] as bool? ?? true,
+      showColdSpot: j['showColdSpot'] as bool? ?? false,
+    );
+  }
 }

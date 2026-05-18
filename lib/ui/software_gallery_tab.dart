@@ -12,10 +12,12 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../fusion/fusion.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
 import '../storage/capture_package.dart';
@@ -272,11 +274,7 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                         final selected = _selected?.path == it.path;
                         final type = it.packageType == 1 ? '视频' : '照片';
                         final note = (it.meta?.note ?? '').trim();
-                        final hasGps =
-                            it.meta?.lat != null && it.meta?.lng != null;
-                        final gpsStr = hasGps
-                            ? ' · 📍${it.meta!.lat!.toStringAsFixed(4)},${it.meta!.lng!.toStringAsFixed(4)}'
-                            : '';
+                        final place = (it.meta?.place ?? '').trim();
                         return ListTile(
                           selected: selected,
                           dense: true,
@@ -290,9 +288,9 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                           subtitle: Text(
                             '$type · ${_fmtSize(it.sizeBytes)} · ${_fmtTime(it.mtime)}'
                             '${it.meta?.frameCount != null ? ' · ${it.meta!.frameCount}帧' : ''}'
-                            '$gpsStr'
+                            '\n📍 ${place.isEmpty ? '位置未知' : place}'
                             '${note.isEmpty ? '' : '\n$note'}',
-                            maxLines: 2,
+                            maxLines: 3,
                             overflow: TextOverflow.ellipsis,
                           ),
                           onTap: () async {
@@ -378,14 +376,32 @@ class _DetailView extends StatefulWidget {
 class _DetailViewState extends State<_DetailView> {
   CapturePackageReader? _reader;
   CaptureFrame? _frame;
+  // 当前帧的可见光 RGB888 (PNG 解码缓存, 供融合 pipeline 使用).
+  Uint8List? _visRgb888;
+  int _visRgbW = 0;
+  int _visRgbH = 0;
   int _frameIndex = 0;
   bool _loading = false;
   String? _error;
+
+  // 当前用于渲染的参数: 初始来自 meta.renderParams (老包则用 AppState.renderParams),
+  // 用户可在 ExpansionTile 内即时修改, 仅影响本详情页, 不写回包.
+  RenderParams? _params;
+
+  // 视频播放
+  Timer? _playTimer;
+  bool _playing = false;
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _playTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -396,9 +412,20 @@ class _DetailViewState extends State<_DetailView> {
     try {
       final r = await CapturePackageReader.open(widget.item.path);
       _reader = r;
+      // 初始参数: 包内 renderParams 优先, 否则用当前 AppState 的参数.
+      if (mounted) {
+        if (r.meta.renderParams != null) {
+          try {
+            _params = RenderParams.fromJson(r.meta.renderParams!);
+          } catch (_) {
+            _params = context.read<AppState>().renderParams;
+          }
+        } else {
+          _params = context.read<AppState>().renderParams;
+        }
+      }
       if (r.frameCount > 0) {
-        _frame = await r.readFrame(0);
-        _frameIndex = 0;
+        await _selectFrameInternal(0);
       }
       if (!mounted) return;
       setState(() => _loading = false);
@@ -411,21 +438,70 @@ class _DetailViewState extends State<_DetailView> {
     }
   }
 
-  Future<void> _selectFrame(int i) async {
+  Future<void> _selectFrameInternal(int i) async {
     final r = _reader;
     if (r == null || i < 0 || i >= r.frameCount) return;
     final f = await r.readFrame(i);
+    // 解 PNG → RGB888 用于融合 (空包/无可见光 → 跳过).
+    Uint8List? rgb;
+    int rgbW = 0, rgbH = 0;
+    if (f.visiblePng.isNotEmpty) {
+      try {
+        final im = img.decodePng(f.visiblePng);
+        if (im != null) {
+          rgb = im.getBytes(order: img.ChannelOrder.rgb);
+          rgbW = im.width;
+          rgbH = im.height;
+        }
+      } catch (_) {}
+    }
     if (!mounted) return;
     setState(() {
       _frame = f;
+      _visRgb888 = rgb;
+      _visRgbW = rgbW;
+      _visRgbH = rgbH;
       _frameIndex = i;
     });
+  }
+
+  void _togglePlay() {
+    final r = _reader;
+    if (r == null || r.frameCount < 2) return;
+    if (_playing) {
+      _playTimer?.cancel();
+      _playTimer = null;
+      setState(() => _playing = false);
+      return;
+    }
+    // 推断帧间隔: 用第一第二帧 ts 差 (毫秒). 取不到则按 100ms.
+    int frameMs = 100;
+    () async {
+      try {
+        final a = await r.readFrame(0);
+        final b = await r.readFrame(1);
+        final d = (b.tsMs - a.tsMs).abs();
+        if (d > 10 && d < 2000) frameMs = d;
+      } catch (_) {}
+      if (!mounted) return;
+      _playTimer = Timer.periodic(Duration(milliseconds: frameMs), (_) async {
+        if (!mounted || _reader == null) return;
+        final next = _frameIndex + 1;
+        if (next >= _reader!.frameCount) {
+          _playTimer?.cancel();
+          _playTimer = null;
+          if (mounted) setState(() => _playing = false);
+          return;
+        }
+        await _selectFrameInternal(next);
+      });
+      setState(() => _playing = true);
+    }();
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final params = context.watch<AppState>().renderParams;
     return SafeArea(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -468,20 +544,23 @@ class _DetailViewState extends State<_DetailView> {
                         child: Text(_error!,
                             style: TextStyle(color: scheme.error)),
                       )
-                    : _buildBody(params),
+                    : _buildBody(),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildBody(RenderParams params) {
+  Widget _buildBody() {
     final reader = _reader;
     final frame = _frame;
-    if (reader == null || frame == null) {
+    final params = _params;
+    if (reader == null || frame == null || params == null) {
       return const Center(child: Text('无可用帧'));
     }
+    final scheme = Theme.of(context).colorScheme;
     final meta = reader.meta;
+    final hasVis = meta.visibleW > 0 && meta.visibleH > 0;
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       children: [
@@ -492,47 +571,114 @@ class _DetailViewState extends State<_DetailView> {
             width: meta.thermalW,
             height: meta.thermalH,
             params: params,
+            visibleRgb888: _visRgb888,
+            visibleW: _visRgbW,
+            visibleH: _visRgbH,
           ),
         ),
-        if (frame.visiblePng.isNotEmpty) ...[
+        if (hasVis && frame.visiblePng.isNotEmpty) ...[
           const SizedBox(height: 8),
-          _MetaTile(label: '可见光帧', value: '${frame.visiblePng.length ~/ 1024} KB PNG'),
+          _MetaTile(
+              label: '可见光帧',
+              value: '${frame.visiblePng.length ~/ 1024} KB PNG'),
           Image.memory(frame.visiblePng, fit: BoxFit.contain),
+        ] else ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline,
+                    color: scheme.onSurfaceVariant, size: 16),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '此次拍摄未保存可见光画面 (拍摄/录制时未开启可见光推流). '
+                    '后续拍摄请先在实时画面打开可见光摄像头.',
+                    style: TextStyle(
+                        fontSize: 12, color: scheme.onSurfaceVariant),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
         if (reader.type == CapturePackageHeader.typeVideo &&
             reader.frameCount > 1) ...[
           const SizedBox(height: 12),
-          Text('帧 ${_frameIndex + 1} / ${reader.frameCount}  · ts ${frame.tsMs}ms'),
+          Row(
+            children: [
+              IconButton(
+                onPressed: _togglePlay,
+                icon: Icon(_playing
+                    ? Icons.pause_circle_filled_rounded
+                    : Icons.play_circle_filled_rounded),
+                iconSize: 32,
+                color: scheme.primary,
+                tooltip: _playing ? '暂停' : '播放',
+              ),
+              Expanded(
+                child: Text(
+                  '帧 ${_frameIndex + 1} / ${reader.frameCount}  · ts ${frame.tsMs}ms',
+                ),
+              ),
+            ],
+          ),
           Slider(
             min: 0,
             max: (reader.frameCount - 1).toDouble(),
             divisions: reader.frameCount - 1,
-            value: _frameIndex.toDouble().clamp(0, (reader.frameCount - 1).toDouble()),
-            onChanged: (v) => _selectFrame(v.round()),
+            value: _frameIndex
+                .toDouble()
+                .clamp(0, (reader.frameCount - 1).toDouble()),
+            onChanged: (v) {
+              if (_playing) {
+                _playTimer?.cancel();
+                _playTimer = null;
+                setState(() => _playing = false);
+              }
+              _selectFrameInternal(v.round());
+            },
           ),
         ],
         const Divider(),
         _MetaTile(label: '创建时间', value: meta.createdAt.toLocal().toString()),
         if (meta.deviceSn != null)
           _MetaTile(label: '设备 SN', value: meta.deviceSn!),
+        _MetaTile(
+          label: '位置',
+          value: (meta.place ?? '').isEmpty ? '未知' : meta.place!,
+        ),
         if (meta.lat != null && meta.lng != null)
           _MetaTile(
-            label: 'GPS',
-            value: '${meta.lat!.toStringAsFixed(6)}, ${meta.lng!.toStringAsFixed(6)}'
+            label: '经纬度',
+            value:
+                '${meta.lat!.toStringAsFixed(6)}, ${meta.lng!.toStringAsFixed(6)}'
                 '${meta.alt != null ? ' · ${meta.alt!.toStringAsFixed(0)}m' : ''}',
-          )
-        else
-          const _MetaTile(label: 'GPS', value: '未获取'),
+          ),
         _MetaTile(
             label: '热成像',
-            value: '${meta.thermalW} × ${meta.thermalH} · ${reader.frameCount} 帧'),
+            value:
+                '${meta.thermalW} × ${meta.thermalH} · ${reader.frameCount} 帧'),
         if (meta.visibleW > 0)
           _MetaTile(
-              label: '可见光',
-              value: '${meta.visibleW} × ${meta.visibleH}'),
-        _MetaTile(
-            label: '备注',
-            value: meta.note.isEmpty ? '(空)' : meta.note),
+              label: '可见光', value: '${meta.visibleW} × ${meta.visibleH}'),
+        _MetaTile(label: '备注', value: meta.note.isEmpty ? '(空)' : meta.note),
+        const SizedBox(height: 12),
+        _RenderParamsPanel(
+          params: params,
+          onChanged: (p) => setState(() => _params = p),
+        ),
+        _FusionParamsPanel(
+          params: params.fusion,
+          hasVisible: _visRgb888 != null,
+          onChanged: (f) =>
+              setState(() => _params = params.copyWith(fusion: f)),
+        ),
       ],
     );
   }
@@ -544,11 +690,17 @@ class _ThermalImage extends StatelessWidget {
     required this.width,
     required this.height,
     required this.params,
+    this.visibleRgb888,
+    this.visibleW = 0,
+    this.visibleH = 0,
   });
   final Float32List thermal;
   final int width;
   final int height;
   final RenderParams params;
+  final Uint8List? visibleRgb888;
+  final int visibleW;
+  final int visibleH;
 
   @override
   Widget build(BuildContext context) {
@@ -557,12 +709,207 @@ class _ThermalImage extends StatelessWidget {
       srcW: width,
       srcH: height,
       params: params,
+      visibleRgb: visibleRgb888,
+      visibleW: visibleW,
+      visibleH: visibleH,
     );
     return RgbImageView(
       rgb: rendered.rgb,
       width: rendered.width,
       height: rendered.height,
       fit: BoxFit.contain,
+    );
+  }
+}
+
+/// 详情页可调"渲染参数"面板 (最小集: colormap / upsampleScale / 双边).
+class _RenderParamsPanel extends StatelessWidget {
+  const _RenderParamsPanel({required this.params, required this.onChanged});
+  final RenderParams params;
+  final ValueChanged<RenderParams> onChanged;
+
+  static const _colormaps = [
+    'jet', 'inferno', 'viridis', 'plasma', 'gray', 'hot', 'cool',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: ExpansionTile(
+        title: const Text('渲染参数'),
+        leading: const Icon(Icons.tune_rounded),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        children: [
+          Row(
+            children: [
+              const SizedBox(width: 80, child: Text('色板')),
+              Expanded(
+                child: DropdownButton<String>(
+                  value: _colormaps.contains(params.colormapName)
+                      ? params.colormapName
+                      : 'jet',
+                  isExpanded: true,
+                  items: _colormaps
+                      .map((m) =>
+                          DropdownMenuItem(value: m, child: Text(m)))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) onChanged(params.copyWith(colormapName: v));
+                  },
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              const SizedBox(width: 80, child: Text('上采样')),
+              Expanded(
+                child: DropdownButton<int>(
+                  value: params.upsampleScale,
+                  isExpanded: true,
+                  items: const [1, 2, 4, 8, 16]
+                      .map((s) =>
+                          DropdownMenuItem(value: s, child: Text('${s}x')))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) onChanged(params.copyWith(upsampleScale: v));
+                  },
+                ),
+              ),
+            ],
+          ),
+          SwitchListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: const Text('双边滤波'),
+            value: params.bilateralEnabled,
+            onChanged: (v) =>
+                onChanged(params.copyWith(bilateralEnabled: v)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 详情页可调"融合参数"面板.
+class _FusionParamsPanel extends StatelessWidget {
+  const _FusionParamsPanel({
+    required this.params,
+    required this.hasVisible,
+    required this.onChanged,
+  });
+  final FusionParams params;
+  final bool hasVisible;
+  final ValueChanged<FusionParams> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: ExpansionTile(
+        title: const Text('融合参数'),
+        leading: const Icon(Icons.layers_rounded),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        children: [
+          if (!hasVisible)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text('当前帧无可见光, 融合参数不会生效.',
+                  style:
+                      TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+            ),
+          Row(
+            children: [
+              const SizedBox(width: 80, child: Text('模式')),
+              Expanded(
+                child: SegmentedButton<FusionMode>(
+                  segments: const [
+                    ButtonSegment(value: FusionMode.off, label: Text('关')),
+                    ButtonSegment(value: FusionMode.blend, label: Text('混合')),
+                    ButtonSegment(value: FusionMode.edge, label: Text('边缘')),
+                  ],
+                  selected: {params.mode},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (s) =>
+                      onChanged(params.copyWith(mode: s.first)),
+                ),
+              ),
+            ],
+          ),
+          if (params.mode == FusionMode.blend) ...[
+            _slider(
+              label: 'alpha',
+              value: params.alpha,
+              min: 0,
+              max: 1,
+              onChanged: (v) => onChanged(params.copyWith(alpha: v)),
+            ),
+            _slider(
+              label: 'gamma',
+              value: params.gamma,
+              min: 0.2,
+              max: 3,
+              onChanged: (v) => onChanged(params.copyWith(gamma: v)),
+            ),
+          ],
+          if (params.mode == FusionMode.edge) ...[
+            _slider(
+              label: '强度',
+              value: params.edgeStrength,
+              min: 0,
+              max: 1,
+              onChanged: (v) =>
+                  onChanged(params.copyWith(edgeStrength: v)),
+            ),
+            _slider(
+              label: '阈值',
+              value: params.edgeThresh,
+              min: 0,
+              max: 0.5,
+              onChanged: (v) =>
+                  onChanged(params.copyWith(edgeThresh: v)),
+            ),
+            _slider(
+              label: '粗细',
+              value: params.edgeWidth,
+              min: 0,
+              max: 6,
+              onChanged: (v) =>
+                  onChanged(params.copyWith(edgeWidth: v)),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _slider({
+    required String label,
+    required double value,
+    required double min,
+    required double max,
+    required ValueChanged<double> onChanged,
+  }) {
+    return Row(
+      children: [
+        SizedBox(width: 80, child: Text(label)),
+        Expanded(
+          child: Slider(
+            min: min,
+            max: max,
+            value: value.clamp(min, max),
+            onChanged: onChanged,
+          ),
+        ),
+        SizedBox(
+            width: 48,
+            child: Text(value.toStringAsFixed(2),
+                textAlign: TextAlign.right,
+                style: const TextStyle(fontSize: 12))),
+      ],
     );
   }
 }

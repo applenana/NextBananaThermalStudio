@@ -55,6 +55,9 @@ class CaptureMeta {
   final double? lng;
   final double? alt;
 
+  /// 反向地理编码后的人读地名 (如 "杭州市西湖区"). null = 未查询/查询失败.
+  final String? place;
+
   /// 用户备注 (默认空), 可后续在图库中编辑.
   final String note;
 
@@ -72,11 +75,15 @@ class CaptureMeta {
   /// 视频帧数 (photo 模式恒为 1). 录制中按 0 占位, 结束时回写.
   final int frameCount;
 
+  /// 拍摄/录制时的渲染+融合参数 (序列化 RenderParams.toJson). null = 未保存 (老包).
+  final Map<String, dynamic>? renderParams;
+
   const CaptureMeta({
     required this.createdAt,
     this.lat,
     this.lng,
     this.alt,
+    this.place,
     this.note = '',
     this.deviceSn,
     this.thermalW = 32,
@@ -84,6 +91,7 @@ class CaptureMeta {
     this.visibleW = 0,
     this.visibleH = 0,
     this.frameCount = 1,
+    this.renderParams,
   });
 
   Map<String, dynamic> toJson() => {
@@ -91,6 +99,7 @@ class CaptureMeta {
         if (lat != null) 'lat': lat,
         if (lng != null) 'lng': lng,
         if (alt != null) 'alt': alt,
+        if (place != null) 'place': place,
         'note': note,
         if (deviceSn != null) 'deviceSn': deviceSn,
         'thermalW': thermalW,
@@ -98,6 +107,7 @@ class CaptureMeta {
         'visibleW': visibleW,
         'visibleH': visibleH,
         'frameCount': frameCount,
+        if (renderParams != null) 'renderParams': renderParams,
       };
 
   factory CaptureMeta.fromJson(Map<String, dynamic> j) => CaptureMeta(
@@ -105,6 +115,7 @@ class CaptureMeta {
         lat: (j['lat'] as num?)?.toDouble(),
         lng: (j['lng'] as num?)?.toDouble(),
         alt: (j['alt'] as num?)?.toDouble(),
+        place: j['place'] as String?,
         note: (j['note'] as String?) ?? '',
         deviceSn: j['deviceSn'] as String?,
         thermalW: (j['thermalW'] as num?)?.toInt() ?? 32,
@@ -112,6 +123,9 @@ class CaptureMeta {
         visibleW: (j['visibleW'] as num?)?.toInt() ?? 0,
         visibleH: (j['visibleH'] as num?)?.toInt() ?? 0,
         frameCount: (j['frameCount'] as num?)?.toInt() ?? 1,
+        renderParams: j['renderParams'] is Map<String, dynamic>
+            ? j['renderParams'] as Map<String, dynamic>
+            : null,
       );
 
   CaptureMeta copyWith({
@@ -119,6 +133,7 @@ class CaptureMeta {
     double? lat,
     double? lng,
     double? alt,
+    String? place,
     String? note,
     String? deviceSn,
     int? thermalW,
@@ -126,12 +141,14 @@ class CaptureMeta {
     int? visibleW,
     int? visibleH,
     int? frameCount,
+    Map<String, dynamic>? renderParams,
   }) =>
       CaptureMeta(
         createdAt: createdAt ?? this.createdAt,
         lat: lat ?? this.lat,
         lng: lng ?? this.lng,
         alt: alt ?? this.alt,
+        place: place ?? this.place,
         note: note ?? this.note,
         deviceSn: deviceSn ?? this.deviceSn,
         thermalW: thermalW ?? this.thermalW,
@@ -139,6 +156,7 @@ class CaptureMeta {
         visibleW: visibleW ?? this.visibleW,
         visibleH: visibleH ?? this.visibleH,
         frameCount: frameCount ?? this.frameCount,
+        renderParams: renderParams ?? this.renderParams,
       );
 }
 
@@ -208,10 +226,12 @@ class CapturePackageWriter {
     _metaLenOffset = await _raf.position();
     final metaJson = utf8.encode(jsonEncode(_meta.toJson()));
     // 预留 padding 让后续 close (frameCount 由 0 变成实际) + editNote (备注扩写)
-    // 都能就地覆盖, 不需要移动后续 frames. 256B 余量足够装下:
+    // 都能就地覆盖, 不需要移动后续 frames. 1024B 余量足够装下:
     //   - frameCount 位数增量 (最多 ~9 位)
     //   - 备注扩写到约 200 字符
-    const int padding = 512;
+    //   - renderParams JSON (约 400 字节)
+    //   - place 地名 (约 50 字符)
+    const int padding = 1024;
     final totalMetaLen = metaJson.length + padding;
     final lenBd = ByteData(4)..setUint32(0, totalMetaLen, Endian.little);
     await _raf.writeFrom(lenBd.buffer.asUint8List());

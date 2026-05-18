@@ -16,6 +16,7 @@ import 'render/render_params.dart';
 import 'serial/serial_service.dart';
 import 'storage/capture_service.dart';
 import 'package:geolocator/geolocator.dart' as geo;
+import 'package:geocoding/geocoding.dart' as gc;
 
 enum ConnectionStatus { disconnected, scanning, connecting, connected }
 
@@ -1064,6 +1065,7 @@ class AppState extends ChangeNotifier {
       throw StateError('当前无热成像帧, 请先连接设备并开启热成像推流');
     }
     final loc = await _tryGetLocation();
+    final place = loc == null ? null : await _reverseGeocode(loc.$1, loc.$2);
     final path = await CaptureService.instance.takePhoto(
       thermal: tf,
       thermalW: 32,
@@ -1074,8 +1076,10 @@ class AppState extends ChangeNotifier {
       lat: loc?.$1,
       lng: loc?.$2,
       alt: loc?.$3,
+      place: place,
       deviceSn: deviceSerial,
       note: note,
+      renderParams: renderParams.toJson(),
     );
     _log('info', '拍摄成功: $path');
     notifyListeners();
@@ -1086,6 +1090,7 @@ class AppState extends ChangeNotifier {
   Future<String> startRecording({String note = ''}) async {
     if (isRecording) throw StateError('已经在录制中');
     final loc = await _tryGetLocation();
+    final place = loc == null ? null : await _reverseGeocode(loc.$1, loc.$2);
     final path = await CaptureService.instance.startRecording(
       thermalW: 32,
       thermalH: 24,
@@ -1094,8 +1099,10 @@ class AppState extends ChangeNotifier {
       lat: loc?.$1,
       lng: loc?.$2,
       alt: loc?.$3,
+      place: place,
       deviceSn: deviceSerial,
       note: note,
+      renderParams: renderParams.toJson(),
     );
     _log('info', '开始录制: $path');
     notifyListeners();
@@ -1130,6 +1137,28 @@ class AppState extends ChangeNotifier {
         ),
       ).timeout(const Duration(milliseconds: 2000));
       return (pos.latitude, pos.longitude, pos.altitude);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 反向地理编码: 把经纬度查成人读地名 (如 "杭州市西湖区").
+  /// 失败/超时/无网一律返回 null, 不阻塞拍摄主流程.
+  Future<String?> _reverseGeocode(double lat, double lng) async {
+    try {
+      final list = await gc.placemarkFromCoordinates(lat, lng)
+          .timeout(const Duration(milliseconds: 2500));
+      if (list.isEmpty) return null;
+      final p = list.first;
+      final parts = <String>[
+        if ((p.country ?? '').isNotEmpty) p.country!,
+        if ((p.administrativeArea ?? '').isNotEmpty) p.administrativeArea!,
+        if ((p.locality ?? '').isNotEmpty) p.locality!,
+        if ((p.subLocality ?? '').isNotEmpty) p.subLocality!,
+        if ((p.thoroughfare ?? '').isNotEmpty) p.thoroughfare!,
+      ];
+      final joined = parts.join(' ');
+      return joined.isEmpty ? null : joined;
     } catch (_) {
       return null;
     }

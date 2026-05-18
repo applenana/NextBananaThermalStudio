@@ -150,6 +150,54 @@ class FusionParams {
     this.edgeWidth = 1.0,
     this.edgeColor = 0x333333,
   });
+
+  FusionParams copyWith({
+    FusionMode? mode,
+    double? gamma,
+    double? alpha,
+    double? edgeStrength,
+    double? edgeThresh,
+    double? edgeWidth,
+    int? edgeColor,
+  }) =>
+      FusionParams(
+        mode: mode ?? this.mode,
+        gamma: gamma ?? this.gamma,
+        alpha: alpha ?? this.alpha,
+        edgeStrength: edgeStrength ?? this.edgeStrength,
+        edgeThresh: edgeThresh ?? this.edgeThresh,
+        edgeWidth: edgeWidth ?? this.edgeWidth,
+        edgeColor: edgeColor ?? this.edgeColor,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'mode': mode.name,
+        'gamma': gamma,
+        'alpha': alpha,
+        'edgeStrength': edgeStrength,
+        'edgeThresh': edgeThresh,
+        'edgeWidth': edgeWidth,
+        'edgeColor': edgeColor,
+      };
+
+  factory FusionParams.fromJson(Map<String, dynamic> j) {
+    FusionMode parseMode(String? s) {
+      for (final m in FusionMode.values) {
+        if (m.name == s) return m;
+      }
+      return FusionMode.off;
+    }
+
+    return FusionParams(
+      mode: parseMode(j['mode'] as String?),
+      gamma: (j['gamma'] as num?)?.toDouble() ?? 1.0,
+      alpha: (j['alpha'] as num?)?.toDouble() ?? 0.5,
+      edgeStrength: (j['edgeStrength'] as num?)?.toDouble() ?? 0.6,
+      edgeThresh: (j['edgeThresh'] as num?)?.toDouble() ?? 0.082,
+      edgeWidth: (j['edgeWidth'] as num?)?.toDouble() ?? 1.0,
+      edgeColor: (j['edgeColor'] as num?)?.toInt() ?? 0x333333,
+    );
+  }
 }
 
 /// 对单帧执行融合.

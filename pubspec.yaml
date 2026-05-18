@@ -53,6 +53,10 @@ dependencies:
   # Android/iOS 需运行时权限 (已在 AndroidManifest / Info.plist 中声明).
   geolocator: ^13.0.2
 
+  # 反向地理编码: 把经纬度查成"国家/省/市/区"等可读地名, 用于列表显示.
+  # 桌面/Android/iOS 都可用 (内部调用系统地图服务). 离线/无网时返回空.
+  geocoding: ^3.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
