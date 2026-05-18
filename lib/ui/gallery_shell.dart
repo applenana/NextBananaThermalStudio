@@ -41,7 +41,14 @@ class _GalleryShellState extends State<GalleryShell> {
             ],
             selected: {_sub},
             showSelectedIcon: false,
-            onSelectionChanged: (s) => setState(() => _sub = s.first),
+            onSelectionChanged: (s) {
+              final next = s.first;
+              setState(() => _sub = next);
+              if (next == 1) {
+                // 进入软件图库 → 重扫目录 (拍摄/录制可能在别处发生).
+                softwareGalleryRefreshTrigger.value++;
+              }
+            },
             style: ButtonStyle(
               visualDensity: VisualDensity.compact,
               foregroundColor: WidgetStatePropertyAll(scheme.onSurface),

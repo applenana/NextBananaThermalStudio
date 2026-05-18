@@ -22,6 +22,11 @@ import '../storage/capture_package.dart';
 import '../storage/capture_service.dart';
 import 'widgets/rgb_image_view.dart';
 
+/// 全局软件图库刷新触发器: GalleryShell 在副tab 切到"软件图库"时 ++,
+/// 已挂载的 SoftwareGalleryTab 监听后自动重扫目录.
+/// 也可在拍摄/录制结束后从外部 ++ 触发列表更新.
+final ValueNotifier<int> softwareGalleryRefreshTrigger = ValueNotifier<int>(0);
+
 class SoftwareGalleryTab extends StatefulWidget {
   const SoftwareGalleryTab({super.key});
   @override
@@ -37,6 +42,18 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
   @override
   void initState() {
     super.initState();
+    _refresh();
+    softwareGalleryRefreshTrigger.addListener(_onTrigger);
+  }
+
+  @override
+  void dispose() {
+    softwareGalleryRefreshTrigger.removeListener(_onTrigger);
+    super.dispose();
+  }
+
+  void _onTrigger() {
+    if (!mounted) return;
     _refresh();
   }
 
@@ -255,6 +272,11 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                         final selected = _selected?.path == it.path;
                         final type = it.packageType == 1 ? '视频' : '照片';
                         final note = (it.meta?.note ?? '').trim();
+                        final hasGps =
+                            it.meta?.lat != null && it.meta?.lng != null;
+                        final gpsStr = hasGps
+                            ? ' · 📍${it.meta!.lat!.toStringAsFixed(4)},${it.meta!.lng!.toStringAsFixed(4)}'
+                            : '';
                         return ListTile(
                           selected: selected,
                           dense: true,
@@ -268,6 +290,7 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                           subtitle: Text(
                             '$type · ${_fmtSize(it.sizeBytes)} · ${_fmtTime(it.mtime)}'
                             '${it.meta?.frameCount != null ? ' · ${it.meta!.frameCount}帧' : ''}'
+                            '$gpsStr'
                             '${note.isEmpty ? '' : '\n$note'}',
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,

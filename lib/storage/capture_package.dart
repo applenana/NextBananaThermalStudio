@@ -198,19 +198,29 @@ class CapturePackageWriter {
   Future<void> _writeHeader() async {
     // magic
     await _raf.writeFrom(CapturePackageHeader.magic);
-    // version u16 LE
-    final bd = ByteData(8);
+    // version u16 LE + type u8 + rsv u8 (共 4B)
+    final bd = ByteData(4);
     bd.setUint16(0, CapturePackageHeader.version, Endian.little);
     bd.setUint8(2, _type);
     bd.setUint8(3, 0);
-    await _raf.writeFrom(bd.buffer.asUint8List(0, 4));
-    // metaLen u32 LE (占位, close 时重写)
+    await _raf.writeFrom(bd.buffer.asUint8List());
+    // metaLen u32 LE (含预留 padding, close()/editNote 时回写 meta 不会越界)
     _metaLenOffset = await _raf.position();
     final metaJson = utf8.encode(jsonEncode(_meta.toJson()));
-    final lenBd = ByteData(4)..setUint32(0, metaJson.length, Endian.little);
+    // 预留 padding 让后续 close (frameCount 由 0 变成实际) + editNote (备注扩写)
+    // 都能就地覆盖, 不需要移动后续 frames. 256B 余量足够装下:
+    //   - frameCount 位数增量 (最多 ~9 位)
+    //   - 备注扩写到约 200 字符
+    const int padding = 512;
+    final totalMetaLen = metaJson.length + padding;
+    final lenBd = ByteData(4)..setUint32(0, totalMetaLen, Endian.little);
     await _raf.writeFrom(lenBd.buffer.asUint8List());
     _metaBytesOffset = await _raf.position();
-    await _raf.writeFrom(metaJson);
+    // 真实 JSON + padding 个空格 (jsonDecode 时调用 trimRight 还原).
+    final out = BytesBuilder(copy: false)
+      ..add(metaJson)
+      ..add(List<int>.filled(padding, 0x20));
+    await _raf.writeFrom(out.toBytes());
   }
 
   /// 追加一帧. thermal 长度需等于 thermalW * thermalH.

@@ -9,13 +9,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show DeviceOrientation, SystemChrome;
 import 'package:provider/provider.dart';
 
-import '../app_state.dart';
-import '../fusion/fusion.dart';
+import '../app_state.dart';import '../fusion/fusion.dart';
 import '../main.dart' show appWideBreakpoint, appConsoleExpanded;
 import '../protocol/frame_parser.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
 import 'connection_bar.dart';
+import 'software_gallery_tab.dart' show softwareGalleryRefreshTrigger;
 import 'widgets/rgb_image_view.dart';
 import 'widgets/thermal_canvas.dart';
 
@@ -3061,6 +3061,7 @@ class _CaptureBarState extends State<_CaptureBar> {
     setState(() => _busy = true);
     try {
       final path = await app.capturePhoto();
+      softwareGalleryRefreshTrigger.value++;
       _toast('已保存: ${path.split(RegExp(r"[\\/]")).last}');
     } catch (e) {
       _toast('拍摄失败: $e');
@@ -3077,6 +3078,7 @@ class _CaptureBarState extends State<_CaptureBar> {
       if (app.isRecording) {
         final path = await app.stopRecording();
         if (path != null) {
+          softwareGalleryRefreshTrigger.value++;
           _toast('录制已保存: ${path.split(RegExp(r"[\\/]")).last}');
         }
       } else {
