@@ -1383,9 +1383,10 @@ class _DetailBodyState extends State<_DetailBody> {
     }
   }
 
-  /// 视频包导出: Android/iOS/macOS 使用系统硬件 H264 编码器编码为 MP4
-  /// (并在 Android 上写入相册); Windows/Linux 没有 MP4 编码插件支持时回退到
-  /// 逐帧 PNG 批量导出.
+  /// 视频包导出为 MP4:
+  /// - Android/iOS/macOS: flutter_quick_video_encoder (MediaCodec / AVFoundation)
+  /// - Windows/Linux: 调用系统 ffmpeg (libx264) 通过 stdin 接收 raw rgba
+  /// - 找不到 ffmpeg 时回退到逐帧 PNG 批量导出, 并提示用户安装 ffmpeg.
   Future<void> _exportAllFrames() async {
     final r = _reader;
     if (r == null || _exporting) return;
@@ -1398,15 +1399,11 @@ class _DetailBodyState extends State<_DetailBody> {
       _playTimer = null;
       setState(() => _playing = false);
     }
-    final supportsMp4 =
+    final usePlugin =
         Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
-    if (!supportsMp4) {
-      await _exportAllFramesAsPngBatch();
-      return;
-    }
     setState(() => _exporting = true);
     try {
-      // 1) 探测 fps: 取首两帧时间差 (与播放节流同源).
+      // 1) 探测 fps: 取首两帧时间差.
       int frameMs = 100;
       try {
         final a = await r.readFrame(0);
@@ -1432,56 +1429,110 @@ class _DetailBodyState extends State<_DetailBody> {
       final base = p.basenameWithoutExtension(widget.item.path);
       final dir = await _ensureExportRoot();
       final outPath = p.join(dir.path, '$base.mp4');
-      // 码率: 简单按 像素*fps*0.12 估计 (热成像/可见光预览均偏低码率即可).
       final bitrate =
           (w * h * fps * 0.12).round().clamp(500000, 20000000);
-      await FlutterQuickVideoEncoder.setup(
-        width: w,
-        height: h,
-        fps: fps,
-        videoBitrate: bitrate,
-        profileLevel: ProfileLevel.high40,
-        audioChannels: 0,
-        audioBitrate: 0,
-        sampleRate: 0,
-        filepath: outPath,
-      );
-      // 3) 第一帧 + 后续帧逐帧 append.
-      await FlutterQuickVideoEncoder.appendVideoFrame(
-          _cropRgba(first.rgba, first.width, first.height, w, h));
+
+      if (usePlugin) {
+        // 移动 / macOS: 走原生硬件编码插件.
+        await FlutterQuickVideoEncoder.setup(
+          width: w,
+          height: h,
+          fps: fps,
+          videoBitrate: bitrate,
+          profileLevel: ProfileLevel.high40,
+          audioChannels: 0,
+          audioBitrate: 0,
+          sampleRate: 0,
+          filepath: outPath,
+        );
+        await FlutterQuickVideoEncoder.appendVideoFrame(
+            _cropRgba(first.rgba, first.width, first.height, w, h));
+        for (var i = 1; i < r.frameCount; i++) {
+          final f = await r.readFrame(i);
+          final bake = await _bakeFrameToRgba(f, r.meta);
+          if (bake == null) continue;
+          await FlutterQuickVideoEncoder.appendVideoFrame(
+              _cropRgba(bake.rgba, bake.width, bake.height, w, h));
+          if (!mounted) {
+            await FlutterQuickVideoEncoder.finish();
+            return;
+          }
+          if (i % 10 == 0) {
+            BananaToast.show(context, '编码中 $i / ${r.frameCount} ...');
+          }
+        }
+        await FlutterQuickVideoEncoder.finish();
+        bool albumOk = false;
+        if (Platform.isAndroid || Platform.isIOS) {
+          try {
+            final has = await Gal.hasAccess();
+            if (!has) await Gal.requestAccess();
+            await Gal.putVideo(outPath, album: 'BananaThermal');
+            albumOk = true;
+          } catch (e) {
+            if (mounted) BananaToast.show(context, '相册保存失败: $e');
+          }
+        }
+        if (!mounted) return;
+        BananaToast.show(
+            context, albumOk ? '已导出 $base.mp4 (相册已保存)' : '已导出 $outPath');
+        return;
+      }
+
+      // 桌面 Windows/Linux: 通过外部 ffmpeg 编码.
+      if (!await _ffmpegAvailable()) {
+        if (!mounted) return;
+        BananaToast.show(context,
+            '未检测到 ffmpeg, 回退逐帧 PNG. 将 ffmpeg 加入 PATH 后可直接导出 MP4.');
+        await _exportAllFramesAsPngBatch(setExportingFlag: false);
+        return;
+      }
+      final args = <String>[
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-y',
+        '-f', 'rawvideo',
+        '-pix_fmt', 'rgba',
+        '-s', '${w}x$h',
+        '-r', '$fps',
+        '-i', '-',
+        '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p',
+        '-preset', 'medium',
+        '-b:v', '$bitrate',
+        outPath,
+      ];
+      final proc = await Process.start('ffmpeg', args);
+      final stderrBuf = StringBuffer();
+      proc.stderr.transform(const SystemEncoding().decoder).listen(stderrBuf.write);
+      proc.stdout.drain<void>();
+      // 写入首帧
+      proc.stdin.add(_cropRgba(first.rgba, first.width, first.height, w, h));
       for (var i = 1; i < r.frameCount; i++) {
         final f = await r.readFrame(i);
         final bake = await _bakeFrameToRgba(f, r.meta);
         if (bake == null) continue;
-        await FlutterQuickVideoEncoder.appendVideoFrame(
-            _cropRgba(bake.rgba, bake.width, bake.height, w, h));
+        proc.stdin.add(_cropRgba(bake.rgba, bake.width, bake.height, w, h));
+        await proc.stdin.flush();
         if (!mounted) {
-          await FlutterQuickVideoEncoder.finish();
+          await proc.stdin.close();
+          await proc.exitCode;
           return;
         }
         if (i % 10 == 0) {
           BananaToast.show(context, '编码中 $i / ${r.frameCount} ...');
         }
       }
-      await FlutterQuickVideoEncoder.finish();
-      // 4) 安卓: 同步写入系统相册 (BananaThermal album).
-      bool albumOk = false;
-      if (Platform.isAndroid || Platform.isIOS) {
-        try {
-          final has = await Gal.hasAccess();
-          if (!has) await Gal.requestAccess();
-          await Gal.putVideo(outPath, album: 'BananaThermal');
-          albumOk = true;
-        } catch (e) {
-          if (mounted) BananaToast.show(context, '相册保存失败: $e');
-        }
-      }
+      await proc.stdin.flush();
+      await proc.stdin.close();
+      final code = await proc.exitCode;
       if (!mounted) return;
-      BananaToast.show(
-          context,
-          albumOk
-              ? '已导出 $base.mp4 (相册已保存)'
-              : '已导出 $outPath');
+      if (code != 0) {
+        BananaToast.show(
+            context, 'ffmpeg 编码失败 (code=$code): ${stderrBuf.toString().trim()}');
+        return;
+      }
+      BananaToast.show(context, '已导出 $outPath');
     } catch (e) {
       if (!mounted) return;
       BananaToast.show(context, '视频导出失败: $e');
@@ -1490,11 +1541,21 @@ class _DetailBodyState extends State<_DetailBody> {
     }
   }
 
+  /// 探测系统 PATH 中是否存在 ffmpeg.
+  Future<bool> _ffmpegAvailable() async {
+    try {
+      final r = await Process.run('ffmpeg', ['-version']);
+      return r.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Windows/Linux 桌面回退: 逐帧 PNG 写入 exports/<base>/ 子目录.
-  Future<void> _exportAllFramesAsPngBatch() async {
+  Future<void> _exportAllFramesAsPngBatch({bool setExportingFlag = true}) async {
     final r = _reader;
     if (r == null) return;
-    setState(() => _exporting = true);
+    if (setExportingFlag) setState(() => _exporting = true);
     try {
       final base = p.basenameWithoutExtension(widget.item.path);
       final root = await _ensureExportRoot();
@@ -1521,7 +1582,7 @@ class _DetailBodyState extends State<_DetailBody> {
       if (!mounted) return;
       BananaToast.show(context, '批量导出失败: $e');
     } finally {
-      if (mounted) setState(() => _exporting = false);
+      if (setExportingFlag && mounted) setState(() => _exporting = false);
     }
   }
 
@@ -1677,24 +1738,14 @@ class _DetailBodyState extends State<_DetailBody> {
                   if (isVideo && r.frameCount > 1) ...[
                     const SizedBox(width: 2),
                     Tooltip(
-                      message: (Platform.isAndroid ||
-                              Platform.isIOS ||
-                              Platform.isMacOS)
-                          ? '导出 MP4 视频'
-                          : '导出全部帧 (PNG, 桌面回退)',
+                      message: '导出 MP4 视频',
                       child: InkResponse(
                         radius: 18,
                         onTap: _exporting ? null : _exportAllFrames,
                         child: Padding(
                           padding: const EdgeInsets.all(4),
-                          child: Icon(
-                              (Platform.isAndroid ||
-                                      Platform.isIOS ||
-                                      Platform.isMacOS)
-                                  ? Icons.movie_creation_rounded
-                                  : Icons.download_for_offline_rounded,
-                              size: 20,
-                              color: scheme.primary),
+                          child: Icon(Icons.movie_creation_rounded,
+                              size: 20, color: scheme.primary),
                         ),
                       ),
                     ),
