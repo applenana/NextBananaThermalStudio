@@ -122,13 +122,38 @@ class FrameParser {
     _consume(n2);
   }
 
+  /// 返回 [bytes] 末尾"可作为 BEGIN/VBEG 前缀"的字节数 (0..3).
+  /// 用于决定跨 chunk 该保留多少字节防止 magic 被切断.
+  /// 真实文本响应 (JSON 结尾 "}\n" 等) 不命中任何前缀 -> 返回 0, 立刻 passthrough.
+  static int _magicPrefixTailLen(Uint8List bytes) {
+    final n = bytes.length;
+    if (n == 0) return 0;
+    // 检查 k=3,2,1 三种尾长是否分别匹配 BEGIN 或 VBEG 的前 k 字节.
+    // BEGIN = 'B','E','G','I','N'; VBEG = 'V','B','E','G'.
+    if (n >= 3) {
+      final b0 = bytes[n - 3], b1 = bytes[n - 2], b2 = bytes[n - 1];
+      if (b0 == 0x42 && b1 == 0x45 && b2 == 0x47) return 3; // 'BEG'
+      if (b0 == 0x56 && b1 == 0x42 && b2 == 0x45) return 3; // 'VBE'
+    }
+    if (n >= 2) {
+      final b0 = bytes[n - 2], b1 = bytes[n - 1];
+      if (b0 == 0x42 && b1 == 0x45) return 2; // 'BE'
+      if (b0 == 0x56 && b1 == 0x42) return 2; // 'VB'
+    }
+    final last = bytes[n - 1];
+    if (last == 0x42 || last == 0x56) return 1; // 'B' or 'V'
+    return 0;
+  }
+
   bool _tryExtractOne() {
     final idxT = _indexOf(_bytes, _thermalBegin);
     final idxV = _indexOf(_bytes, _visibleBegin);
 
     if (idxT < 0 && idxV < 0) {
-      // 保留 magic_len-1 字节防跨 chunk
-      const keep = 4 - 1; // max(5,4) - 1 = 4, 但保 3 字节足以覆盖 VBEG/BEGIN 边界
+      // 跨 chunk 保留: 仅当末尾 1~3 字节本身可作为 BEGIN/VBEG 的前缀时才扣留,
+      // 否则立刻全部 passthrough. 旧实现无条件保 3 字节, 会把文本响应末尾的
+      // "}\n" 等关键终止符也卡住, 导致 ASCII 行直到下一 chunk 才被消费.
+      final keep = _magicPrefixTailLen(_bytes);
       if (_bytes.length > keep) {
         final drop = _bytes.length - keep;
         _passthroughAndConsume(drop);

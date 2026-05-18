@@ -2512,23 +2512,25 @@ class _ConsoleCardState extends State<_ConsoleCard> {
                   color: scheme.surface,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: ListView.builder(
-                  controller: _scroll,
-                  itemCount: app.logs.length,
-                  itemBuilder: (_, i) {
-                    final e = app.logs[i];
-                    final ts =
-                        '${e.time.hour.toString().padLeft(2, '0')}:${e.time.minute.toString().padLeft(2, '0')}:${e.time.second.toString().padLeft(2, '0')}';
-                    return Text(
-                      '[$ts] ${e.text}',
-                      style: TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 11.5,
-                        height: 1.45,
-                        color: _logColor(e.level, scheme),
-                      ),
-                    );
-                  },
+                child: SelectionArea(
+                  child: ListView.builder(
+                    controller: _scroll,
+                    itemCount: app.logs.length,
+                    itemBuilder: (_, i) {
+                      final e = app.logs[i];
+                      final ts =
+                          '${e.time.hour.toString().padLeft(2, '0')}:${e.time.minute.toString().padLeft(2, '0')}:${e.time.second.toString().padLeft(2, '0')}';
+                      return Text(
+                        '[$ts] ${e.text}',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11.5,
+                          height: 1.45,
+                          color: _logColor(e.level, scheme),
+                        ),
+                      );
+                    },
+                  ),
                 ),
               ),
             ),
