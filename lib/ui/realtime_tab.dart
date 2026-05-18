@@ -873,6 +873,13 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                 ],
               ),
             ),
+            // 全屏右下角嵌入式拍摄/录制栏: 与非全屏 canvasArea 内的胶囊一致,
+            // 满足 "全屏也能拍摄录像" 的需求.
+            const Positioned(
+              right: 12,
+              bottom: 12,
+              child: _CaptureBar(embedded: true, compact: true),
+            ),
           ],
         ),
       ),

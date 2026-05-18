@@ -798,7 +798,6 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
 
   Widget _buildDetailBody(PhotoMeta sel, {bool phone = false}) {
     final scheme = Theme.of(context).colorScheme;
-    final app = context.watch<AppState>();
     // 实时根据参数重新渲染 (点下拉后预览立即变化).
     final dec = _decoded;
     RenderedFrame? rendered;
@@ -888,23 +887,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
             child: Stack(
               children: [
                 Positioned.fill(child: _buildPreview(rendered)),
-                // 左上角: 半透明温度叠加 (MAX/MIN/AVG). 视频在 software_gallery
-                // 里跟随每帧更新; 这里是单帧图, 仅 rendered 非空即显示.
-                if (rendered != null && _tempOverlayEnabled)
-                  Positioned(
-                    top: 8,
-                    left: 8,
-                    child: TempOverlay(
-                      tMax: rendered.tMax,
-                      tMin: rendered.tMin,
-                      tAvg: _session[sel.filename]?.thermalAvgC ??
-                          (dec?.thermal != null
-                              ? computeAvgC(dec!.thermal!)
-                              : (rendered.tMin + rendered.tMax) / 2),
-                      compact: phone,
-                    ),
-                  ),
                 // 右上角: 叠加开关按钮 (只在能显示叠加时出现).
+                // 注意: TempOverlay 已移动到 _buildPreview 内部, 贴在真实
+                // 画面 rect 左上角 (与导出图保持一致); 这里仅保留控制按钮.
                 if (rendered != null)
                   Positioned(
                     top: 6,
@@ -1026,24 +1011,54 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     }
     if (r != null) {
       final showVis = _showVisible && dec?.visibleRgb != null;
+      // 计算左上角温度叠加 (与导出图保持视觉一致: 叠加贴在真实画面 rect
+      // 左上角, 而不是外层 Container 左上). 仅在用户开启时显示.
+      Widget? tempBadge;
+      if (_tempOverlayEnabled) {
+        tempBadge = TempOverlay(
+          tMax: r.tMax,
+          tMin: r.tMin,
+          tAvg: _session[_selected?.filename]?.thermalAvgC ??
+              (dec?.thermal != null
+                  ? computeAvgC(dec!.thermal!)
+                  : (r.tMin + r.tMax) / 2),
+          compact: MediaQuery.of(context).size.shortestSide < 600,
+        );
+      }
+      // 用 AspectRatio 把 ThermalCanvas 限制到帧比例, 让 TempOverlay 可以
+      // Positioned 在 AspectRatio 的左上角 (= 真实图像左上角).
+      final thermalRect = Center(
+        child: AspectRatio(
+          aspectRatio: r.width / r.height,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: ThermalCanvas(
+                  frame: r,
+                  showCursorTemp: true,
+                  markers: _markers,
+                  onAddMarker: (px, py, temp) {
+                    setState(() => _markers.add(TempMarker(px, py, temp)));
+                  },
+                  onRemoveMarker: (i) {
+                    setState(() => _markers.removeAt(i));
+                  },
+                  placeholder: '等待热像数据…',
+                ),
+              ),
+              if (tempBadge != null)
+                Positioned(top: 8, left: 8, child: tempBadge),
+            ],
+          ),
+        ),
+      );
       return Row(
         children: [
           Expanded(
             flex: 3,
             child: Padding(
               padding: const EdgeInsets.all(8),
-              child: ThermalCanvas(
-                frame: r,
-                showCursorTemp: true,
-                markers: _markers,
-                onAddMarker: (px, py, temp) {
-                  setState(() => _markers.add(TempMarker(px, py, temp)));
-                },
-                onRemoveMarker: (i) {
-                  setState(() => _markers.removeAt(i));
-                },
-                placeholder: '等待热像数据…',
-              ),
+              child: thermalRect,
             ),
           ),
           if (showVis)
@@ -1231,7 +1246,6 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     final dec = _decoded;
     final sel = _selected;
     if (dec == null || sel == null) return;
-    final app = context.read<AppState>();
     setState(() => _statusText = '导出中 ...');
     try {
       // JPEG 直接落盘 .jpg

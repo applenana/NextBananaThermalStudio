@@ -10,14 +10,18 @@ library;
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:gal/gal.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
-import '../main.dart' show appCloseSoftwareDetail, appSoftwareDetailOpen;
+import '../main.dart'
+    show appCloseSoftwareDetail, appSoftwareDetailOpen, appPhotoDownloadDir;
 import '../fusion/fusion.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
@@ -1014,6 +1018,309 @@ class _DetailBodyState extends State<_DetailBody> {
     }();
   }
 
+  // ============================================================
+  // 导出: 与设备图库 (PhotoDownloadTab) 一致, 落到 <root>/exports/
+  // 并在 Android 上同步写入系统相册 (BananaThermal album).
+  // ============================================================
+
+  bool _exporting = false;
+
+  Future<Directory> _ensureExportRoot() async {
+    final custom = appPhotoDownloadDir.value;
+    final root = (custom != null && custom.isNotEmpty)
+        ? Directory(custom)
+        : Directory(p.join(
+            (await getApplicationDocumentsDirectory()).path,
+            'BananaThermalStudio',
+          ));
+    if (!await root.exists()) await root.create(recursive: true);
+    final dir = Directory(p.join(root.path, 'exports'));
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
+  }
+
+  Future<bool> _saveToGalleryIfAndroid({
+    required Uint8List bytes,
+    required String name,
+  }) async {
+    if (!Platform.isAndroid) return false;
+    try {
+      final hasAccess = await Gal.hasAccess();
+      if (!hasAccess) {
+        final granted = await Gal.requestAccess();
+        if (!granted) return false;
+      }
+      await Gal.putImageBytes(bytes, album: 'BananaThermal', name: name);
+      return true;
+    } catch (e) {
+      if (mounted) BananaToast.show(context, '相册保存失败: $e');
+      return false;
+    }
+  }
+
+  /// 把单帧渲染结果 + (可选)温度叠加烘焙成 PNG bytes.
+  Future<Uint8List> _renderFrameToPng(
+    RenderedFrame r, {
+    double? overlayMin,
+    double? overlayMax,
+    double? overlayAvg,
+  }) async {
+    final rgba = Uint8List(r.width * r.height * 4);
+    for (var i = 0, j = 0; i < r.rgb.length; i += 3, j += 4) {
+      rgba[j] = r.rgb[i];
+      rgba[j + 1] = r.rgb[i + 1];
+      rgba[j + 2] = r.rgb[i + 2];
+      rgba[j + 3] = 255;
+    }
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      rgba,
+      r.width,
+      r.height,
+      ui.PixelFormat.rgba8888,
+      completer.complete,
+    );
+    final baseImg = await completer.future;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder,
+        Rect.fromLTWH(0, 0, r.width.toDouble(), r.height.toDouble()));
+    canvas.drawImage(baseImg, Offset.zero, Paint());
+    if (overlayMin != null && overlayMax != null && overlayAvg != null) {
+      _drawTempOverlayOnCanvas(canvas, r.width.toDouble(),
+          r.height.toDouble(), overlayMin, overlayMax, overlayAvg);
+    }
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(r.width, r.height);
+    final bytes = await img.toByteData(format: ui.ImageByteFormat.png);
+    if (bytes == null) throw 'toByteData null';
+    return bytes.buffer.asUint8List();
+  }
+
+  void _drawTempOverlayOnCanvas(
+    Canvas canvas,
+    double canvasW,
+    double canvasH,
+    double tMin,
+    double tMax,
+    double tAvg,
+  ) {
+    final shortSide = canvasW < canvasH ? canvasW : canvasH;
+    final fontSize = (shortSide / 26).clamp(9.0, 22.0);
+    final labelSize = (fontSize * 0.72).clamp(7.0, 16.0);
+    final padH = fontSize * 0.85;
+    final padV = fontSize * 0.55;
+    final gap = fontSize * 0.7;
+    final dotR = (fontSize * 0.28).clamp(2.0, 6.0);
+
+    TextPainter mk(String s, double size, FontWeight w, Color c) => TextPainter(
+          text: TextSpan(
+            text: s,
+            style: TextStyle(
+              fontSize: size,
+              fontWeight: w,
+              color: c,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+
+    final items = <({Color color, TextPainter label, TextPainter value})>[
+      (
+        color: const Color(0xFFFF6E40),
+        label: mk('MAX', labelSize, FontWeight.w600, Colors.white70),
+        value: mk('${tMax.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
+            Colors.white),
+      ),
+      (
+        color: const Color(0xFF40C4FF),
+        label: mk('MIN', labelSize, FontWeight.w600, Colors.white70),
+        value: mk('${tMin.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
+            Colors.white),
+      ),
+      (
+        color: const Color(0xFFFFD740),
+        label: mk('AVG', labelSize, FontWeight.w600, Colors.white70),
+        value: mk('${tAvg.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
+            Colors.white),
+      ),
+    ];
+
+    double itemW(({Color color, TextPainter label, TextPainter value}) it) {
+      final textW =
+          it.label.width > it.value.width ? it.label.width : it.value.width;
+      return dotR * 2 + 4 + textW;
+    }
+
+    double totalW = 0;
+    for (var i = 0; i < items.length; i++) {
+      totalW += itemW(items[i]);
+      if (i != items.length - 1) totalW += gap;
+    }
+    final itemH = items.first.value.height + items.first.label.height + 2;
+    final boxW = totalW + padH * 2;
+    final boxH = itemH + padV * 2;
+    const margin = 8.0;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(margin, margin, boxW, boxH),
+        const Radius.circular(10),
+      ),
+      Paint()..color = Colors.black.withValues(alpha: 0.45),
+    );
+    double x = margin + padH;
+    final yTop = margin + padV;
+    for (final it in items) {
+      final w = itemW(it);
+      canvas.drawCircle(
+        Offset(x + dotR, yTop + itemH / 2),
+        dotR,
+        Paint()..color = it.color,
+      );
+      final textX = x + dotR * 2 + 4;
+      it.label.paint(canvas, Offset(textX, yTop));
+      it.value.paint(canvas, Offset(textX, yTop + it.label.height + 2));
+      x += w + gap;
+    }
+  }
+
+  /// 把指定 CaptureFrame 输出为 PNG bytes.
+  /// - 含热成像: 走 renderPipeline + 温度叠加 (按当前 _tempOverlayEnabled).
+  /// - 纯可见光: 直接返回 visiblePng (调用方决定文件扩展名).
+  /// 返回 (bytes, ext: 'png' 或 'png'/'jpg').
+  Future<(Uint8List bytes, String ext)?> _bakeFrame(
+      CaptureFrame frame, CaptureMeta meta) async {
+    if (frame.hasThermal && frame.thermal != null) {
+      // 解码该帧对应的可见光 (若有), 用于融合.
+      Uint8List? visRgb;
+      int vw = 0, vh = 0;
+      final vpng = frame.visiblePng;
+      if (vpng != null && vpng.isNotEmpty) {
+        try {
+          final im = img.decodePng(vpng);
+          if (im != null) {
+            visRgb = im.getBytes(order: img.ChannelOrder.rgb);
+            vw = im.width;
+            vh = im.height;
+          }
+        } catch (_) {}
+      }
+      final r = renderPipeline(
+        thermalFrame: frame.thermal!,
+        srcW: meta.thermalW,
+        srcH: meta.thermalH,
+        params: _params ?? const RenderParams(),
+        visibleRgb: visRgb,
+        visibleW: vw,
+        visibleH: vh,
+      );
+      // 温度统计
+      double? tMin, tMax, tAvg;
+      if (_tempOverlayEnabled) {
+        double mn = double.infinity;
+        double mx = -double.infinity;
+        double s = 0;
+        int n = 0;
+        for (final v in frame.thermal!) {
+          if (v.isFinite) {
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
+            s += v;
+            n++;
+          }
+        }
+        if (n > 0) {
+          tMin = mn;
+          tMax = mx;
+          tAvg = s / n;
+        }
+      }
+      final png = await _renderFrameToPng(r,
+          overlayMin: tMin, overlayMax: tMax, overlayAvg: tAvg);
+      return (png, 'png');
+    }
+    if (frame.hasVisible && frame.visiblePng != null) {
+      return (frame.visiblePng!, 'png');
+    }
+    return null;
+  }
+
+  Future<void> _exportCurrentFrame() async {
+    final f = _frame;
+    final r = _reader;
+    if (f == null || r == null || _exporting) return;
+    setState(() => _exporting = true);
+    try {
+      final baked = await _bakeFrame(f, r.meta);
+      if (baked == null) {
+        if (mounted) BananaToast.show(context, '当前帧无可导出内容');
+        return;
+      }
+      final (bytes, ext) = baked;
+      final base = p.basenameWithoutExtension(widget.item.path);
+      final name = r.frameCount > 1 ? '${base}_f$_frameIndex' : base;
+      final dir = await _ensureExportRoot();
+      final file = File(p.join(dir.path, '$name.$ext'));
+      await file.writeAsBytes(bytes);
+      final albumOk =
+          await _saveToGalleryIfAndroid(bytes: bytes, name: name);
+      if (!mounted) return;
+      BananaToast.show(
+          context,
+          albumOk
+              ? '已导出 ${p.basename(file.path)} (相册已保存)'
+              : '已导出 ${p.basename(file.path)}');
+    } catch (e) {
+      if (!mounted) return;
+      BananaToast.show(context, '导出失败: $e');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  Future<void> _exportAllFrames() async {
+    final r = _reader;
+    if (r == null || _exporting) return;
+    if (r.frameCount <= 1) {
+      await _exportCurrentFrame();
+      return;
+    }
+    setState(() => _exporting = true);
+    if (_playing) {
+      _playTimer?.cancel();
+      _playTimer = null;
+      _playing = false;
+    }
+    try {
+      final base = p.basenameWithoutExtension(widget.item.path);
+      final root = await _ensureExportRoot();
+      final subDir = Directory(p.join(root.path, base));
+      if (!await subDir.exists()) await subDir.create(recursive: true);
+      int ok = 0;
+      for (var i = 0; i < r.frameCount; i++) {
+        final f = await r.readFrame(i);
+        final baked = await _bakeFrame(f, r.meta);
+        if (baked == null) continue;
+        final (bytes, ext) = baked;
+        final file = File(p.join(subDir.path,
+            '${base}_f${i.toString().padLeft(4, '0')}.$ext'));
+        await file.writeAsBytes(bytes);
+        ok++;
+        if (!mounted) return;
+        if (i % 5 == 0) {
+          BananaToast.show(context, '导出中 $i / ${r.frameCount} ...');
+        }
+      }
+      if (!mounted) return;
+      BananaToast.show(context, '已导出 $ok 帧到 ${subDir.path}');
+    } catch (e) {
+      if (!mounted) return;
+      BananaToast.show(context, '批量导出失败: $e');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -1142,6 +1449,43 @@ class _DetailBodyState extends State<_DetailBody> {
                     ),
                   ),
                   const SizedBox(width: 8),
+                  // 导出本帧
+                  Tooltip(
+                    message: _exporting ? '导出中…' : '导出本帧 (PNG)',
+                    child: InkResponse(
+                      radius: 18,
+                      onTap: _exporting ? null : _exportCurrentFrame,
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: _exporting
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Icon(Icons.download_rounded,
+                                size: 20, color: scheme.primary),
+                      ),
+                    ),
+                  ),
+                  // 视频: 导出全部帧
+                  if (isVideo && r.frameCount > 1) ...[
+                    const SizedBox(width: 2),
+                    Tooltip(
+                      message: '导出全部帧 (PNG)',
+                      child: InkResponse(
+                        radius: 18,
+                        onTap: _exporting ? null : _exportAllFrames,
+                        child: Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: Icon(Icons.download_for_offline_rounded,
+                              size: 20, color: scheme.primary),
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 4),
                   Icon(
                     _metaExpanded
                         ? Icons.expand_less_rounded
@@ -1179,7 +1523,9 @@ class _DetailBodyState extends State<_DetailBody> {
                   padding: const EdgeInsets.all(6),
                   child: Stack(
                     children: [
-                      // 主画面: 按帧槽位分支.
+                      // 主画面: 按帧槽位分支. 温度叠加 (MAX/MIN/AVG) 作为
+                      // topLeftBadge 注入到 AspectRatio 内部, 确保叠加贴在
+                      // 真实画面左上角 (而不是外层 box 的左上, 与导出图一致).
                       Positioned.fill(
                         child: Center(
                           child: _buildMainPreview(
@@ -1187,6 +1533,20 @@ class _DetailBodyState extends State<_DetailBody> {
                             meta: meta,
                             params: params,
                             scheme: scheme,
+                            topLeftBadge: (_tempOverlayEnabled &&
+                                    tMin != null &&
+                                    tMax != null &&
+                                    tAvg != null)
+                                ? TempOverlay(
+                                    tMax: tMax,
+                                    tMin: tMin,
+                                    tAvg: tAvg,
+                                    compact: MediaQuery.of(context)
+                                            .size
+                                            .shortestSide <
+                                        600,
+                                  )
+                                : null,
                           ),
                         ),
                       ),
@@ -1202,18 +1562,6 @@ class _DetailBodyState extends State<_DetailBody> {
                                 : Icons.visibility_rounded,
                             onTap: () => setState(
                                 () => _showVisible = !_showVisible),
-                          ),
-                        ),
-                      // 左上: 温度叠加 (MAX/MIN/AVG) - 视频每帧自动更新.
-                      if (_tempOverlayEnabled && tMin != null && tMax != null && tAvg != null)
-                        Positioned(
-                          top: 8,
-                          left: 8,
-                          child: TempOverlay(
-                            tMax: tMax,
-                            tMin: tMin,
-                            tAvg: tAvg,
-                            compact: MediaQuery.of(context).size.shortestSide < 600,
                           ),
                         ),
                       // 左上偏右: 温度叠加开关 (仅含热成像才出现).
@@ -1353,6 +1701,7 @@ class _DetailBodyState extends State<_DetailBody> {
     required CaptureMeta meta,
     required RenderParams params,
     required ColorScheme scheme,
+    Widget? topLeftBadge,
   }) {
     final hasT = f.hasThermal;
     final hasV = f.hasVisible;
@@ -1383,14 +1732,22 @@ class _DetailBodyState extends State<_DetailBody> {
       final useFusionRgb = (hasV && _visRgb888 != null) ? _visRgb888 : null;
       return AspectRatio(
         aspectRatio: meta.thermalW / meta.thermalH,
-        child: _ThermalImage(
-          thermal: f.thermal!,
-          width: meta.thermalW,
-          height: meta.thermalH,
-          params: params,
-          visibleRgb888: useFusionRgb,
-          visibleW: useFusionRgb != null ? _visW : 0,
-          visibleH: useFusionRgb != null ? _visH : 0,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: _ThermalImage(
+                thermal: f.thermal!,
+                width: meta.thermalW,
+                height: meta.thermalH,
+                params: params,
+                visibleRgb888: useFusionRgb,
+                visibleW: useFusionRgb != null ? _visW : 0,
+                visibleH: useFusionRgb != null ? _visH : 0,
+              ),
+            ),
+            if (topLeftBadge != null)
+              Positioned(top: 8, left: 8, child: topLeftBadge),
+          ],
         ),
       );
     }
