@@ -209,7 +209,8 @@ void main() async {
 class BananaThermalApp extends StatelessWidget {
   const BananaThermalApp({super.key});
 
-  static const _seed = Color(0xFFFF7043);
+  // 主题种子色: 低饱和度青蓝绿 (Material teal 300), 温柔现代, 替代之前过艳的橙色.
+  static const _seed = Color(0xFF4DB6AC);
 
   ThemeData _buildTheme(Brightness brightness) {
     final isDark = brightness == Brightness.dark;
