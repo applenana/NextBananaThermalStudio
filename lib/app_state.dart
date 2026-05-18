@@ -42,6 +42,10 @@ class AppState extends ChangeNotifier {
   String? _lastPort;
   int _lastBaud = 115200;
 
+  /// 手动连接后, 多次重试 GetSysInfo 直到拿到 deviceInfo. 自动连接路径已经
+  /// 在 probe 阶段拿到信息, 不会用到.
+  Timer? _sysInfoRetryTimer;
+
   // ---------------- 连接 ----------------
   ConnectionStatus status = ConnectionStatus.disconnected;
   String? currentPort;
@@ -185,18 +189,14 @@ class AppState extends ChangeNotifier {
       );
       _startPortWatchdog();
       _log('info', '已打开 $portName @ $baud');
-      // 自动探测设备
-      Future.delayed(const Duration(milliseconds: 300), () {
-        sendCommand('GetSysInfo');
-      });
-      // Android: 自动开启热成像推流, 省去用户手动点开关.
-      // 桌面端保持原行为 (由用户主动开关) 以免拔插 / 调试时不必要的流量.
+      // 手动连接路径靠运行期 passthrough 解析 JSON, 可能被推流碎屏
+      // 污染. 在拿到 deviceInfo 之前, 以 (300ms,1500ms,3500ms,6500ms) 递增
+      // 间隔重发 GetSysInfo, 拿到后自动停.
+      _scheduleSysInfoRetry();
+      // Android: 推迟到拿到 deviceInfo 后再开热推流, 避免碎屏混进 JSON
+      // 回包导致解析失败.
       if (Platform.isAndroid) {
-        Future.delayed(const Duration(milliseconds: 600), () {
-          if (status == ConnectionStatus.connected && !thermalStreamEnabled) {
-            setThermalStream(true);
-          }
-        });
+        // 拿到 deviceInfo 之后才开推流 (在 _absorbDeviceInfo 里触发).
       }
     } catch (e) {
       status = ConnectionStatus.disconnected;
@@ -216,6 +216,8 @@ class AppState extends ChangeNotifier {
     _stopPortWatchdog();
     _stopThermalHeartbeat();
     _stopVisibleHeartbeat();
+    _sysInfoRetryTimer?.cancel();
+    _sysInfoRetryTimer = null;
     // 同步关闭推流开关, 避免下次连接后 UI 仍显示打开状态造成困惑.
     thermalStreamEnabled = false;
     visibleStreamEnabled = false;
@@ -368,10 +370,14 @@ class AppState extends ChangeNotifier {
 
     _log('rx', text);
 
-    // 设备信息 JSON
-    if (text.startsWith('{') && text.endsWith('}')) {
+    // 设备信息 JSON. 令人抓狂的是推流间隅会让 JSON 在被容忍过滤后剩
+    // '垃圾{...}垃圾' 这种形式. 不能只看首尾字符, 要抽子串.
+    final lb = text.indexOf('{');
+    final rb = text.lastIndexOf('}');
+    if (lb >= 0 && rb > lb) {
+      final candidate = text.substring(lb, rb + 1);
       try {
-        final j = jsonDecode(text) as Map<String, dynamic>;
+        final j = jsonDecode(candidate) as Map<String, dynamic>;
         if (j.containsKey('Activated') ||
             j.containsKey('isActivated') ||
             j.containsKey('Serial') ||
@@ -396,6 +402,35 @@ class AppState extends ChangeNotifier {
     if (at != null && at.isNotEmpty) activateTime = at;
     final wt = j['WarrantyTime']?.toString();
     if (wt != null && wt.isNotEmpty) warrantyTime = wt;
+    // 已拿到设备信息, 停重试.
+    _sysInfoRetryTimer?.cancel();
+    _sysInfoRetryTimer = null;
+    // Android: 现在才可以安全地开热推流 (不会再碎屏污染 JSON).
+    if (Platform.isAndroid &&
+        status == ConnectionStatus.connected &&
+        !thermalStreamEnabled) {
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (status == ConnectionStatus.connected && !thermalStreamEnabled) {
+          setThermalStream(true);
+        }
+      });
+    }
+  }
+
+  /// 手动连接后反复请求 GetSysInfo, 直到 deviceInfo != null.
+  void _scheduleSysInfoRetry() {
+    _sysInfoRetryTimer?.cancel();
+    const delays = [300, 1500, 3500, 6500, 10500];
+    int idx = 0;
+    void fire() {
+      if (status != ConnectionStatus.connected) return;
+      if (deviceInfo != null) return;
+      sendCommand('GetSysInfo');
+      idx++;
+      if (idx >= delays.length) return;
+      _sysInfoRetryTimer = Timer(Duration(milliseconds: delays[idx]), fire);
+    }
+    _sysInfoRetryTimer = Timer(Duration(milliseconds: delays[idx]), fire);
   }
 
   // ============================================================
