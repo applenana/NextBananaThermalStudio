@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io' show Platform;
 
 import 'app_state.dart';
+import 'ui/activation_overlay.dart';
 import 'ui/home_shell.dart';
 import 'ui/window_size_ffi.dart';
 import 'ui/windows_theme_ffi.dart';
@@ -382,7 +383,9 @@ class BananaThermalApp extends StatelessWidget {
               },
             );
           },
-              home: const NightLightSyncWatcher(child: HomeShell()),
+              home: const NightLightSyncWatcher(
+                child: ActivationOverlay(child: HomeShell()),
+              ),
             );
           },
         ),
