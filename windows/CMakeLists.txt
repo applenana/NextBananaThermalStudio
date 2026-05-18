@@ -49,6 +49,10 @@ endfunction()
 set(FLUTTER_MANAGED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/flutter")
 add_subdirectory(${FLUTTER_MANAGED_DIR})
 
+# Exported early so runner/CMakeLists.txt can attach a POST_BUILD copy step.
+set(FFMPEG_CACHE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/runner/bundled")
+set(FFMPEG_EXE_CACHE "${FFMPEG_CACHE_DIR}/ffmpeg.exe")
+
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
@@ -121,8 +125,6 @@ install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
 # - Both POST_BUILD (for `flutter run` / dev) and install() (for release
 #   packaging) place ffmpeg.exe next to banana_thermal.exe.
 # ============================================================================
-set(FFMPEG_CACHE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/runner/bundled")
-set(FFMPEG_EXE_CACHE "${FFMPEG_CACHE_DIR}/ffmpeg.exe")
 set(FFMPEG_URL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip")
 
 if(DEFINED ENV{BUNDLE_FFMPEG} AND NOT "$ENV{BUNDLE_FFMPEG}" STREQUAL "0" AND NOT EXISTS "${FFMPEG_EXE_CACHE}")
@@ -155,10 +157,8 @@ if(DEFINED ENV{BUNDLE_FFMPEG} AND NOT "$ENV{BUNDLE_FFMPEG}" STREQUAL "0" AND NOT
 endif()
 
 if(EXISTS "${FFMPEG_EXE_CACHE}")
-  add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${FFMPEG_EXE_CACHE}" "$<TARGET_FILE_DIR:${BINARY_NAME}>/ffmpeg.exe"
-    COMMENT "Bundling ffmpeg.exe next to ${BINARY_NAME}")
+  # Expose to runner/CMakeLists.txt for POST_BUILD copy alongside the exe.
+  set(FFMPEG_EXE_CACHE "${FFMPEG_EXE_CACHE}" CACHE INTERNAL "Cached ffmpeg.exe path")
   install(FILES "${FFMPEG_EXE_CACHE}"
     DESTINATION "${CMAKE_INSTALL_PREFIX}"
     COMPONENT Runtime)

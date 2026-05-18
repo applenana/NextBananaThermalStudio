@@ -38,3 +38,12 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# Bundle ffmpeg.exe next to the runner if a cached copy exists. The cache path
+# is exported by the parent CMakeLists.txt via FFMPEG_EXE_CACHE.
+if(FFMPEG_EXE_CACHE AND EXISTS "${FFMPEG_EXE_CACHE}")
+  add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${FFMPEG_EXE_CACHE}" "$<TARGET_FILE_DIR:${BINARY_NAME}>/ffmpeg.exe"
+    COMMENT "Bundling ffmpeg.exe next to ${BINARY_NAME}")
+endif()

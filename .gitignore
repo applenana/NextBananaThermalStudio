@@ -93,6 +93,7 @@ tools/_local_*
 /android/app/release
 migrate_working_dir/
 
-# Bundled ffmpeg (downloaded by CMake)
-windows/runner/bundled/
+# Bundled ffmpeg (downloaded by CMake); ffmpeg.exe itself is committed.
+windows/runner/bundled/*
+!windows/runner/bundled/ffmpeg.exe
 
