@@ -66,7 +66,9 @@ class RealtimeTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<double>(
+    return Stack(
+      children: [
+        ValueListenableBuilder<double>(
       valueListenable: appWideBreakpoint,
       builder: (context, breakpoint, _) => LayoutBuilder(
       builder: (context, c) {
@@ -101,6 +103,13 @@ class RealtimeTab extends StatelessWidget {
         return const _NarrowLayout();
       },
     ),
+    ),
+        const Positioned(
+          right: 16,
+          bottom: 16,
+          child: _CaptureBar(),
+        ),
+      ],
     );
   }
 }
@@ -3029,5 +3038,120 @@ class _ExpandedConsoleShell extends StatelessWidget {
   }
 }
 
+/// 实时画面右下角浮动的拍摄/录制按钮组.
+/// - 左按钮: 拍照 (单帧 .btpkg, 文件名 IMG_yyyyMMdd_HHmmss.btpkg)
+/// - 右按钮: 录制开始 / 停止 (帧序列 .btpkg, 文件名 VID_yyyyMMdd_HHmmss.btpkg)
+/// 录制中右按钮变为红色方块, 旁显示帧计数 / 时长.
+class _CaptureBar extends StatefulWidget {
+  const _CaptureBar();
+  @override
+  State<_CaptureBar> createState() => _CaptureBarState();
+}
 
+class _CaptureBarState extends State<_CaptureBar> {
+  bool _busy = false;
+
+  Future<void> _shot() async {
+    if (_busy) return;
+    final app = context.read<AppState>();
+    if (app.thermalFrame == null) {
+      _toast('暂无热成像数据');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final path = await app.capturePhoto();
+      _toast('已保存: ${path.split(RegExp(r"[\\/]")).last}');
+    } catch (e) {
+      _toast('拍摄失败: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _toggleRecord() async {
+    if (_busy) return;
+    final app = context.read<AppState>();
+    setState(() => _busy = true);
+    try {
+      if (app.isRecording) {
+        final path = await app.stopRecording();
+        if (path != null) {
+          _toast('录制已保存: ${path.split(RegExp(r"[\\/]")).last}');
+        }
+      } else {
+        if (app.thermalFrame == null) {
+          _toast('暂无热成像数据');
+          return;
+        }
+        await app.startRecording();
+        _toast('开始录制');
+      }
+    } catch (e) {
+      _toast('录制失败: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final scheme = Theme.of(context).colorScheme;
+    final recording = app.isRecording;
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: scheme.surface.withValues(alpha: 0.86),
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(color: scheme.outlineVariant),
+          boxShadow: const [
+            BoxShadow(blurRadius: 6, color: Colors.black26, offset: Offset(0, 2)),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (recording) ...[
+              Icon(Icons.fiber_manual_record, size: 14, color: scheme.error),
+              const SizedBox(width: 4),
+              Text(
+                '${app.recordedFrameCount}帧',
+                style: TextStyle(
+                  color: scheme.onSurface,
+                  fontSize: 12,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
+            IconButton(
+              onPressed: _busy || recording ? null : _shot,
+              icon: const Icon(Icons.photo_camera_rounded),
+              tooltip: '拍摄',
+              color: scheme.primary,
+            ),
+            IconButton(
+              onPressed: _busy ? null : _toggleRecord,
+              icon: Icon(
+                recording ? Icons.stop_circle_rounded : Icons.videocam_rounded,
+              ),
+              tooltip: recording ? '停止录制' : '开始录制',
+              color: recording ? scheme.error : scheme.primary,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 

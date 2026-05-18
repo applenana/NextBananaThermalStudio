@@ -49,6 +49,10 @@ dependencies:
   # 在外部浏览器打开 URL (激活弹窗中的售后链接). 跨平台.
   url_launcher: ^6.3.1
 
+  # 拍摄/录制时获取 GPS 经纬度. 桌面端会请求系统定位 API,
+  # Android/iOS 需运行时权限 (已在 AndroidManifest / Info.plist 中声明).
+  geolocator: ^13.0.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

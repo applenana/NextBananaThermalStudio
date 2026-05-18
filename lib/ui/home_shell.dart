@@ -23,7 +23,8 @@ import '../main.dart'
         setWindowSizePersist,
         resetAllSettings;
 import 'connection_bar.dart';
-import 'photo_download_tab.dart';
+import 'gallery_shell.dart';
+import 'photo_download_tab.dart' show photoTabRefreshTrigger;
 import 'realtime_tab.dart';
 import 'widgets/window_title_bar.dart';
 import 'window_size_ffi.dart';
@@ -244,7 +245,7 @@ class _HomeShellState extends State<HomeShell> {
               index: _index,
               children: const [
                 RealtimeTab(),
-                PhotoDownloadTab(),
+                GalleryShell(),
                 _SettingsPlaceholder(),
               ],
             ),

@@ -14,6 +14,8 @@ import 'fusion/fusion.dart';
 import 'protocol/frame_parser.dart';
 import 'render/render_params.dart';
 import 'serial/serial_service.dart';
+import 'storage/capture_service.dart';
+import 'package:geolocator/geolocator.dart' as geo;
 
 enum ConnectionStatus { disconnected, scanning, connecting, connected }
 
@@ -495,6 +497,16 @@ class AppState extends ChangeNotifier {
       historyMax.removeAt(0);
       historyMin.removeAt(0);
       historyAvg.removeAt(0);
+    }
+    // 录制: 把 (热成像 + 当前最新可见光) 追加进当前 .btpkg.
+    // 推流回调主线程触发, CaptureService 内部串行化, 这里 fire-and-forget.
+    if (CaptureService.instance.state == RecordingState.recording) {
+      CaptureService.instance.pushFrame(
+        thermal: mirrored,
+        visibleRgb888: visibleRgb888,
+        visibleW: visibleWidth,
+        visibleH: visibleHeight,
+      );
     }
     notifyListeners();
   }
@@ -1032,6 +1044,95 @@ class AppState extends ChangeNotifier {
     _stopVisibleHeartbeat();
     await _serial.dispose();
     super.dispose();
+  }
+
+  // ============================================================
+  // 拍摄 / 录制 (软件图库)
+  // ============================================================
+
+  /// 是否正在录制. 供 UI 切按钮图标 / 显示红点用.
+  bool get isRecording =>
+      CaptureService.instance.state == RecordingState.recording;
+  int get recordedFrameCount => CaptureService.instance.frameCount;
+  String? get recordingPath => CaptureService.instance.activePath;
+
+  /// 把当前最新一帧打包成 photo `.btpkg`. 返回写入路径.
+  /// 若当前没有有效热成像帧, 抛 [StateError].
+  Future<String> capturePhoto({String note = ''}) async {
+    final tf = thermalFrame;
+    if (tf == null || tf.isEmpty) {
+      throw StateError('当前无热成像帧, 请先连接设备并开启热成像推流');
+    }
+    final loc = await _tryGetLocation();
+    final path = await CaptureService.instance.takePhoto(
+      thermal: tf,
+      thermalW: 32,
+      thermalH: 24,
+      visibleRgb888: visibleRgb888,
+      visibleW: visibleWidth,
+      visibleH: visibleHeight,
+      lat: loc?.$1,
+      lng: loc?.$2,
+      alt: loc?.$3,
+      deviceSn: deviceSerial,
+      note: note,
+    );
+    _log('info', '拍摄成功: $path');
+    notifyListeners();
+    return path;
+  }
+
+  /// 开始录制. 录制期间每帧 (热) 进来都会被 fire-and-forget 追加到包内.
+  Future<String> startRecording({String note = ''}) async {
+    if (isRecording) throw StateError('已经在录制中');
+    final loc = await _tryGetLocation();
+    final path = await CaptureService.instance.startRecording(
+      thermalW: 32,
+      thermalH: 24,
+      visibleW: visibleWidth,
+      visibleH: visibleHeight,
+      lat: loc?.$1,
+      lng: loc?.$2,
+      alt: loc?.$3,
+      deviceSn: deviceSerial,
+      note: note,
+    );
+    _log('info', '开始录制: $path');
+    notifyListeners();
+    return path;
+  }
+
+  Future<String?> stopRecording() async {
+    final path = await CaptureService.instance.stopRecording();
+    if (path != null) {
+      _log('info', '录制结束: $path');
+    }
+    notifyListeners();
+    return path;
+  }
+
+  /// 尝试拿 GPS. 失败/拒绝/超时一律返回 null, 不阻塞拍摄主流程.
+  /// 返回 (lat, lng, alt).
+  Future<(double, double, double)?> _tryGetLocation() async {
+    try {
+      // 桌面端 geolocator 在无定位服务时直接抛, 一律 catch 兜底.
+      var perm = await geo.Geolocator.checkPermission();
+      if (perm == geo.LocationPermission.denied) {
+        perm = await geo.Geolocator.requestPermission();
+      }
+      if (perm == geo.LocationPermission.denied ||
+          perm == geo.LocationPermission.deniedForever) {
+        return null;
+      }
+      final pos = await geo.Geolocator.getCurrentPosition(
+        locationSettings: const geo.LocationSettings(
+          accuracy: geo.LocationAccuracy.low,
+        ),
+      ).timeout(const Duration(milliseconds: 2000));
+      return (pos.latitude, pos.longitude, pos.altitude);
+    } catch (_) {
+      return null;
+    }
   }
 }
 
