@@ -21,6 +21,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app_state.dart';
+import 'banana_toast.dart';
 
 const String _kAftersaleUrl = 'https://fishflow.applenana.fun/aftersale';
 const String _kQqGroup = '1002979587';
@@ -129,11 +130,7 @@ class _ActivationDialogState extends State<_ActivationDialog> {
   }
 
   void _toast(String msg) {
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    messenger?.clearSnackBars();
-    messenger?.showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
+    BananaToast.show(context, msg);
   }
 
   Future<void> _copy(String text, String okMsg) async {
