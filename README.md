@@ -19,11 +19,73 @@
 
 ---
 
+> **📥 萌新看这里！**
+>
+> - **想要最新测试版？** → 点上方 CI 徽章，或进入 [Actions](https://github.com/applenana/NextBananaThermalStudio/actions/workflows/build.yml) 找到最新一次成功的构建，点开 **Artifacts** 下载各平台打包好的软件，抢先体验最新功能（可能不稳定）。
+> - **想要稳定发行版？** → 直接去 [Releases](https://github.com/applenana/NextBananaThermalStudio/releases/latest) 下载带版本号的正式包，开箱即用，不会踩坑。
+
+---
+
 ## 📖 简介
 
 **Next BananaThermal Studio** 是 [BananaThermal Studio](https://github.com/applenana/BananaThermal-Studio) (Python/Tk 版) 的下一代重写，基于 **Flutter** 打造跨平台原生体验，适配开源 **香蕉泥热成像通讯协议** (RP2040 + Heimann HTPA + OV2640)。
 
 > 同一份代码，桌面走串口直连，Android 走 USB Host CDC 自动识别 —— 开箱即用，无须驱动，无须 Python 环境。
+
+---
+
+## 🖼️ 截图
+
+### Windows 桌面
+
+<table>
+  <tr>
+    <td align="center" width="50%"><b>实时双光主页</b></td>
+    <td align="center" width="50%"><b>设备图库 · 温度标记 + 叠加 HUD</b></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/win_realtime.png" alt="Windows 实时主页" width="100%"/></td>
+    <td><img src="docs/screenshots/win_gallery_device.png" alt="Windows 设备图库" width="100%"/></td>
+  </tr>
+  <tr>
+    <td>自绘标题栏 · 双光融合 · 实时温度曲线 · 串口控制台 · 序列号 / 激活状态一目了然。</td>
+    <td>列表缩略图 · MAX/MIN/AVG 温度叠加 HUD · 可见光/热成像对比 · 任意位置温度标记。</td>
+  </tr>
+  <tr>
+    <td align="center"><b>软件图库 · 视频逐帧播放</b></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/win_gallery_software.png" alt="Windows 软件图库" width="100%"/></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>.btpkg 视频包逐帧播放 · 进度条可拖拽 · 帧级别温度叠加 · 一键导出 MP4。</td>
+    <td></td>
+  </tr>
+</table>
+
+### Android 移动端
+
+<table>
+  <tr>
+    <td align="center" width="33%"><b>实时主页（竖屏）</b></td>
+    <td align="center" width="33%"><b>全屏模式（横屏）</b></td>
+    <td align="center" width="33%"><b>软件图库列表</b></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/android_realtime.jpg" alt="Android 实时主页" width="100%"/></td>
+    <td><img src="docs/screenshots/android_landscape.jpg" alt="Android 横屏全屏" width="100%"/></td>
+    <td><img src="docs/screenshots/android_gallery.jpg" alt="Android 软件图库" width="100%"/></td>
+  </tr>
+  <tr>
+    <td>USB Host 一键连接 · 温度卡片 · 实时曲线 · 底部标签栏导航。</td>
+    <td>横屏全屏沉浸式 · 左侧统计面板 · 右侧融合参数 · 内嵌拍摄栏。</td>
+    <td>.btpkg 列表 · 热成像缩略图 · 照片 / 视频自动分类。</td>
+  </tr>
+</table>
+
+---
 
 ## ✨ 特性一览
 
