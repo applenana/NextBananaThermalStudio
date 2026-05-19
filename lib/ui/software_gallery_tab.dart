@@ -28,8 +28,8 @@ import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
 import '../storage/capture_package.dart';
 import '../storage/capture_service.dart';
-import 'widgets/rgb_image_view.dart';
 import 'widgets/temp_overlay.dart';
+import 'widgets/thermal_canvas.dart';
 import 'banana_toast.dart';
 
 /// 全局软件图库刷新触发器: GalleryShell 在副 tab 切到"软件图库"时 ++,
@@ -908,6 +908,25 @@ class _DetailBodyState extends State<_DetailBody> {
   bool _tempOverlayEnabled = true;
   // 顶部元数据卡是否展开 (默认折叠, 单行摘要).
   bool _metaExpanded = false;
+  // 用户在画面上点击放置的温度标记 (坐标使用渲染后帧像素 (px, py),
+  // 与 photo_download_tab 一致). 视频回放时, 每帧根据当前帧的
+  // temperatureField 重新采样该 (px, py) 的温度, 形成"位置不变, 温度跟随"
+  // 的效果. _markers 中存储的 temp 字段仅为最近一次刷新结果.
+  final List<TempMarker> _markers = [];
+
+  /// 为当前 rendered 帧重采样所有 markers 的温度, 返回新列表.
+  /// 不修改 _markers 自身, 避免 build 阶段 setState 触发循环.
+  List<TempMarker> _refreshMarkers(RenderedFrame r) {
+    if (_markers.isEmpty) return const [];
+    final out = <TempMarker>[];
+    for (final m in _markers) {
+      final px = m.px.clamp(0, r.width - 1);
+      final py = m.py.clamp(0, r.height - 1);
+      final t = r.temperatureField[py * r.width + px];
+      out.add(TempMarker(px, py, t));
+    }
+    return out;
+  }
 
   @override
   void initState() {
@@ -1066,6 +1085,7 @@ class _DetailBodyState extends State<_DetailBody> {
     double? overlayMin,
     double? overlayMax,
     double? overlayAvg,
+    List<TempMarker>? markers,
   }) async {
     final rgba = Uint8List(r.width * r.height * 4);
     for (var i = 0, j = 0; i < r.rgb.length; i += 3, j += 4) {
@@ -1076,7 +1096,8 @@ class _DetailBodyState extends State<_DetailBody> {
     }
     final hasOverlay =
         overlayMin != null && overlayMax != null && overlayAvg != null;
-    if (!hasOverlay) {
+    final hasMarkers = markers != null && markers.isNotEmpty;
+    if (!hasOverlay && !hasMarkers) {
       return (rgba: rgba, width: r.width, height: r.height);
     }
     // 需要烘焙叠加: 走 Canvas, 之后再 toByteData(rawRgba).
@@ -1093,8 +1114,14 @@ class _DetailBodyState extends State<_DetailBody> {
     final canvas = Canvas(recorder,
         Rect.fromLTWH(0, 0, r.width.toDouble(), r.height.toDouble()));
     canvas.drawImage(baseImg, Offset.zero, Paint());
-    _drawTempOverlayOnCanvas(canvas, r.width.toDouble(),
-        r.height.toDouble(), overlayMin, overlayMax, overlayAvg);
+    if (hasOverlay) {
+      _drawTempOverlayOnCanvas(canvas, r.width.toDouble(),
+          r.height.toDouble(), overlayMin, overlayMax, overlayAvg);
+    }
+    if (hasMarkers) {
+      _drawMarkersOnCanvas(canvas, r.width.toDouble(), r.height.toDouble(),
+          markers);
+    }
     final picture = recorder.endRecording();
     final outImg = await picture.toImage(r.width, r.height);
     final bd = await outImg.toByteData(format: ui.ImageByteFormat.rawRgba);
@@ -1112,6 +1139,7 @@ class _DetailBodyState extends State<_DetailBody> {
     double? overlayMin,
     double? overlayMax,
     double? overlayAvg,
+    List<TempMarker>? markers,
   }) async {
     // PNG 编码路径仍走 Canvas (无叠加时也走, 以保持单一码路径并避免分支).
     final rgba = Uint8List(r.width * r.height * 4);
@@ -1138,11 +1166,67 @@ class _DetailBodyState extends State<_DetailBody> {
       _drawTempOverlayOnCanvas(canvas, r.width.toDouble(),
           r.height.toDouble(), overlayMin, overlayMax, overlayAvg);
     }
+    if (markers != null && markers.isNotEmpty) {
+      _drawMarkersOnCanvas(
+          canvas, r.width.toDouble(), r.height.toDouble(), markers);
+    }
     final picture = recorder.endRecording();
     final outImg = await picture.toImage(r.width, r.height);
     final bytes = await outImg.toByteData(format: ui.ImageByteFormat.png);
     if (bytes == null) throw 'toByteData null';
     return bytes.buffer.asUint8List();
+  }
+
+  /// 把用户放置的温度标签 (红点 + 温度文字) 烘焙到画布. 与 photo_download_tab
+  /// 的 marker 风格保持一致 (字号 / 半径按短边比例缩放).
+  void _drawMarkersOnCanvas(
+    Canvas canvas,
+    double canvasW,
+    double canvasH,
+    List<TempMarker> markers,
+  ) {
+    final shortSide = canvasW < canvasH ? canvasW : canvasH;
+    final fontSize = (shortSide / 22).clamp(10.0, 28.0);
+    final dotR = (shortSide / 80).clamp(2.0, 7.0);
+    final ringR = dotR + 2;
+    for (final m in markers) {
+      final cx = m.px + 0.5;
+      final cy = m.py + 0.5;
+      canvas.drawCircle(
+        Offset(cx, cy),
+        ringR,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6,
+      );
+      canvas.drawCircle(
+        Offset(cx, cy),
+        dotR,
+        Paint()..color = const Color(0xFFFF5252),
+      );
+      final tp = TextPainter(
+        text: TextSpan(
+          text: '${m.temp.toStringAsFixed(1)} \u00b0C',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: fontSize,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final bx = (cx + ringR + 2).clamp(0.0, canvasW - tp.width - 4);
+      final by = (cy - tp.height - 2).clamp(0.0, canvasH - tp.height - 2);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(bx - 3, by - 1, tp.width + 6, tp.height + 2),
+          const Radius.circular(3),
+        ),
+        Paint()..color = Colors.black.withValues(alpha: 0.7),
+      );
+      tp.paint(canvas, Offset(bx, by));
+    }
   }
 
   void _drawTempOverlayOnCanvas(
@@ -1293,8 +1377,12 @@ class _DetailBodyState extends State<_DetailBody> {
       CaptureFrame frame, CaptureMeta meta) async {
     final th = await _renderThermalFrame(frame, meta);
     if (th != null) {
+      final perFrameMarkers = _refreshMarkers(th.rendered);
       final png = await _renderFrameToPng(th.rendered,
-          overlayMin: th.tMin, overlayMax: th.tMax, overlayAvg: th.tAvg);
+          overlayMin: th.tMin,
+          overlayMax: th.tMax,
+          overlayAvg: th.tAvg,
+          markers: perFrameMarkers.isEmpty ? null : perFrameMarkers);
       return (png, 'png');
     }
     if (frame.hasVisible && frame.visiblePng != null) {
@@ -1311,8 +1399,12 @@ class _DetailBodyState extends State<_DetailBody> {
       CaptureFrame frame, CaptureMeta meta) async {
     final th = await _renderThermalFrame(frame, meta);
     if (th != null) {
+      final perFrameMarkers = _refreshMarkers(th.rendered);
       return _renderFrameToRgba(th.rendered,
-          overlayMin: th.tMin, overlayMax: th.tMax, overlayAvg: th.tAvg);
+          overlayMin: th.tMin,
+          overlayMax: th.tMax,
+          overlayAvg: th.tAvg,
+          markers: perFrameMarkers.isEmpty ? null : perFrameMarkers);
     }
     if (frame.hasVisible && frame.visiblePng != null) {
       try {
@@ -1860,6 +1952,21 @@ class _DetailBodyState extends State<_DetailBody> {
                                 _tempOverlayEnabled = !_tempOverlayEnabled),
                           ),
                         ),
+                      // 再偏右: 清空温度标签 (仅在已存在标签时启用).
+                      if (fHasT)
+                        Positioned(
+                          top: 6,
+                          right: (fHasV && fHasT) ? 82 : 44,
+                          child: _OverlayIconButton(
+                            tooltip: _markers.isEmpty
+                                ? '点击画面添加温度标签'
+                                : '清除所有温度标签',
+                            icon: Icons.layers_clear_rounded,
+                            onTap: _markers.isEmpty
+                                ? null
+                                : () => setState(() => _markers.clear()),
+                          ),
+                        ),
                       // 视频控件: 半透明叠加在画面底部 (Web 视频风格).
                       if (isVideo && r.frameCount > 1)
                         Positioned(
@@ -2010,19 +2117,33 @@ class _DetailBodyState extends State<_DetailBody> {
     if (hasT) {
       // 含热成像: 走原渲染管线; 是否融合可见光由 _visRgb888/_showVisible 控制.
       final useFusionRgb = (hasV && _visRgb888 != null) ? _visRgb888 : null;
+      final rendered = renderPipeline(
+        thermalFrame: f.thermal!,
+        srcW: meta.thermalW,
+        srcH: meta.thermalH,
+        params: params,
+        visibleRgb: useFusionRgb,
+        visibleW: useFusionRgb != null ? _visW : 0,
+        visibleH: useFusionRgb != null ? _visH : 0,
+      );
+      // 视频回放时, 标记位置不变, 温度按当前帧重新采样.
+      final liveMarkers = _refreshMarkers(rendered);
       return AspectRatio(
         aspectRatio: meta.thermalW / meta.thermalH,
         child: Stack(
           children: [
             Positioned.fill(
-              child: _ThermalImage(
-                thermal: f.thermal!,
-                width: meta.thermalW,
-                height: meta.thermalH,
-                params: params,
-                visibleRgb888: useFusionRgb,
-                visibleW: useFusionRgb != null ? _visW : 0,
-                visibleH: useFusionRgb != null ? _visH : 0,
+              child: ThermalCanvas(
+                frame: rendered,
+                showCursorTemp: true,
+                markers: liveMarkers,
+                onAddMarker: (px, py, temp) {
+                  setState(() => _markers.add(TempMarker(px, py, temp)));
+                },
+                onRemoveMarker: (i) {
+                  setState(() => _markers.removeAt(i));
+                },
+                placeholder: '等待热像数据…',
               ),
             ),
             if (topLeftBadge != null)
@@ -2111,47 +2232,6 @@ class _SlotTimelineBar extends StatelessWidget {
           );
         }),
       ),
-    );
-  }
-}
-
-// ============================================================
-// 热图渲染 widget (调用 renderPipeline, 支持融合可见光)
-// ============================================================
-class _ThermalImage extends StatelessWidget {
-  const _ThermalImage({
-    required this.thermal,
-    required this.width,
-    required this.height,
-    required this.params,
-    this.visibleRgb888,
-    this.visibleW = 0,
-    this.visibleH = 0,
-  });
-  final Float32List thermal;
-  final int width;
-  final int height;
-  final RenderParams params;
-  final Uint8List? visibleRgb888;
-  final int visibleW;
-  final int visibleH;
-
-  @override
-  Widget build(BuildContext context) {
-    final rendered = renderPipeline(
-      thermalFrame: thermal,
-      srcW: width,
-      srcH: height,
-      params: params,
-      visibleRgb: visibleRgb888,
-      visibleW: visibleW,
-      visibleH: visibleH,
-    );
-    return RgbImageView(
-      rgb: rendered.rgb,
-      width: rendered.width,
-      height: rendered.height,
-      fit: BoxFit.contain,
     );
   }
 }
@@ -2419,20 +2499,23 @@ class _OverlayIconButton extends StatelessWidget {
     this.tooltip,
   });
   final IconData icon;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final String? tooltip;
 
   @override
   Widget build(BuildContext context) {
+    final disabled = onTap == null;
     final btn = Material(
-      color: Colors.black.withValues(alpha: 0.45),
+      color: Colors.black.withValues(alpha: disabled ? 0.25 : 0.45),
       shape: const CircleBorder(),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(6),
-          child: Icon(icon, size: 18, color: Colors.white),
+          child: Icon(icon,
+              size: 18,
+              color: Colors.white.withValues(alpha: disabled ? 0.4 : 1.0)),
         ),
       ),
     );
