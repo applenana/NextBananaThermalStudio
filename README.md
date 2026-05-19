@@ -1,19 +1,19 @@
 <h1 align="center">🍌 Next BananaThermal Studio</h1>
 
 <p align="center">
-  <b>基于 Flutter 桌面的新一代香蕉泥热成像上位机</b><br>
-  <sub>更现代 · 更美观 · 更易用 · 单 exe 即开即用</sub>
+  <b>香蕉泥热成像跨平台上位机 — Windows 桌面 + Android 移动端</b><br>
+  <sub>双光融合 · 实时推流 · 一键录制 · 图库管理 · 温度分析 · 单文件即开即用</sub>
 </p>
 
 <p align="center">
-  <a href="https://github.com/applenana/NextBananaThermalStudio/actions/workflows/build-windows.yml">
-    <img alt="build" src="https://github.com/applenana/NextBananaThermalStudio/actions/workflows/build-windows.yml/badge.svg">
+  <a href="https://github.com/applenana/NextBananaThermalStudio/actions/workflows/build.yml">
+    <img alt="CI" src="https://github.com/applenana/NextBananaThermalStudio/actions/workflows/build.yml/badge.svg">
   </a>
   <a href="https://github.com/applenana/NextBananaThermalStudio/releases/latest">
     <img alt="release" src="https://img.shields.io/github/v/release/applenana/NextBananaThermalStudio?include_prereleases">
   </a>
   <img alt="flutter" src="https://img.shields.io/badge/flutter-3.41+-02569B?logo=flutter">
-  <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20x64-lightgrey">
+  <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20x64%20%7C%20Android-lightgrey">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
@@ -21,94 +21,181 @@
 
 ## 📖 简介
 
-**Next BananaThermal Studio** 是 [BananaThermal Studio](https://github.com/applenana/BananaThermal-Studio) (Python/Tk 版) 的下一代重写，使用 **Flutter Desktop** 打造原生体验的桌面 GUI，适配开源 **香蕉泥热成像通讯协议** (RP2040 + Heimann HTPA + OV2640)。
+**Next BananaThermal Studio** 是 [BananaThermal Studio](https://github.com/applenana/BananaThermal-Studio) (Python/Tk 版) 的下一代重写，基于 **Flutter** 打造跨平台原生体验，适配开源 **香蕉泥热成像通讯协议** (RP2040 + Heimann HTPA + OV2640)。
 
-> Tk 上位机的功能在这里以更现代的方式重新交付：丝滑的动画、原生窗口体验、深浅主题、矢量伪彩，以及完整的设置持久化。
+> 同一份代码，桌面走串口直连，Android 走 USB Host CDC 自动识别 —— 开箱即用，无须驱动，无须 Python 环境。
 
-## ✨ 特性
+## ✨ 特性一览
 
-- 🎨 **自绘标题栏** — 无 Windows 蓝色 active caption，原生窗口拖拽 / 双击最大化 / 边缘 8 向 resize
-- 🔥 **双光实时显示** — 热成像 `24×32 float` + 可见光 `RGB565`，单串口 1 Mbps 多路复用
-- 🌈 **可调伪彩** — 多套内置调色板 + 自定义冷/中/热三色 + 线性/S 曲线映射
-- 📈 **温度曲线** — Tmax / Tmin / Tavg 实时滚动（`fl_chart`），节流重绘不卡帧
-- 📥 **片上图库下载** — 把 RP2040 flash 里的 JPEG 批量拉到 PC，支持温度叠加批注
-- 🧠 **纯 Dart 协议解析** — 状态机分流 `BEGIN/END`（热）与 `VBEG/VEND`（可见光），可单测
-- 🔌 **串口自动识别** — `flutter_libserialport` 跨平台扫描，无须装驱动
-- 🌗 **深 / 浅主题** + **UI 缩放** + **窗口尺寸持久化** + **一键恢复出厂**
-- 💬 **内置命令行控制台** — 直发原始命令（`stream` / `vstream` / `GetSysInfo` / `activate <key>` ……），分级彩色日志
-- 🚀 **单 exe 发布** — GitHub Actions 每次 push 自动构建，tag push 自动发 Release
+### 🔴 实时双光
 
-## 🖼️ 截图
+- **热成像 + 可见光同步** — `24×32 float` 热图与 `RGB565` 可见光单串口 1 Mbps 多路复用，Flutter 层逐帧融合渲染
+- **可调伪彩** — 内置多套调色板（iron / rainbow / 灰阶…）+ 自定义冷/中/热三色，线性或 S 曲线映射
+- **温度曲线** — `fl_chart` 实时滚动 Tmax / Tmin / Tavg，节流重绘不卡帧
+- **全屏模式（Android）** — 沉浸式全屏显示热成像画面，右下角内嵌拍摄/录制控制栏
 
-<table>
-  <tr>
-    <td align="center"><b>实时双光主页</b></td>
-    <td align="center"><b>设备图库</b></td>
-  </tr>
-  <tr>
-    <td><img src="docs/screenshots/realtime.png" alt="实时双光主页" width="100%"/></td>
-    <td><img src="docs/screenshots/gallery.png" alt="设备图库" width="100%"/></td>
-  </tr>
-  <tr>
-    <td>自绘标题栏 · 自动搜索连接 · 序列号 / 激活时间 / 保修截止一目了然 · 温度曲线 + 伪彩可视化 + 串口控制台。</td>
-    <td>列表点击即下载并解码 (v2-HTPH / full_screen / 24×32 cropped) · 可见光融合 + 任意位置温度标记 · PNG 一键导出。</td>
-  </tr>
-</table>
+### 📸 拍摄与录制
+
+- **天蓝色胶囊拍摄栏** — 悬浮于画面右下角，不遮挡主要区域；Android 全屏模式下直接内嵌于画面内
+- **零延迟触发** — 推流中途可随时拍摄单帧或开始/停止录制，不中断实时显示
+- **GPS 定位标记** — 每次拍摄自动附加经纬度及反向地理编码地名（Android/桌面均支持）
+- **`.btpkg` 格式** — v2 槽位式独立帧容器，热成像 + 可见光按帧对齐存储，视频可逐帧随机访问
+
+### 🖼️ 图库管理
+
+**设备图库（片上存储）**
+
+- 列表点击即通过串口协议下载并解码，支持 `v2-HTPH` / `full_screen` / `24×32 cropped` 多种格式
+- **单次会话缩略图缓存** — 首次打开后列表序号位置自动替换为热成像渲染缩略图（96 px，优先热成像，降级为 JPEG）；再次点同一张秒开，完全跳过串口 IO + 解码
+- 刷新列表时自动清空单次缓存（持久 sha256 磁盘缓存不受影响）
+- **可见光融合** — 双光设备图片支持热/可见光切换叠加
+- **任意位置温度标记** — 点击画面任意位置添加标记点，实时读取对应热像素温度，导出时烘焙到 PNG
+
+**软件图库（本地 `.btpkg`）**
+
+- 视频包逐帧播放，播放进度条可拖拽跳帧；播到末帧再次点击从头重放
+- 同款热/可见光融合与温度标记，**标记位置不变、温度跟随当前帧实时更新**
+- **一键导出** — 单帧导出为 PNG；视频包导出为 **MP4**（Android 走 MediaCodec 硬编，Windows 随附 1.3 MB 迷你 ffmpeg）
+
+### 🌡️ 温度叠加 HUD
+
+- 详情预览左上角半透明浮层实时显示 **MAX / MIN / AVG 温度**，默认开启，一键关闭
+- 视频播放时每帧自动更新
+- 导出 PNG / MP4 时叠加数据同步烘焙到画面（不单独导出无叠加版）
+
+### 📐 图片详情增强
+
+- **元数据卡可折叠** — 默认单行摘要（索引 · 文件名 · 大小），点击展开完整元数据（格式 / 模式 / 温度范围 / GPS 地名等）
+- 参数调节面板（色域拉伸 / min-max 锁定 / 融合透明度）位于折叠卡下方
+
+### 🔌 连接与兼容
+
+- **Windows** — `flutter_libserialport` 扫描 COM 口，无须驱动，支持手动 / 自动连接切换
+- **Android** — `usb_serial` USB Host CDC-ACM / CH34x / FTDI / CP210x 自动识别，USB 授权弹窗后即连
+- **手动连接优先** — 用户手动选择端口后，自动扫描不再抢占已选端口
+
+### 🔐 设备激活
+
+- 串口连接后自动检测激活状态（`GetSysInfo` 响应 `isActivated`）
+- 未激活时弹出毛玻璃遮罩，展示可复制序列号 + 闲鱼售后链接 + QQ 群获取激活码入口
+- 激活码输入并发送 `activate <key>` 后自动验证，错误有专属错误层提示
+
+### 🎨 界面与体验
+
+- **自绘标题栏（Windows）** — 保留系统 NC frame 用于 resize/snap/Aero，吃掉 caption 实现无蓝条；拖拽/最大化/关闭通过 `dart:ffi` 直调 user32
+- **深 / 浅主题** + Material 3 青蓝绿色方案
+- **UI 缩放** + **窗口尺寸持久化** + **一键恢复出厂**
+- **BananaToast** — 全局轻提示，替代 SnackBar，不遮挡主内容
+- **内置命令行控制台** — 直发原始命令，分级彩色日志
+
+### 🤖 CI / CD
+
+- 每次推送自动构建 Windows x64 exe + Android arm/arm64 APK
+- Tag 推送自动生成分类 Changelog 并发布 GitHub Release（feat/fix/perf/refactor 分节，ci/chore 折叠）
+
+---
 
 ## 🚀 快速开始
 
-### 直接下载
+### 直接下载（推荐）
 
-到 [Releases](https://github.com/applenana/NextBananaThermalStudio/releases) 下载最新版 `banana_thermal-windows-x64.zip`，解压即用。
+前往 [Releases](https://github.com/applenana/NextBananaThermalStudio/releases/latest) 下载：
+
+| 平台 | 文件 | 说明 |
+|------|------|------|
+| Windows x64 | `BananaThermal-windows-x64.zip` | 解压后运行 `banana_thermal.exe`，含迷你 ffmpeg |
+| Android | `BananaThermal-android.apk` | universal APK，覆盖 arm / arm64 |
 
 ### 从源码运行
 
-需要 [Flutter SDK 3.41+](https://docs.flutter.dev/get-started/install)（Dart 3.11+），Windows 端还需 Visual Studio 2022 with **Desktop development with C++**。
+需要 [Flutter SDK 3.41+](https://docs.flutter.dev/get-started/install)（Dart 3.11+）。
 
 ```powershell
 git clone https://github.com/applenana/NextBananaThermalStudio.git
 cd NextBananaThermalStudio
 flutter pub get
+
+# Windows
 flutter run -d windows
+
+# Android（连接设备后）
+flutter run -d <device-id>
 ```
+
+Windows 还需 **Visual Studio 2022 with "Desktop development with C++"**。
 
 ### 构建发布版
 
 ```powershell
+# Windows
 flutter build windows --release
 # 产物：build\windows\x64\runner\Release\banana_thermal.exe
+
+# Android（arm + arm64 分包）
+flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64
+# 产物：build\app\outputs\flutter-apk\app-*-release.apk
 ```
+
+---
 
 ## 🗂️ 目录结构
 
 ```
 lib/
-├── main.dart                # 入口 + 全局持久化设置
-├── app_state.dart           # 应用级 state (Provider)
-├── protocol/                # 串口协议解析 (FrameParser)
+├── main.dart                  # 入口 + 全局持久化设置
+├── app_state.dart             # 应用级 state (Provider)
+├── protocol/                  # 串口协议解析 (FrameParser + PhotoCacheIndex)
+├── fusion/                    # 双光融合渲染管线
+├── render/                    # 伪彩 / 参数 / renderPipeline
+├── serial/                    # 串口适配层 (桌面 / Android USB)
+├── storage/                   # .btpkg 读写 / 文件存储
 └── ui/
-    ├── home_shell.dart      # 主框架（自绘标题栏 + 侧栏 + 主区）
-    ├── realtime_tab.dart    # 实时双光页
-    ├── photo_download_tab.dart
-    ├── widgets/
-    │   ├── window_title_bar.dart  # 自绘标题栏
-    │   └── thermal_canvas.dart
-    └── window_size_ffi.dart # Win32 FFI（拖拽/最大化/尺寸）
-windows/runner/              # Win32 宿主（自定义 NC frame）
+    ├── home_shell.dart        # 主框架（自绘标题栏 + 侧栏 + 主区）
+    ├── realtime_tab.dart      # 实时双光页（含全屏模式）
+    ├── photo_download_tab.dart   # 设备图库
+    ├── software_gallery_tab.dart # 软件图库（.btpkg 播放 + 导出）
+    ├── activation_overlay.dart   # 设备激活遮罩
+    └── widgets/
+        ├── thermal_canvas.dart   # 热成像画布 + 温度标记交互
+        ├── temp_overlay.dart     # MAX/MIN/AVG 温度 HUD（两端图库共用）
+        ├── rgb_image_view.dart
+        └── window_title_bar.dart # 自绘标题栏
+windows/runner/                # Win32 宿主（自定义 NC frame）
+android/                       # Android USB Host 权限 / USB device filter
 assets/
 ├── fonts/SmileySans-Oblique.ttf
-└── icons/icon.png
+└── icons/
 ```
 
-## 📡 协议
+---
 
-参见上一代 [BananaThermal Studio 协议文档](https://github.com/applenana/BananaThermal-Studio#-protocol--%E5%8D%8F%E8%AE%AE)。Dart 端实现位于 [`lib/protocol/`](lib/protocol/)，与 Python `frame_parser.py` 行为一致。
+## 📡 协议简介
+
+串口协议参见 [BananaThermal Studio 协议文档](https://github.com/applenana/BananaThermal-Studio#-protocol--%E5%8D%8F%E8%AE%AE)。Dart 端实现在 [`lib/protocol/`](lib/protocol/)，与 Python `frame_parser.py` 行为一致，含完整单元测试。
+
+常用命令速查：
+
+| 命令 | 说明 |
+|------|------|
+| `stream` | 开始热成像推流 |
+| `vstream` | 开始可见光推流 |
+| `stopstream` | 停止推流 |
+| `GetSysInfo` | 查询设备信息（SN / 激活状态 / 保修截止）|
+| `activate <key>` | 激活设备 |
+| `GetPhotoList` | 获取片上图库列表 |
+| `GetPhoto <index>` | 下载指定索引的图片 |
+
+---
 
 ## 🛠️ 开发笔记
 
-- 自绘标题栏方案：保留系统 NC frame 用于 resize/snap/Aero，仅 `WM_NCCALCSIZE` 吃掉 caption。Flutter 子窗口四边内缩 6px，把 resize 边缘命中区让给顶层 `WM_NCHITTEST`。
-- 无 `window_manager` 等 native plugin —— 避免与 `flutter_libserialport` 的 Win32 资源冲突。窗口拖拽 / 最大化 / 关闭通过 `dart:ffi` 直接调 user32 完成。
-- 全部设置走 `shared_preferences`：主题、UI 缩放、窗口大小、控制台展开、图片目录…… 设置页提供"恢复出厂"。
+- **自绘标题栏**：保留系统 NC frame 用于 resize/snap/Aero，仅 `WM_NCCALCSIZE` 吃掉 caption。Flutter 子窗口四边内缩 6 px，resize 边缘命中区交由顶层 `WM_NCHITTEST`。无 `window_manager` plugin —— 避免与 `flutter_libserialport` 的 Win32 资源冲突。
+- **迷你 ffmpeg**：用 MSYS2 + x264 自编译，仅含 rawvideo→H.264→MP4 管线，最终 UPX 压缩后 **1.3 MB**，随 Release 一同打包进 Windows 发布包。
+- **单次会话缓存**：`_session`（filename → raw/decoded/thumb）仅在内存中，刷新时清空。与 `PhotoCacheIndex`（sha256 磁盘缓存）完全独立，互不干扰。
+- **温度标记坐标**：以归一化浮点 `(px, py)` 存储，画布缩放不影响标记位置；导出时按目标分辨率重映射。
+- **全部设置走 `shared_preferences`**：主题、UI 缩放、窗口大小、控制台展开、图片目录…… 设置页提供"恢复出厂"。
+
+---
 
 ## 📜 License
 
