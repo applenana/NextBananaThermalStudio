@@ -28,9 +28,18 @@
 
 ## 📖 简介
 
-**Next BananaThermal Studio** 是 [BananaThermal Studio](https://github.com/applenana/BananaThermal-Studio) (Python/Tk 版) 的下一代重写，基于 **Flutter** 打造跨平台原生体验，适配开源 **香蕉泥热成像通讯协议** (RP2040 + Heimann HTPA + OV2640)。
+**Next BananaThermal Studio** 是 [BananaThermal Studio](https://github.com/applenana/BananaThermal-Studio) (Python/Tk 版) 的下一代重写，基于 **Flutter** 打造跨平台原生体验，适配开源 **香蕉泥热成像通讯协议**。
 
 > 同一份代码，桌面走串口直连，Android 走 USB Host CDC 自动识别 —— 开箱即用，无须驱动，无须 Python 环境。
+
+### 通讯协议文档
+
+欢迎使用我们的协议！设计简单易用，已在多款热成像上试装通过。
+
+| 协议 | 文档 |
+|---|---|
+| 串口实时推流协议（热成像帧 / 可见光帧交织） | [docs/protocol_streaming.md](docs/protocol_streaming.md) |
+| 图片下载协议（v1 Simple / v1 Full / v2 HTPH 双光） | [docs/protocol_photo_download.md](docs/protocol_photo_download.md) |
 
 ---
 
