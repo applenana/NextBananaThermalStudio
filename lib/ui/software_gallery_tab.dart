@@ -1023,6 +1023,11 @@ class _DetailBodyState extends State<_DetailBody> {
         if (d > 10 && d < 2000) frameMs = d;
       } catch (_) {}
       if (!mounted) return;
+      // 若播放已停在最后一帧, 再次点击播放视为"重新播放": 先回到第 0 帧.
+      if (_frameIndex >= r.frameCount - 1) {
+        await _selectFrame(0);
+        if (!mounted) return;
+      }
       _playTimer = Timer.periodic(Duration(milliseconds: frameMs), (_) async {
         if (!mounted || _reader == null) return;
         final next = _frameIndex + 1;
