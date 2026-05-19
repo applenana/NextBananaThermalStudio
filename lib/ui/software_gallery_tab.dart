@@ -1014,6 +1014,9 @@ class _DetailBodyState extends State<_DetailBody> {
       setState(() => _playing = false);
       return;
     }
+    // 若已停在最后一帧, 视为"重新播放": 立即跳回第 0 帧 (同步触发, 避免
+    // 异步间隙内 _frameIndex 仍为末帧导致第一次 tick 立刻命中结束分支).
+    final atEnd = _frameIndex >= r.frameCount - 1;
     int frameMs = 100;
     () async {
       try {
@@ -1023,11 +1026,11 @@ class _DetailBodyState extends State<_DetailBody> {
         if (d > 10 && d < 2000) frameMs = d;
       } catch (_) {}
       if (!mounted) return;
-      // 若播放已停在最后一帧, 再次点击播放视为"重新播放": 先回到第 0 帧.
-      if (_frameIndex >= r.frameCount - 1) {
+      if (atEnd) {
         await _selectFrame(0);
         if (!mounted) return;
       }
+      _playTimer?.cancel();
       _playTimer = Timer.periodic(Duration(milliseconds: frameMs), (_) async {
         if (!mounted || _reader == null) return;
         final next = _frameIndex + 1;
