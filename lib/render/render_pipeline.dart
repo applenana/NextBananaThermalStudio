@@ -124,6 +124,9 @@ RenderedFrame renderPipeline({
       visibleW > 0 &&
       visibleH > 0 &&
       params.fusion.mode != FusionMode.off) {
+    // 视差: 源像素 -> 画布像素 (再四舍五入).
+    final pxX = (params.fusion.parallaxX * scale).round();
+    final pxY = (params.fusion.parallaxY * scale).round();
     outRgb = fuse(
       thermalRgb: thermalRgb,
       tw: dstW,
@@ -132,8 +135,8 @@ RenderedFrame renderPipeline({
       vw: visibleW,
       vh: visibleH,
       params: params.fusion,
-      parallaxDx: params.parallaxDx,
-      parallaxDy: params.parallaxDy,
+      parallaxPxX: pxX,
+      parallaxPxY: pxY,
     );
   }
 
