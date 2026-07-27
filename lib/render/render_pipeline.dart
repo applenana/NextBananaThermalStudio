@@ -132,8 +132,8 @@ RenderedFrame renderPipeline({
       vw: visibleW,
       vh: visibleH,
       params: params.fusion,
-      parallaxDx: params.parallaxDx,
-      parallaxDy: params.parallaxDy,
+      parallaxDx: params.parallaxEnabled ? params.parallaxDx : 0.0,
+      parallaxDy: params.parallaxEnabled ? params.parallaxDy : 0.0,
     );
   }
 

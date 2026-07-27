@@ -393,8 +393,8 @@ Uint8List _sampleWithOffset(
   final scaleY = srcH / outH;
   for (int y = 0; y < outH; y++) {
     for (int x = 0; x < outW; x++) {
-      final sx = ((x + dx) * scaleX).clamp(0.0, srcW - 1.0);
-      final sy = ((y + dy) * scaleY).clamp(0.0, srcH - 1.0);
+      final sx = ((x - dx) * scaleX).clamp(0.0, srcW - 1.0);
+      final sy = ((y - dy) * scaleY).clamp(0.0, srcH - 1.0);
       final ix = sx.floor();
       final iy = sy.floor();
       final fx = sx - ix;

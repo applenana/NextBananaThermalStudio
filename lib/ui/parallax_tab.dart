@@ -309,8 +309,8 @@ class _ParallaxTabState extends State<ParallaxTab> {
     final scaleY = vh / _kPH;
     for (int y = 0; y < _kPH; y++) {
       for (int x = 0; x < _kPW; x++) {
-        final sx = ((x + parallaxDx) * scaleX).clamp(0.0, vw - 1.0);
-        final sy = ((y + parallaxDy) * scaleY).clamp(0.0, vh - 1.0);
+        final sx = ((x - parallaxDx) * scaleX).clamp(0.0, vw - 1.0);
+        final sy = ((y - parallaxDy) * scaleY).clamp(0.0, vh - 1.0);
         final ix = sx.floor();
         final iy = sy.floor();
         final fx = sx - ix;
