@@ -154,8 +154,7 @@ class _ParallaxTabState extends State<ParallaxTab> {
                           children: [
                             const Text('自动对齐',
                                 style: TextStyle(fontSize: 13)),
-                            Text(
-                                '每 ${p.parallaxIntervalSec} s 自动计算并更新偏移',
+                            Text('每 10 s 自动计算并更新偏移',
                                 style: TextStyle(
                                     fontSize: 11,
                                     color: scheme.onSurfaceVariant)),
@@ -168,44 +167,6 @@ class _ParallaxTabState extends State<ParallaxTab> {
                             p.copyWith(parallaxEnabled: v)),
                       ),
                     ],
-                  ),
-
-                  // 自动对齐间隔
-                  Opacity(
-                    opacity: p.parallaxEnabled ? 1.0 : 0.5,
-                    child: Row(
-                      children: [
-                        const SizedBox(width: 2),
-                        Text('间隔',
-                            style: TextStyle(
-                                fontSize: 12, color: scheme.onSurfaceVariant)),
-                        Expanded(
-                          child: Slider(
-                            value: p.parallaxIntervalSec
-                                .clamp(1, 60)
-                                .toDouble(),
-                            min: 1,
-                            max: 60,
-                            divisions: 59,
-                            label: '${p.parallaxIntervalSec} s',
-                            onChanged: p.parallaxEnabled
-                                ? (v) => app.updateRenderParams(p.copyWith(
-                                    parallaxIntervalSec: v.round()))
-                                : null,
-                          ),
-                        ),
-                        SizedBox(
-                          width: 44,
-                          child: Text(
-                            '${p.parallaxIntervalSec} s',
-                            textAlign: TextAlign.right,
-                            style: const TextStyle(
-                                fontSize: 12,
-                                fontFeatures: [FontFeature.tabularFigures()]),
-                          ),
-                        ),
-                      ],
-                    ),
                   ),
 
                   const SizedBox(height: 8),
@@ -314,9 +275,8 @@ class _ParallaxTabState extends State<ParallaxTab> {
     final tEdge = _sobelPreview(tGray, _kPW, _kPH);
     final tEdgeRgb = _edgeToOrangeRgb(tEdge, _kPW, _kPH);
 
-    // 可见光边缘 (跟随当前偏移, 在 _kPW×_kPH 空间)
-    final vGray = _visibleToGrayPreview(
-        vr, vw, vh, p.parallaxDx * _kPreviewScale, p.parallaxDy * _kPreviewScale);
+    // 可见光边缘 (无偏移, 在 _kPW×_kPH 空间)
+    final vGray = _visibleToGrayPreview(vr, vw, vh, 0, 0);
     final vEdge = _sobelPreview(vGray, _kPW, _kPH);
     final vEdgeRgb = _edgeToCyanRgb(vEdge, _kPW, _kPH);
 
@@ -413,8 +373,8 @@ class _ParallaxTabState extends State<ParallaxTab> {
     final scaleY = vh / _kPH;
     for (int y = 0; y < _kPH; y++) {
       for (int x = 0; x < _kPW; x++) {
-        final sx = ((x + dx) * scaleX).clamp(0.0, vw - 1.0);
-        final sy = ((y + dy) * scaleY).clamp(0.0, vh - 1.0);
+        final sx = ((x - dx) * scaleX).clamp(0.0, vw - 1.0);
+        final sy = ((y - dy) * scaleY).clamp(0.0, vh - 1.0);
         final ix = sx.floor();
         final iy = sy.floor();
         final fx = sx - ix;

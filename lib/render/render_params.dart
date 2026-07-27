@@ -70,9 +70,6 @@ class RenderParams {
   /// 热像相对可见光的 Y 方向偏移 (热像素单位, 亚像素精度; 正 → 热像向下偏).
   final double parallaxDy;
 
-  /// 自动视差计算间隔 (秒, 范围 1–60).
-  final int parallaxIntervalSec;
-
   const RenderParams({
     this.upsampleScale = 8,
     this.upsampleMethod = UpsampleMethod.bicubic,
@@ -93,7 +90,6 @@ class RenderParams {
     this.parallaxEnabled = false,
     this.parallaxDx = 0.0,
     this.parallaxDy = 0.0,
-    this.parallaxIntervalSec = 10,
   });
 
   RenderParams copyWith({
@@ -116,7 +112,6 @@ class RenderParams {
     bool? parallaxEnabled,
     double? parallaxDx,
     double? parallaxDy,
-    int? parallaxIntervalSec,
   }) {
     return RenderParams(
       upsampleScale: upsampleScale ?? this.upsampleScale,
@@ -140,7 +135,6 @@ class RenderParams {
       parallaxEnabled: parallaxEnabled ?? this.parallaxEnabled,
       parallaxDx: parallaxDx ?? this.parallaxDx,
       parallaxDy: parallaxDy ?? this.parallaxDy,
-      parallaxIntervalSec: parallaxIntervalSec ?? this.parallaxIntervalSec,
     );
   }
 
@@ -165,7 +159,6 @@ class RenderParams {
         'parallaxEnabled': parallaxEnabled,
         'parallaxDx': parallaxDx,
         'parallaxDy': parallaxDy,
-        'parallaxIntervalSec': parallaxIntervalSec,
       };
 
   factory RenderParams.fromJson(Map<String, dynamic> j) {
@@ -201,7 +194,6 @@ class RenderParams {
       parallaxEnabled: j['parallaxEnabled'] as bool? ?? false,
       parallaxDx: (j['parallaxDx'] as num?)?.toDouble() ?? 0.0,
       parallaxDy: (j['parallaxDy'] as num?)?.toDouble() ?? 0.0,
-      parallaxIntervalSec: (j['parallaxIntervalSec'] as num?)?.toInt() ?? 10,
     );
   }
 }

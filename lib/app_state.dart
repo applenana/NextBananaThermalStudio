@@ -730,28 +730,24 @@ class AppState extends ChangeNotifier {
   /// 更新渲染参数 (任意字段). UI 控件调用.
   void updateRenderParams(RenderParams p) {
     final wasEnabled = renderParams.parallaxEnabled;
-    final oldInterval = renderParams.parallaxIntervalSec;
     renderParams = p;
     notifyListeners();
-    // 视差开关或间隔变化时同步启停/重启定时器
+    // 视差开关变化时同步启停定时器
     if (p.parallaxEnabled != wasEnabled) {
       if (p.parallaxEnabled) {
         _startParallaxTimer();
       } else {
         _stopParallaxTimer();
       }
-    } else if (p.parallaxEnabled && p.parallaxIntervalSec != oldInterval) {
-      _startParallaxTimer();
     }
   }
 
   // ---- 视差自动对齐 --------------------------------------------------------
 
-  /// 启动周期视差自动计算定时器, 间隔取自 renderParams.parallaxIntervalSec.
+  /// 启动 10 s 周期视差自动计算定时器.
   void _startParallaxTimer() {
     _parallaxTimer?.cancel();
-    final sec = renderParams.parallaxIntervalSec.clamp(1, 600);
-    _parallaxTimer = Timer.periodic(Duration(seconds: sec), (_) {
+    _parallaxTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       _autoComputeParallax();
     });
   }
