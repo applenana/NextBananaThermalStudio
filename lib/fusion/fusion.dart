@@ -4,6 +4,7 @@ library;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:image/image.dart' as img;
 
 import 'colormap.dart';
 
@@ -203,7 +204,6 @@ class FusionParams {
 ///
 /// * [thermalRgb]: 已 colorize 的热像 RGB888, 长度 = tw*th*3
 /// * [visibleRgb]: 可见光 RGB888 (原始分辨率), 长度 = vw*vh*3. 传 null 跳过.
-/// * [parallaxDx]/[parallaxDy]: 视差偏移 (热像素单位). 正值 → 热像相对可见光向右/向下偏.
 /// * 返回融合后 RGB888, 尺寸 = tw*th*3 (与热像一致).
 Uint8List fuse({
   required Uint8List thermalRgb,
@@ -213,16 +213,24 @@ Uint8List fuse({
   int vw = 0,
   int vh = 0,
   FusionParams params = const FusionParams(),
-  double parallaxDx = 0.0,
-  double parallaxDy = 0.0,
 }) {
   if (visibleRgb == null || params.mode == FusionMode.off || vw == 0 || vh == 0) {
     return thermalRgb;
   }
 
+  // 转 image 包对象做 resize / gamma
+  final visImage = img.Image.fromBytes(
+    width: vw,
+    height: vh,
+    bytes: visibleRgb.buffer,
+    bytesOffset: visibleRgb.offsetInBytes,
+    numChannels: 3,
+    order: img.ChannelOrder.rgb,
+  );
+
   if (params.mode == FusionMode.blend) {
-    // 可见光重采样到热像分辨率, 同时应用视差偏移
-    final visBytes = _sampleWithOffset(visibleRgb, vw, vh, tw, th, parallaxDx, parallaxDy);
+    final visResized = img.copyResize(visImage,
+        width: tw, height: th, interpolation: img.Interpolation.linear);
     final gammaInv = 1.0 / (params.gamma <= 0 ? 1.0 : params.gamma);
     final a = params.alpha.clamp(0.0, 1.0);
     final oneMinusA = 1.0 - a;
@@ -234,6 +242,7 @@ Uint8List fuse({
     }
 
     final out = Uint8List(tw * th * 3);
+    final visBytes = visResized.getBytes(order: img.ChannelOrder.rgb);
     final n = tw * th;
     for (int i = 0; i < n; i++) {
       final tj = i * 3;
@@ -255,9 +264,9 @@ Uint8List fuse({
     final int gw = tw * ss;
     final int gh = th * ss;
 
-    // 可见光重采样到超分辨率, 偏移量同步放大 ss 倍
-    final visBytes = _sampleWithOffset(
-        visibleRgb, vw, vh, gw, gh, parallaxDx * ss, parallaxDy * ss);
+    final visResized = img.copyResize(visImage,
+        width: gw, height: gh, interpolation: img.Interpolation.linear);
+    final visBytes = visResized.getBytes(order: img.ChannelOrder.rgb);
     final gray = Float32List(gw * gh);
     for (int i = 0; i < gw * gh; i++) {
       final j = i * 3;
@@ -378,46 +387,4 @@ Uint8List fuse({
   }
 
   return thermalRgb;
-}
-
-/// 把 [srcRgb] (RGB888, [srcW]×[srcH]) 重采样到 [outW]×[outH], 同时施加视差偏移.
-///
-/// 偏移语义: 输出像素 (x, y) 从源坐标 `((x - dx) * srcW/outW, (y - dy) * srcH/outH)` 处
-/// 双线性采样, 越界时 clamp 到边缘 (边缘填充).
-///
-/// [dx]/[dy] 单位为输出像素; 传入 0.0 等价于标准双线性缩放.
-Uint8List _sampleWithOffset(
-    Uint8List srcRgb, int srcW, int srcH, int outW, int outH, double dx, double dy) {
-  final out = Uint8List(outW * outH * 3);
-  final scaleX = srcW / outW;
-  final scaleY = srcH / outH;
-  for (int y = 0; y < outH; y++) {
-    for (int x = 0; x < outW; x++) {
-      final sx = ((x - dx) * scaleX).clamp(0.0, srcW - 1.0);
-      final sy = ((y - dy) * scaleY).clamp(0.0, srcH - 1.0);
-      final ix = sx.floor();
-      final iy = sy.floor();
-      final fx = sx - ix;
-      final fy = sy - iy;
-      final ix1 = (ix + 1).clamp(0, srcW - 1);
-      final iy1 = (iy + 1).clamp(0, srcH - 1);
-      final i00 = (iy * srcW + ix) * 3;
-      final i10 = (iy * srcW + ix1) * 3;
-      final i01 = (iy1 * srcW + ix) * 3;
-      final i11 = (iy1 * srcW + ix1) * 3;
-      final j = (y * outW + x) * 3;
-      final w00 = (1 - fx) * (1 - fy);
-      final w10 = fx * (1 - fy);
-      final w01 = (1 - fx) * fy;
-      final w11 = fx * fy;
-      for (int c = 0; c < 3; c++) {
-        final v = srcRgb[i00 + c] * w00 +
-            srcRgb[i10 + c] * w10 +
-            srcRgb[i01 + c] * w01 +
-            srcRgb[i11 + c] * w11;
-        out[j + c] = v.round().clamp(0, 255);
-      }
-    }
-  }
-  return out;
 }

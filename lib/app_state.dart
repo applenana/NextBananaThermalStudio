@@ -5,15 +5,12 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform, HttpClient;
-import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'filters/kalman.dart';
 import 'fusion/fusion.dart';
-import 'fusion/parallax_aligner.dart';
 import 'protocol/frame_parser.dart';
 import 'render/render_params.dart';
 import 'serial/serial_service.dart';
@@ -41,10 +38,6 @@ class AppState extends ChangeNotifier {
   Timer? _portWatchdog;
   /// 自动重连计时器.
   Timer? _reconnectTimer;
-  /// 视差自动计算定时器 (10 s 周期, 仅在 parallaxEnabled 时激活).
-  Timer? _parallaxTimer;
-  /// 防止重叠: 上一次视差计算尚未完成时不启动新一次.
-  bool _parallaxComputing = false;
   /// 是否为用户主动断开 (点击断开按钮). 为 true 时不启动重连.
   bool _userDisconnect = false;
   /// 上次成功连接的端口 / 波特率, 用于重连优先尝试同一个端口.
@@ -486,10 +479,8 @@ class AppState extends ChangeNotifier {
   /// 统一吸收 GetSysInfo 返回的 JSON 字段, 兼容 Python/固件两套 key 命名.
   void _absorbDeviceInfo(Map<String, dynamic> j) {
     deviceInfo = j;
-    final newSerial =
+    deviceSerial =
         (j['Serial'] ?? j['SerialNum'])?.toString() ?? deviceSerial;
-    final serialChanged = newSerial != null && newSerial != deviceSerial;
-    deviceSerial = newSerial;
     final actField = j['Activated'] ?? j['isActivated'];
     isActivated = (actField == true) ||
         (actField?.toString().toLowerCase() == 'true');
@@ -497,10 +488,6 @@ class AppState extends ChangeNotifier {
     if (at != null && at.isNotEmpty) activateTime = at;
     final wt = j['WarrantyTime']?.toString();
     if (wt != null && wt.isNotEmpty) warrantyTime = wt;
-    // 设备序列号首次确定时恢复视差偏移
-    if (serialChanged) {
-      _loadParallaxForSerial(newSerial);
-    }
   }
 
   // ============================================================
@@ -726,95 +713,12 @@ class AppState extends ChangeNotifier {
 
   /// 更新渲染参数 (任意字段). UI 控件调用.
   void updateRenderParams(RenderParams p) {
-    final wasEnabled = renderParams.parallaxEnabled;
     renderParams = p;
     notifyListeners();
-    // 视差开关变化时同步启停定时器
-    if (p.parallaxEnabled != wasEnabled) {
-      if (p.parallaxEnabled) {
-        _startParallaxTimer();
-      } else {
-        _stopParallaxTimer();
-      }
-    }
   }
 
-  // ---- 视差自动对齐 --------------------------------------------------------
-
-  /// 启动 10 s 周期视差自动计算定时器.
-  void _startParallaxTimer() {
-    _parallaxTimer?.cancel();
-    _parallaxTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      _autoComputeParallax();
-    });
-  }
-
-  /// 停止视差自动计算定时器.
-  void _stopParallaxTimer() {
-    _parallaxTimer?.cancel();
-    _parallaxTimer = null;
-  }
-
-  /// 立即触发一次视差计算 (供 UI 手动按钮调用).
-  Future<void> triggerParallaxNow() => _autoComputeParallax();
-
-  /// 核心: 在 Isolate 中用 Sobel+NCC 计算偏移, 置信度充足时更新 renderParams 并持久化.
-  Future<void> _autoComputeParallax() async {
-    if (_parallaxComputing) return;
-    final tf = thermalFrame;
-    final vr = visibleRgb888;
-    if (tf == null || vr == null || visibleWidth == 0 || visibleHeight == 0) return;
-
-    _parallaxComputing = true;
-    try {
-      // 拷贝数据给 Isolate (跨 Isolate 不能共享可变引用)
-      final thermalCopy = Float32List.fromList(tf);
-      final visibleCopy = Uint8List.fromList(vr);
-      final vw = visibleWidth;
-      final vh = visibleHeight;
-
-      final result = await Isolate.run(() => computeParallaxOffset(
-            thermalData: thermalCopy,
-            tW: 32,
-            tH: 24,
-            visibleRgb: visibleCopy,
-            vW: vw,
-            vH: vh,
-          ));
-
-      if (result.confidence >= kMinConfidence) {
-        renderParams = renderParams.copyWith(
-          parallaxDx: result.dx,
-          parallaxDy: result.dy,
-        );
-        notifyListeners();
-        // 按 deviceSerial 持久化
-        final serial = deviceSerial;
-        if (serial != null && serial.isNotEmpty) {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setDouble('parallax_dx_$serial', result.dx);
-          await prefs.setDouble('parallax_dy_$serial', result.dy);
-        }
-      }
-    } finally {
-      _parallaxComputing = false;
-    }
-  }
-
-  /// 设备序列号确定后, 从 SharedPreferences 恢复该设备的视差偏移.
-  Future<void> _loadParallaxForSerial(String serial) async {
-    final prefs = await SharedPreferences.getInstance();
-    final dx = prefs.getDouble('parallax_dx_$serial') ?? 0.0;
-    final dy = prefs.getDouble('parallax_dy_$serial') ?? 0.0;
-    if (dx != 0.0 || dy != 0.0) {
-      renderParams = renderParams.copyWith(parallaxDx: dx, parallaxDy: dy);
-      notifyListeners();
-    }
-  }
-
-  // -------------------------------------------------------------------------
-
-  /// 当前正在下载的图片已累积字节快照. 供 UI 边收边解析展示部分画面.  /// 未在下载或缓冲为空时返回 null.
+  /// 当前正在下载的图片已累积字节快照. 供 UI 边收边解析展示部分画面.
+  /// 未在下载或缓冲为空时返回 null.
   Uint8List? get photoPartialBytes {
     if (_photoCompleter == null) return null;
     if (_photoBuf.length == 0) return null;

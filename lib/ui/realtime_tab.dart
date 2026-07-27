@@ -1864,14 +1864,6 @@ class _ControlsCard extends StatelessWidget {
             ),
           ),
           _CollapseSection(
-            icon: Icons.compare_rounded,
-            title: '视差校正',
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
-              child: _ParallaxSection(),
-            ),
-          ),
-          _CollapseSection(
             icon: Icons.visibility_outlined,
             title: '显示',
             child: Padding(
@@ -1911,79 +1903,6 @@ class _DisplaySection extends StatelessWidget {
             onChanged: (v) =>
                 app.updateRenderParams(p.copyWith(showColdSpot: v)),
           ),
-        ),
-      ],
-    );
-  }
-}
-
-/// 视差校正折叠区: 自动对齐开关 + 当前偏移显示 + 手动触发按钮.
-class _ParallaxSection extends StatelessWidget {
-  const _ParallaxSection();
-
-  @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-    final p = app.renderParams;
-    final scheme = Theme.of(context).colorScheme;
-
-    final dxStr = p.parallaxDx.toStringAsFixed(1);
-    final dyStr = p.parallaxDy.toStringAsFixed(1);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('自动对齐',
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: scheme.onSurface)),
-                  Text('每 10 s 自动计算热像偏移',
-                      style: TextStyle(
-                          fontSize: 11,
-                          color: scheme.onSurfaceVariant)),
-                ],
-              ),
-            ),
-            Switch(
-              value: p.parallaxEnabled,
-              onChanged: (v) =>
-                  app.updateRenderParams(p.copyWith(parallaxEnabled: v)),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Text(
-          '当前偏移  X: $dxStr  Y: $dyStr  热像素',
-          style: TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 12,
-            color: (p.parallaxDx != 0 || p.parallaxDy != 0)
-                ? scheme.primary
-                : scheme.onSurfaceVariant,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            FilledButton.tonalIcon(
-              onPressed: () => app.triggerParallaxNow(),
-              icon: const Icon(Icons.center_focus_strong_rounded, size: 16),
-              label: const Text('立即计算'),
-            ),
-            const SizedBox(width: 8),
-            if (p.parallaxDx != 0 || p.parallaxDy != 0)
-              TextButton(
-                onPressed: () => app.updateRenderParams(
-                    p.copyWith(parallaxDx: 0.0, parallaxDy: 0.0)),
-                child: const Text('重置偏移'),
-              ),
-          ],
         ),
       ],
     );

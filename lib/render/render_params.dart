@@ -60,16 +60,6 @@ class RenderParams {
   /// 主画面叠加最低温跟踪 (冰青▲角标 + L 标签).
   final bool showColdSpot;
 
-  // ---- 视差校正 ----
-  /// 是否启用视差自动校正 (每 10 s 用 Sobel+NCC 自动计算偏移).
-  final bool parallaxEnabled;
-
-  /// 热像相对可见光的 X 方向偏移 (热像素单位, 亚像素精度; 正 → 热像向右偏).
-  final double parallaxDx;
-
-  /// 热像相对可见光的 Y 方向偏移 (热像素单位, 亚像素精度; 正 → 热像向下偏).
-  final double parallaxDy;
-
   const RenderParams({
     this.upsampleScale = 8,
     this.upsampleMethod = UpsampleMethod.bicubic,
@@ -87,9 +77,6 @@ class RenderParams {
     this.showCursorTemp = true,
     this.showHotSpot = true,
     this.showColdSpot = false,
-    this.parallaxEnabled = false,
-    this.parallaxDx = 0.0,
-    this.parallaxDy = 0.0,
   });
 
   RenderParams copyWith({
@@ -109,9 +96,6 @@ class RenderParams {
     bool? showCursorTemp,
     bool? showHotSpot,
     bool? showColdSpot,
-    bool? parallaxEnabled,
-    double? parallaxDx,
-    double? parallaxDy,
   }) {
     return RenderParams(
       upsampleScale: upsampleScale ?? this.upsampleScale,
@@ -132,9 +116,6 @@ class RenderParams {
       showCursorTemp: showCursorTemp ?? this.showCursorTemp,
       showHotSpot: showHotSpot ?? this.showHotSpot,
       showColdSpot: showColdSpot ?? this.showColdSpot,
-      parallaxEnabled: parallaxEnabled ?? this.parallaxEnabled,
-      parallaxDx: parallaxDx ?? this.parallaxDx,
-      parallaxDy: parallaxDy ?? this.parallaxDy,
     );
   }
 
@@ -156,9 +137,6 @@ class RenderParams {
         'showCursorTemp': showCursorTemp,
         'showHotSpot': showHotSpot,
         'showColdSpot': showColdSpot,
-        'parallaxEnabled': parallaxEnabled,
-        'parallaxDx': parallaxDx,
-        'parallaxDy': parallaxDy,
       };
 
   factory RenderParams.fromJson(Map<String, dynamic> j) {
@@ -191,9 +169,6 @@ class RenderParams {
       showCursorTemp: j['showCursorTemp'] as bool? ?? true,
       showHotSpot: j['showHotSpot'] as bool? ?? true,
       showColdSpot: j['showColdSpot'] as bool? ?? false,
-      parallaxEnabled: j['parallaxEnabled'] as bool? ?? false,
-      parallaxDx: (j['parallaxDx'] as num?)?.toDouble() ?? 0.0,
-      parallaxDy: (j['parallaxDy'] as num?)?.toDouble() ?? 0.0,
     );
   }
 }
