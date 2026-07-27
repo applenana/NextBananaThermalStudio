@@ -17,7 +17,6 @@ import '../render/render_pipeline.dart';
 import 'connection_bar.dart';
 import 'software_gallery_tab.dart' show softwareGalleryRefreshTrigger;
 import 'banana_toast.dart';
-import 'widgets/parallax_dialog.dart';
 import 'widgets/rgb_image_view.dart';
 import 'widgets/thermal_canvas.dart';
 
@@ -1865,11 +1864,11 @@ class _ControlsCard extends StatelessWidget {
             ),
           ),
           _CollapseSection(
-            icon: Icons.center_focus_strong_rounded,
-            title: '视差偏移',
+            icon: Icons.compare_rounded,
+            title: '视差校正',
             child: Padding(
               padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
-              child: _ParallaxRow(),
+              child: _ParallaxSection(),
             ),
           ),
           _CollapseSection(
@@ -1918,94 +1917,80 @@ class _DisplaySection extends StatelessWidget {
   }
 }
 
-/// 视差偏移调整栏: 左侧 1:1 方按钮 "视差详细调整" (打开沉浸式 Dialog),
-/// 右侧两行滑块分别调整热成像的水平 / 垂直偏移. 按钮高度 = 两行滑块总高.
-class _ParallaxRow extends StatelessWidget {
-  const _ParallaxRow();
+/// 视差校正折叠区: 自动对齐开关 + 当前偏移显示 + 手动触发按钮.
+class _ParallaxSection extends StatelessWidget {
+  const _ParallaxSection();
 
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
-    final fp = app.renderParams.fusion;
+    final p = app.renderParams;
     final scheme = Theme.of(context).colorScheme;
 
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          AspectRatio(
-            aspectRatio: 1,
-            child: Material(
-              color: scheme.primaryContainer,
-              borderRadius: BorderRadius.circular(14),
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap: () => ParallaxAdjustDialog.show(context),
-                child: Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      EyeOverlapIcon(
-                        size: 28,
-                        color: scheme.onPrimaryContainer,
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        '视差\n详细调整',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
+    final dxStr = p.parallaxDx.toStringAsFixed(1);
+    final dyStr = p.parallaxDy.toStringAsFixed(1);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('自动对齐',
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: scheme.onSurface)),
+                  Text('每 10 s 自动计算热像偏移',
+                      style: TextStyle(
                           fontSize: 11,
-                          height: 1.15,
-                          fontWeight: FontWeight.w600,
-                          color: scheme.onPrimaryContainer,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                          color: scheme.onSurfaceVariant)),
+                ],
               ),
             ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _SliderRow(
-                  label: '水平',
-                  value: fp.parallaxX.clamp(-15.0, 15.0),
-                  min: -15,
-                  max: 15,
-                  divisions: 300,
-                  valueLabel: '${fp.parallaxX.toStringAsFixed(1)} px',
-                  onChanged: (v) => app.updateRenderParams(
-                    app.renderParams.copyWith(
-                      fusion: fp.copyWith(parallaxX: v),
-                    ),
-                  ),
-                ),
-                _SliderRow(
-                  label: '垂直',
-                  value: fp.parallaxY.clamp(-15.0, 15.0),
-                  min: -15,
-                  max: 15,
-                  divisions: 300,
-                  valueLabel: '${fp.parallaxY.toStringAsFixed(1)} px',
-                  onChanged: (v) => app.updateRenderParams(
-                    app.renderParams.copyWith(
-                      fusion: fp.copyWith(parallaxY: v),
-                    ),
-                  ),
-                ),
-              ],
+            Switch(
+              value: p.parallaxEnabled,
+              onChanged: (v) =>
+                  app.updateRenderParams(p.copyWith(parallaxEnabled: v)),
             ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '当前偏移  X: $dxStr  Y: $dyStr  热像素',
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 12,
+            color: (p.parallaxDx != 0 || p.parallaxDy != 0)
+                ? scheme.primary
+                : scheme.onSurfaceVariant,
           ),
-        ],
-      ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            FilledButton.tonalIcon(
+              onPressed: () => app.triggerParallaxNow(),
+              icon: const Icon(Icons.center_focus_strong_rounded, size: 16),
+              label: const Text('立即计算'),
+            ),
+            const SizedBox(width: 8),
+            if (p.parallaxDx != 0 || p.parallaxDy != 0)
+              TextButton(
+                onPressed: () => app.updateRenderParams(
+                    p.copyWith(parallaxDx: 0.0, parallaxDy: 0.0)),
+                child: const Text('重置偏移'),
+              ),
+          ],
+        ),
+      ],
     );
   }
 }
+
+/// 常驻面板: 颜色映射 / 映射曲线 / 融合模式 一行三下拉, 等宽自适应.
 class _QuickPanel extends StatelessWidget {
   const _QuickPanel();
 

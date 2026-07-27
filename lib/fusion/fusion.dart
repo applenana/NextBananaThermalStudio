@@ -4,7 +4,6 @@ library;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:image/image.dart' as img;
 
 import 'colormap.dart';
 
@@ -141,12 +140,6 @@ class FusionParams {
   final double edgeWidth;
   final int edgeColor; // 0xRRGGBB
 
-  /// 视差偏移 — 单位为热成像源像素 (32x24 分辨率), 正值表示热成像相对可见光
-  /// 向右 / 向下平移. 取值范围约 ±15 px. 由于热成像传感器与可见光摄像头物理
-  /// 错位, 通过此偏移把热像贴齐可见光.
-  final double parallaxX;
-  final double parallaxY;
-
   const FusionParams({
     this.mode = FusionMode.off,
     this.gamma = 1.0,
@@ -155,8 +148,6 @@ class FusionParams {
     this.edgeThresh = 0.082,
     this.edgeWidth = 1.0,
     this.edgeColor = 0x333333,
-    this.parallaxX = 0.0,
-    this.parallaxY = 0.0,
   });
 
   FusionParams copyWith({
@@ -167,8 +158,6 @@ class FusionParams {
     double? edgeThresh,
     double? edgeWidth,
     int? edgeColor,
-    double? parallaxX,
-    double? parallaxY,
   }) =>
       FusionParams(
         mode: mode ?? this.mode,
@@ -178,8 +167,6 @@ class FusionParams {
         edgeThresh: edgeThresh ?? this.edgeThresh,
         edgeWidth: edgeWidth ?? this.edgeWidth,
         edgeColor: edgeColor ?? this.edgeColor,
-        parallaxX: parallaxX ?? this.parallaxX,
-        parallaxY: parallaxY ?? this.parallaxY,
       );
 
   Map<String, dynamic> toJson() => {
@@ -190,8 +177,6 @@ class FusionParams {
         'edgeThresh': edgeThresh,
         'edgeWidth': edgeWidth,
         'edgeColor': edgeColor,
-        'parallaxX': parallaxX,
-        'parallaxY': parallaxY,
       };
 
   factory FusionParams.fromJson(Map<String, dynamic> j) {
@@ -210,8 +195,6 @@ class FusionParams {
       edgeThresh: (j['edgeThresh'] as num?)?.toDouble() ?? 0.082,
       edgeWidth: (j['edgeWidth'] as num?)?.toDouble() ?? 1.0,
       edgeColor: (j['edgeColor'] as num?)?.toInt() ?? 0x333333,
-      parallaxX: (j['parallaxX'] as num?)?.toDouble() ?? 0.0,
-      parallaxY: (j['parallaxY'] as num?)?.toDouble() ?? 0.0,
     );
   }
 }
@@ -220,8 +203,7 @@ class FusionParams {
 ///
 /// * [thermalRgb]: 已 colorize 的热像 RGB888, 长度 = tw*th*3
 /// * [visibleRgb]: 可见光 RGB888 (原始分辨率), 长度 = vw*vh*3. 传 null 跳过.
-/// * [parallaxPxX] / [parallaxPxY]: 画布像素单位的热成像偏移 (已乘上 upsample scale).
-///   正值 → 热像相对可见光向右/下平移. 热像采样越界的画素仅保留可见光.
+/// * [parallaxDx]/[parallaxDy]: 视差偏移 (热像素单位). 正值 → 热像相对可见光向右/向下偏.
 /// * 返回融合后 RGB888, 尺寸 = tw*th*3 (与热像一致).
 Uint8List fuse({
   required Uint8List thermalRgb,
@@ -231,30 +213,16 @@ Uint8List fuse({
   int vw = 0,
   int vh = 0,
   FusionParams params = const FusionParams(),
-  int parallaxPxX = 0,
-  int parallaxPxY = 0,
+  double parallaxDx = 0.0,
+  double parallaxDy = 0.0,
 }) {
   if (visibleRgb == null || params.mode == FusionMode.off || vw == 0 || vh == 0) {
     return thermalRgb;
   }
 
-  // 转 image 包对象做 resize / gamma
-  final visImage = img.Image.fromBytes(
-    width: vw,
-    height: vh,
-    bytes: visibleRgb.buffer,
-    bytesOffset: visibleRgb.offsetInBytes,
-    numChannels: 3,
-    order: img.ChannelOrder.rgb,
-  );
-
-  // 偏移拆分 (热像需平移 dx,dy = parallaxPxX,parallaxPxY). 只保留有效重叠区域.
-  final int dx = parallaxPxX;
-  final int dy = parallaxPxY;
-
   if (params.mode == FusionMode.blend) {
-    final visResized = img.copyResize(visImage,
-        width: tw, height: th, interpolation: img.Interpolation.linear);
+    // 可见光重采样到热像分辨率, 同时应用视差偏移
+    final visBytes = _sampleWithOffset(visibleRgb, vw, vh, tw, th, parallaxDx, parallaxDy);
     final gammaInv = 1.0 / (params.gamma <= 0 ? 1.0 : params.gamma);
     final a = params.alpha.clamp(0.0, 1.0);
     final oneMinusA = 1.0 - a;
@@ -266,39 +234,15 @@ Uint8List fuse({
     }
 
     final out = Uint8List(tw * th * 3);
-    final visBytes = visResized.getBytes(order: img.ChannelOrder.rgb);
     final n = tw * th;
-    if (dx == 0 && dy == 0) {
-      for (int i = 0; i < n; i++) {
-        final tj = i * 3;
-        final vr = gammaLut[visBytes[tj]];
-        final vg = gammaLut[visBytes[tj + 1]];
-        final vb = gammaLut[visBytes[tj + 2]];
-        out[tj] = (thermalRgb[tj] * oneMinusA + vr * a).toInt();
-        out[tj + 1] = (thermalRgb[tj + 1] * oneMinusA + vg * a).toInt();
-        out[tj + 2] = (thermalRgb[tj + 2] * oneMinusA + vb * a).toInt();
-      }
-    } else {
-      for (int y = 0; y < th; y++) {
-        final ty = y - dy; // 热像采样行
-        for (int x = 0; x < tw; x++) {
-          final outJ = (y * tw + x) * 3;
-          final vr = gammaLut[visBytes[outJ]];
-          final vg = gammaLut[visBytes[outJ + 1]];
-          final vb = gammaLut[visBytes[outJ + 2]];
-          final tx = x - dx;
-          if (tx < 0 || tx >= tw || ty < 0 || ty >= th) {
-            out[outJ] = vr;
-            out[outJ + 1] = vg;
-            out[outJ + 2] = vb;
-          } else {
-            final tJ = (ty * tw + tx) * 3;
-            out[outJ] = (thermalRgb[tJ] * oneMinusA + vr * a).toInt();
-            out[outJ + 1] = (thermalRgb[tJ + 1] * oneMinusA + vg * a).toInt();
-            out[outJ + 2] = (thermalRgb[tJ + 2] * oneMinusA + vb * a).toInt();
-          }
-        }
-      }
+    for (int i = 0; i < n; i++) {
+      final tj = i * 3;
+      final vr = gammaLut[visBytes[tj]];
+      final vg = gammaLut[visBytes[tj + 1]];
+      final vb = gammaLut[visBytes[tj + 2]];
+      out[tj] = (thermalRgb[tj] * oneMinusA + vr * a).toInt();
+      out[tj + 1] = (thermalRgb[tj + 1] * oneMinusA + vg * a).toInt();
+      out[tj + 2] = (thermalRgb[tj + 2] * oneMinusA + vb * a).toInt();
     }
     return out;
   }
@@ -311,9 +255,9 @@ Uint8List fuse({
     final int gw = tw * ss;
     final int gh = th * ss;
 
-    final visResized = img.copyResize(visImage,
-        width: gw, height: gh, interpolation: img.Interpolation.linear);
-    final visBytes = visResized.getBytes(order: img.ChannelOrder.rgb);
+    // 可见光重采样到超分辨率, 偏移量同步放大 ss 倍
+    final visBytes = _sampleWithOffset(
+        visibleRgb, vw, vh, gw, gh, parallaxDx * ss, parallaxDy * ss);
     final gray = Float32List(gw * gh);
     for (int i = 0; i < gw * gh; i++) {
       final j = i * 3;
@@ -423,37 +367,12 @@ Uint8List fuse({
     final eb = params.edgeColor & 0xFF;
 
     final out = Uint8List(tw * th * 3);
-    if (dx == 0 && dy == 0) {
-      for (int i = 0; i < tw * th; i++) {
-        final tj = i * 3;
-        final m = (maskBytes[i] / 255.0) * s;
-        out[tj] = ((thermalRgb[tj] * (1 - m) + er * m)).round().clamp(0, 255);
-        out[tj + 1] = ((thermalRgb[tj + 1] * (1 - m) + eg * m)).round().clamp(0, 255);
-        out[tj + 2] = ((thermalRgb[tj + 2] * (1 - m) + eb * m)).round().clamp(0, 255);
-      }
-    } else {
-      // 视差: 热基底按 (-dx,-dy) 取样, 边缘 mask (来自可见光) 保持原位.
-      for (int y = 0; y < th; y++) {
-        final ty = y - dy;
-        for (int x = 0; x < tw; x++) {
-          final i = y * tw + x;
-          final tj = i * 3;
-          final m = (maskBytes[i] / 255.0) * s;
-          final tx = x - dx;
-          int br, bg, bb;
-          if (tx < 0 || tx >= tw || ty < 0 || ty >= th) {
-            br = bg = bb = 0;
-          } else {
-            final tJ = (ty * tw + tx) * 3;
-            br = thermalRgb[tJ];
-            bg = thermalRgb[tJ + 1];
-            bb = thermalRgb[tJ + 2];
-          }
-          out[tj] = ((br * (1 - m) + er * m)).round().clamp(0, 255);
-          out[tj + 1] = ((bg * (1 - m) + eg * m)).round().clamp(0, 255);
-          out[tj + 2] = ((bb * (1 - m) + eb * m)).round().clamp(0, 255);
-        }
-      }
+    for (int i = 0; i < tw * th; i++) {
+      final tj = i * 3;
+      final m = (maskBytes[i] / 255.0) * s;
+      out[tj] = ((thermalRgb[tj] * (1 - m) + er * m)).round().clamp(0, 255);
+      out[tj + 1] = ((thermalRgb[tj + 1] * (1 - m) + eg * m)).round().clamp(0, 255);
+      out[tj + 2] = ((thermalRgb[tj + 2] * (1 - m) + eb * m)).round().clamp(0, 255);
     }
     return out;
   }
@@ -461,137 +380,44 @@ Uint8List fuse({
   return thermalRgb;
 }
 
-// ===========================================================================
-// 视差自动对齐 (Sobel 边缘 + 平移搜索)
-// ===========================================================================
-
-/// 自动估计热成像相对可见光的视差偏移 (热像源像素单位, 32x24 网格).
+/// 把 [srcRgb] (RGB888, [srcW]×[srcH]) 重采样到 [outW]×[outH], 同时施加视差偏移.
 ///
-/// 算法: 对热像 (Float32 温度场) 与可见光 (RGB888) 分别求灰度 Sobel 幅值,
-/// 在 ±[searchRangeSrcPx] 的整数源像素偏移范围内, 通过归一化互相关
-/// (NCC, 仅重叠区域) 搜索最佳 (dx, dy).
+/// 偏移语义: 输出像素 (x, y) 从源坐标 `((x - dx) * srcW/outW, (y - dy) * srcH/outH)` 处
+/// 双线性采样, 越界时 clamp 到边缘 (边缘填充).
 ///
-/// * [srcW] / [srcH]: 热像源尺寸 (一般 32 / 24).
-/// * [workScale]: 工作分辨率倍率 (相对源). 2 = 64x48, 提升边缘锐度但仍轻量.
-/// * 返回 (parallaxX, parallaxY) — 单位与 [FusionParams.parallaxX] 一致.
-///   若数据缺失返回 (0,0).
-({double x, double y}) estimateParallax({
-  required Float32List thermalFrame,
-  required int srcW,
-  required int srcH,
-  required Uint8List visibleRgb,
-  required int vw,
-  required int vh,
-  int workScale = 2,
-  int searchRangeSrcPx = 12,
-}) {
-  if (thermalFrame.length != srcW * srcH ||
-      visibleRgb.length != vw * vh * 3 ||
-      vw <= 0 ||
-      vh <= 0) {
-    return (x: 0.0, y: 0.0);
-  }
-  final int ww = srcW * workScale;
-  final int hh = srcH * workScale;
-
-  // 1) 热像 -> 灰度 (归一化到 0..255). 用最近邻放大保留边缘.
-  double tMn = double.infinity, tMx = -double.infinity;
-  for (final v in thermalFrame) {
-    if (v.isNaN) continue;
-    if (v < tMn) tMn = v;
-    if (v > tMx) tMx = v;
-  }
-  if (!tMn.isFinite || !tMx.isFinite || (tMx - tMn).abs() < 1e-6) {
-    return (x: 0.0, y: 0.0);
-  }
-  final span = tMx - tMn;
-  final thermalGray = Float32List(ww * hh);
-  for (int y = 0; y < hh; y++) {
-    final sy = (y * srcH / hh).floor().clamp(0, srcH - 1);
-    for (int x = 0; x < ww; x++) {
-      final sx = (x * srcW / ww).floor().clamp(0, srcW - 1);
-      thermalGray[y * ww + x] =
-          ((thermalFrame[sy * srcW + sx] - tMn) / span) * 255.0;
-    }
-  }
-
-  // 2) 可见光 -> 灰度 (resize 到 ww*hh).
-  final visImage = img.Image.fromBytes(
-    width: vw,
-    height: vh,
-    bytes: visibleRgb.buffer,
-    bytesOffset: visibleRgb.offsetInBytes,
-    numChannels: 3,
-    order: img.ChannelOrder.rgb,
-  );
-  final visResized = img.copyResize(visImage,
-      width: ww, height: hh, interpolation: img.Interpolation.linear);
-  final visBytes = visResized.getBytes(order: img.ChannelOrder.rgb);
-  final visGray = Float32List(ww * hh);
-  for (int i = 0; i < ww * hh; i++) {
-    final j = i * 3;
-    visGray[i] = (visBytes[j] + visBytes[j + 1] + visBytes[j + 2]) / 3.0;
-  }
-
-  // 3) Sobel 幅值.
-  Float32List sobel(Float32List src) {
-    final out = Float32List(ww * hh);
-    for (int y = 1; y < hh - 1; y++) {
-      for (int x = 1; x < ww - 1; x++) {
-        final i = y * ww + x;
-        final gx = -src[i - ww - 1] + src[i - ww + 1]
-            - 2 * src[i - 1] + 2 * src[i + 1]
-            - src[i + ww - 1] + src[i + ww + 1];
-        final gy = -src[i - ww - 1] - 2 * src[i - ww] - src[i - ww + 1]
-            + src[i + ww - 1] + 2 * src[i + ww] + src[i + ww + 1];
-        out[i] = math.sqrt(gx * gx + gy * gy);
-      }
-    }
-    return out;
-  }
-
-  final tEdge = sobel(thermalGray);
-  final vEdge = sobel(visGray);
-
-  // 4) 平移搜索: 热像 shift (sdx, sdy) [工作像素], 相对可见光重叠区 NCC 最大.
-  final int searchPx = (searchRangeSrcPx * workScale).clamp(1, ww ~/ 2);
-  double bestScore = -double.infinity;
-  int bestSdx = 0, bestSdy = 0;
-  for (int sdy = -searchPx; sdy <= searchPx; sdy++) {
-    for (int sdx = -searchPx; sdx <= searchPx; sdx++) {
-      // 重叠区域: 热像坐标 (tx,ty) 与可见光 (tx+sdx, ty+sdy) 都要在范围内.
-      final int x0 = sdx > 0 ? 0 : -sdx;
-      final int y0 = sdy > 0 ? 0 : -sdy;
-      final int x1 = sdx > 0 ? ww - sdx : ww;
-      final int y1 = sdy > 0 ? hh - sdy : hh;
-      if (x1 - x0 < ww ~/ 2 || y1 - y0 < hh ~/ 2) continue;
-
-      double s = 0, n1 = 0, n2 = 0;
-      for (int ty = y0; ty < y1; ty += 1) {
-        final tRow = ty * ww;
-        final vRow = (ty + sdy) * ww + sdx;
-        for (int tx = x0; tx < x1; tx += 1) {
-          final a = tEdge[tRow + tx];
-          final b = vEdge[vRow + tx];
-          s += a * b;
-          n1 += a * a;
-          n2 += b * b;
-        }
-      }
-      final denom = math.sqrt(n1 * n2);
-      if (denom < 1e-6) continue;
-      final score = s / denom;
-      if (score > bestScore) {
-        bestScore = score;
-        bestSdx = sdx;
-        bestSdy = sdy;
+/// [dx]/[dy] 单位为输出像素; 传入 0.0 等价于标准双线性缩放.
+Uint8List _sampleWithOffset(
+    Uint8List srcRgb, int srcW, int srcH, int outW, int outH, double dx, double dy) {
+  final out = Uint8List(outW * outH * 3);
+  final scaleX = srcW / outW;
+  final scaleY = srcH / outH;
+  for (int y = 0; y < outH; y++) {
+    for (int x = 0; x < outW; x++) {
+      final sx = ((x + dx) * scaleX).clamp(0.0, srcW - 1.0);
+      final sy = ((y + dy) * scaleY).clamp(0.0, srcH - 1.0);
+      final ix = sx.floor();
+      final iy = sy.floor();
+      final fx = sx - ix;
+      final fy = sy - iy;
+      final ix1 = (ix + 1).clamp(0, srcW - 1);
+      final iy1 = (iy + 1).clamp(0, srcH - 1);
+      final i00 = (iy * srcW + ix) * 3;
+      final i10 = (iy * srcW + ix1) * 3;
+      final i01 = (iy1 * srcW + ix) * 3;
+      final i11 = (iy1 * srcW + ix1) * 3;
+      final j = (y * outW + x) * 3;
+      final w00 = (1 - fx) * (1 - fy);
+      final w10 = fx * (1 - fy);
+      final w01 = (1 - fx) * fy;
+      final w11 = fx * fy;
+      for (int c = 0; c < 3; c++) {
+        final v = srcRgb[i00 + c] * w00 +
+            srcRgb[i10 + c] * w10 +
+            srcRgb[i01 + c] * w01 +
+            srcRgb[i11 + c] * w11;
+        out[j + c] = v.round().clamp(0, 255);
       }
     }
   }
-
-  // 转回源像素. 注意符号: 热像在搜索中向 (sdx,sdy) 平移与可见光对齐, 即 parallax = sdx/workScale.
-  return (
-    x: bestSdx / workScale,
-    y: bestSdy / workScale,
-  );
+  return out;
 }
