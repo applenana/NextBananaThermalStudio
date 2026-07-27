@@ -26,7 +26,6 @@ import '../main.dart'
         resetAllSettings;
 import 'connection_bar.dart';
 import 'gallery_shell.dart';
-import 'parallax_tab.dart';
 import 'photo_download_tab.dart' show photoTabRefreshTrigger;
 import 'realtime_tab.dart';
 import 'widgets/window_title_bar.dart';
@@ -176,20 +175,13 @@ class _HomeShellState extends State<HomeShell> {
                 active: _index == 1,
                 onTap: () => _select(1),
               ),
-              _NavItem(
-                icon: Icons.compare_rounded,
-                iconActive: Icons.compare_rounded,
-                label: '视差',
-                active: _index == 2,
-                onTap: () => _select(2),
-              ),
               const Spacer(),
               _NavItem(
                 icon: Icons.settings_outlined,
                 iconActive: Icons.settings,
                 label: '设置',
-                active: _index == 3,
-                onTap: () => _select(3),
+                active: _index == 2,
+                onTap: () => _select(2),
               ),
               const SizedBox(height: 12),
             ],
@@ -248,7 +240,6 @@ class _HomeShellState extends State<HomeShell> {
               children: const [
                 RealtimeTab(),
                 GalleryShell(),
-                ParallaxTab(),
                 _SettingsPlaceholder(),
               ],
             ),
@@ -349,11 +340,6 @@ class _BottomNav extends StatelessWidget {
       icon: Icons.photo_library_outlined,
       iconActive: Icons.photo_library,
       label: '图库',
-    ),
-    _BottomNavItemData(
-      icon: Icons.compare_rounded,
-      iconActive: Icons.compare_rounded,
-      label: '视差',
     ),
     _BottomNavItemData(
       icon: Icons.settings_outlined,

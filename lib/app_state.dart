@@ -102,9 +102,6 @@ class AppState extends ChangeNotifier {
   /// 统一的渲染参数 (插值+双边滤波+调色盘+融合). 实时画面与图片下载 Tab 共用同一份.
   RenderParams renderParams = const RenderParams();
 
-  /// 最近一次视差自动计算结果 (null = 尚未计算). 供视差 Tab 显示置信度.
-  ParallaxResult? lastParallaxResult;
-
   // ---------------- 日志 ----------------
   final List<LogEntry> logs = [];
   static const int maxLogs = 500;
@@ -786,7 +783,6 @@ class AppState extends ChangeNotifier {
           ));
 
       if (result.confidence >= kMinConfidence) {
-        lastParallaxResult = result;
         renderParams = renderParams.copyWith(
           parallaxDx: result.dx,
           parallaxDy: result.dy,
@@ -799,10 +795,6 @@ class AppState extends ChangeNotifier {
           await prefs.setDouble('parallax_dx_$serial', result.dx);
           await prefs.setDouble('parallax_dy_$serial', result.dy);
         }
-      } else {
-        // 置信度不足时仍更新供 UI 显示
-        lastParallaxResult = result;
-        notifyListeners();
       }
     } finally {
       _parallaxComputing = false;
