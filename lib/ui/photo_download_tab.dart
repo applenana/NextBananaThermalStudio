@@ -4,7 +4,7 @@
 /// - 点击列表项后自动下载 + 解析 + 渲染.
 /// - 预览区复用 [ThermalCanvas]: hover 取温 + 点击放置固定温度标记.
 /// - 右上角提供颜色映射 / 曲线 / 融合模式下拉 + 清除标记 + 导出 PNG.
-/// - 解析逻辑见 [PhotoDecoder] (v1-simple / v1-full / v2-HTPH / JPEG).
+/// - 解析逻辑见 [PhotoDecoder] (v1-simple / v1-full / v2/v3-HTPH / JPEG).
 library;
 
 import 'dart:async';
@@ -22,7 +22,12 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../fusion/fusion.dart';
 import 'banana_toast.dart';
-import '../main.dart' show appPhotoDownloadDir, appPhotoDetailOpen, appPhotoTabActive, appClosePhotoDetail;
+import '../main.dart'
+    show
+        appPhotoDownloadDir,
+        appPhotoDetailOpen,
+        appPhotoTabActive,
+        appClosePhotoDetail;
 import '../protocol/photo_cache_index.dart';
 import '../protocol/photo_decoder.dart';
 import '../render/render_params.dart';
@@ -60,6 +65,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   /// (visibleRgb 非空) 则解码完成后自动将 fusion 模式升为 blend.
   /// 用户在预览详情里调参只影响本页, 切图 / 退出后丝毫不注入实时面板.
   RenderParams _photoParams = const RenderParams();
+  bool _photoThermalViewApplied = false;
 
   /// 用户点击固定的温度标记 (坐标以渲染后帧像素为准).
   final List<TempMarker> _markers = [];
@@ -76,7 +82,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   /// 单次会话缓存: filename → (raw, decoded, thumb).
   /// 仅当前 tab state 生命周期内生效, 刷新按钮 / dispose 都会清空.
   /// 与位于磁盘 raw/ 目录 + sha256 指纹的「持久缓存」 (PhotoCacheIndex) 互不干涉.
-  final Map<String, _PhotoSessionEntry> _session = <String, _PhotoSessionEntry>{};
+  final Map<String, _PhotoSessionEntry> _session =
+      <String, _PhotoSessionEntry>{};
 
   /// 下载阶段描述: 请求中 / 接收数据 / 解析中 / 完成.
   String? _stage;
@@ -155,12 +162,16 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     try {
       ui.Image? img;
       if (dec.thermal != null) {
-        // 列表缩略 —— 关掉融合, 只展示热成像本身, 用当前 _photoParams 的颜色映射.
+        // 列表缩略 —— 关掉融合, 只展示热成像本身. 颜色映射沿用当前图片页,
+        // 但每张照片必须使用自己随文件保存的热像视图, 不能被当前选中图片污染.
+        final thumbParams = _photoParams.copyWith(
+          thermalView: dec.thermalView ?? const ThermalViewParams(),
+        );
         final r = renderPipeline(
           thermalFrame: dec.thermal!,
           srcW: dec.srcW,
           srcH: dec.srcH,
-          params: _photoParams,
+          params: thumbParams,
           visibleRgb: null,
           visibleW: 0,
           visibleH: 0,
@@ -169,8 +180,10 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         );
         img = await _rgbToUiImage(r.rgb, r.width, r.height);
       } else if (dec.jpegBytes != null) {
-        final codec = await ui.instantiateImageCodec(dec.jpegBytes!,
-            targetWidth: 96);
+        final codec = await ui.instantiateImageCodec(
+          dec.jpegBytes!,
+          targetWidth: 96,
+        );
         final frame = await codec.getNextFrame();
         img = frame.image;
       }
@@ -201,9 +214,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       rgba[j + 3] = 255;
     }
     final c = Completer<ui.Image>();
-    ui.decodeImageFromPixels(
-      rgba, w, h, ui.PixelFormat.rgba8888, c.complete,
-    );
+    ui.decodeImageFromPixels(rgba, w, h, ui.PixelFormat.rgba8888, c.complete);
     return c.future;
   }
 
@@ -310,12 +321,12 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         _decoded = hit.decoded;
         _markers.clear();
         _resetPhotoParams();
+        _applyDecodedPhotoParams(hit.decoded);
         _statusText = '秒开 · 内存缓存 · ${sel.filename}';
         _stage = '完成';
         _progress = hit.raw.length;
         _progressTotal = hit.raw.length;
       });
-      _upgradeFusionIfDualBand(hit.decoded);
       return;
     }
     if (_busy) {
@@ -392,6 +403,12 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         },
         onEarlyBytes: (head) {
           () async {
+            // HTPH v3 的缩放/偏移在文件尾，前 4 KB 不足以唯一识别照片。
+            // 必须收完整文件后再计算“头 + 尾”指纹，避免错误复用另一张图。
+            if (PhotoCacheIndex.requiresCompleteFile(head)) {
+              if (!hitC.isCompleted) hitC.complete(null);
+              return;
+            }
             final sha = PhotoCacheIndex.fingerprint(head);
             if (!shaC.isCompleted) shaC.complete(sha);
             try {
@@ -440,7 +457,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         _raw = data;
         _decoded = dec;
         _markers.clear();
-        _upgradeFusionIfDualBand(dec);
+        _applyDecodedPhotoParams(dec);
         _stage = '完成';
         _statusText = '已保存: ${outFile.path}  ·  ${dec.summary}';
       });
@@ -470,12 +487,11 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           _raw = cached;
           _decoded = dec;
           _markers.clear();
-          _upgradeFusionIfDualBand(dec);
+          _applyDecodedPhotoParams(dec);
           _progress = cached.length;
           _progressTotal = cached.length;
           _stage = '完成';
-          _statusText =
-              '秒开 · 命中缓存 (${hit!.filename})  ·  ${dec.summary}';
+          _statusText = '秒开 · 命中缓存 (${hit!.filename})  ·  ${dec.summary}';
         });
         _storeSession(sel, cached, dec);
       } catch (e) {
@@ -495,16 +511,22 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   }
 
   /// 划到一张新图时调用: 重置 _photoParams 为默认值 (不读任何实时面板状态).
-  /// 解码完成后可再调 [_upgradeFusionIfDualBand] 将双光图的 fusion 升为 blend.
+  /// 解码完成后可再调 [_applyDecodedPhotoParams] 合入照片自带的热像视图.
   void _resetPhotoParams() {
     _photoParams = const RenderParams();
+    _photoThermalViewApplied = false;
   }
 
-  /// 解码完成后: 若是双光图 (visibleRgb 非空) 且用户还未手动改过 fusion mode
-  /// (仍是默认 off), 则将 fusion 升级为 blend, 默认展示混合效果.
-  void _upgradeFusionIfDualBand(PhotoDecoded dec) {
-    if (dec.visibleRgb != null &&
-        _photoParams.fusion.mode == FusionMode.off) {
+  /// 把照片文件自身的设备视图参数应用到图片页的独立 RenderParams.
+  ///
+  /// 仅首次合入，避免分块下载的多次部分解码覆盖用户随后在详情页做的调整。
+  /// v1/v2 没有该元数据时维持旧行为；它们不会借用实时页当前激活的参数。
+  void _applyDecodedPhotoParams(PhotoDecoded dec) {
+    if (!_photoThermalViewApplied && dec.thermalView != null) {
+      _photoParams = _photoParams.copyWith(thermalView: dec.thermalView);
+      _photoThermalViewApplied = true;
+    }
+    if (dec.visibleRgb != null && _photoParams.fusion.mode == FusionMode.off) {
       _photoParams = _photoParams.copyWith(
         fusion: const FusionParams(mode: FusionMode.blend),
       );
@@ -528,6 +550,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     setState(() {
       _raw = buf;
       _decoded = dec;
+      _applyDecodedPhotoParams(dec);
     });
   }
 
@@ -543,10 +566,12 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     final custom = appPhotoDownloadDir.value;
     final root = (custom != null && custom.isNotEmpty)
         ? Directory(custom)
-        : Directory(p.join(
-            (await getApplicationDocumentsDirectory()).path,
-            'BananaThermalStudio',
-          ));
+        : Directory(
+            p.join(
+              (await getApplicationDocumentsDirectory()).path,
+              'BananaThermalStudio',
+            ),
+          );
     if (!await root.exists()) await root.create(recursive: true);
     return root;
   }
@@ -646,7 +671,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                   label: const Text('刷新'),
                   style: FilledButton.styleFrom(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
                   ),
                 ),
               ],
@@ -770,7 +797,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                     label: const Text('重试下载'),
                     style: FilledButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                     ),
                   ),
               ],
@@ -866,9 +895,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(4),
                   child: LinearProgressIndicator(
-                    value: _progressTotal == 0
-                        ? null
-                        : _progress / _progressTotal,
+                    value:
+                        _progressTotal == 0 ? null : _progress / _progressTotal,
                     minHeight: 6,
                   ),
                 ),
@@ -900,7 +928,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                       child: InkWell(
                         customBorder: const CircleBorder(),
                         onTap: () => setState(
-                            () => _tempOverlayEnabled = !_tempOverlayEnabled),
+                          () => _tempOverlayEnabled = !_tempOverlayEnabled,
+                        ),
                         child: Padding(
                           padding: const EdgeInsets.all(6),
                           child: Icon(
@@ -944,9 +973,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           sel != null &&
           _pendingDownload!.filename == sel.filename;
       final title = isQueued ? '排队中' : '下载中';
-      final sub = isQueued
-          ? '等待当前下载完成后立即处理此图'
-          : (_stage ?? '请求文件…');
+      final sub = isQueued ? '等待当前下载完成后立即处理此图' : (_stage ?? '请求文件…');
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -973,17 +1000,16 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
               const SizedBox(height: 6),
               Text(
                 sub,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: scheme.onSurfaceVariant,
-                ),
+                style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
                 textAlign: TextAlign.center,
               ),
               if (sel != null) ...[
                 const SizedBox(height: 12),
                 Container(
                   padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: scheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(6),
@@ -1006,7 +1032,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     final dec = _decoded;
     if (dec?.format == PhotoFormat.jpegLike && dec?.jpegBytes != null) {
       return InteractiveViewer(
-        child: Center(child: Image.memory(dec!.jpegBytes!, fit: BoxFit.contain)),
+        child: Center(
+          child: Image.memory(dec!.jpegBytes!, fit: BoxFit.contain),
+        ),
       );
     }
     if (r != null) {
@@ -1093,7 +1121,10 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       );
     }
     // 解析失败 / 未知格式: 显示头部 hex.
-    final head = _raw!.take(32).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+    final head = _raw!
+        .take(32)
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join(' ');
     return Padding(
       padding: const EdgeInsets.all(14),
       child: Column(
@@ -1114,11 +1145,15 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
             ],
           ),
           const SizedBox(height: 8),
-          Text('字节数: ${_raw!.length}',
-              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+          Text(
+            '字节数: ${_raw!.length}',
+            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+          ),
           const SizedBox(height: 6),
-          Text('头部 32 字节 (hex):',
-              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+          Text(
+            '头部 32 字节 (hex):',
+            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+          ),
           const SizedBox(height: 4),
           Container(
             padding: const EdgeInsets.all(8),
@@ -1140,16 +1175,23 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     );
   }
 
-  Widget _kv(String k, String v) => Text.rich(TextSpan(children: [
+  Widget _kv(String k, String v) => Text.rich(
         TextSpan(
-          text: '$k: ',
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-            fontWeight: FontWeight.w500,
-          ),
+          children: [
+            TextSpan(
+              text: '$k: ',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            TextSpan(
+              text: v,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ],
         ),
-        TextSpan(text: v, style: const TextStyle(fontWeight: FontWeight.w600)),
-      ]));
+      );
 
   /// 详情顶部的元数据卡: 默认折叠到单行摘要, 点击右侧 ▶ 展开全部 _kv chips.
   /// 折叠态: '#索引 · 文件名 · 大小' 一行 ellipsis, 不挡参数面板.
@@ -1159,7 +1201,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     RenderedFrame? rendered,
     ColorScheme scheme,
   ) {
-    final summary = '#${sel.index}  ·  ${sel.filename}  ·  ${_fmtSize(sel.size)}';
+    final summary =
+        '#${sel.index}  ·  ${sel.filename}  ·  ${_fmtSize(sel.size)}';
     return Material(
       color: scheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(12),
@@ -1177,7 +1220,10 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                   child: _metaExpanded
                       ? DefaultTextStyle(
                           key: const ValueKey('meta-expanded'),
-                          style: TextStyle(fontSize: 12, color: scheme.onSurface),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: scheme.onSurface,
+                          ),
                           child: Wrap(
                             spacing: 18,
                             runSpacing: 6,
@@ -1188,9 +1234,18 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                               if (sel.mode != null) _kv('模式', sel.mode!),
                               if (sel.dataFormat != null)
                                 _kv('格式', sel.dataFormat!),
+                              if (dec?.thermalView != null)
+                                _kv(
+                                  '热像视图',
+                                  '${dec!.thermalView!.scale.toStringAsFixed(1)}x · '
+                                      'X ${dec.thermalView!.xOffset} · '
+                                      'Y ${dec.thermalView!.yOffset}',
+                                ),
                               if (rendered != null)
-                                _kv('温度范围',
-                                    '${rendered.tMin.toStringAsFixed(2)} ~ ${rendered.tMax.toStringAsFixed(2)} °C'),
+                                _kv(
+                                  '温度范围',
+                                  '${rendered.tMin.toStringAsFixed(2)} ~ ${rendered.tMax.toStringAsFixed(2)} °C',
+                                ),
                               if (dec != null) _kv('类型', dec.summary),
                             ],
                           ),
@@ -1251,18 +1306,24 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       // JPEG 直接落盘 .jpg
       if (dec.format == PhotoFormat.jpegLike && dec.jpegBytes != null) {
         final out = await _exportDir();
-        final f = File(p.join(out.path,
-            '${p.basenameWithoutExtension(sel.filename)}.jpg'));
+        final f = File(
+          p.join(out.path, '${p.basenameWithoutExtension(sel.filename)}.jpg'),
+        );
         await f.writeAsBytes(dec.jpegBytes!);
         final albumOk = await _saveToGalleryIfAndroid(
-            bytes: dec.jpegBytes!, name: p.basenameWithoutExtension(sel.filename));
+          bytes: dec.jpegBytes!,
+          name: p.basenameWithoutExtension(sel.filename),
+        );
         if (!mounted) return;
-        setState(() => _statusText = albumOk
-            ? '已导出: ${f.path} (并保存到相册)'
-            : '已导出: ${f.path}');
-        _toast(albumOk
-            ? '已导出 ${p.basename(f.path)} (相册已保存)'
-            : '已导出 ${p.basename(f.path)}');
+        setState(
+          () => _statusText =
+              albumOk ? '已导出: ${f.path} (并保存到相册)' : '已导出: ${f.path}',
+        );
+        _toast(
+          albumOk
+              ? '已导出 ${p.basename(f.path)} (相册已保存)'
+              : '已导出 ${p.basename(f.path)}',
+        );
         return;
       }
       // 热成像: 重新渲染 + 在画布上叠加 markers, 输出 PNG.
@@ -1292,17 +1353,24 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
             : null,
       );
       final out = await _exportDir();
-      final f = File(p.join(out.path,
-          '${p.basenameWithoutExtension(sel.filename)}.png'));
+      final f = File(
+        p.join(out.path, '${p.basenameWithoutExtension(sel.filename)}.png'),
+      );
       await f.writeAsBytes(pngBytes);
       final albumOk = await _saveToGalleryIfAndroid(
-          bytes: pngBytes, name: p.basenameWithoutExtension(sel.filename));
+        bytes: pngBytes,
+        name: p.basenameWithoutExtension(sel.filename),
+      );
       if (!mounted) return;
-      setState(() => _statusText =
-          albumOk ? '已导出: ${f.path} (并保存到相册)' : '已导出: ${f.path}');
-      _toast(albumOk
-          ? '已导出 ${p.basename(f.path)} (相册已保存)'
-          : '已导出 ${p.basename(f.path)}');
+      setState(
+        () => _statusText =
+            albumOk ? '已导出: ${f.path} (并保存到相册)' : '已导出: ${f.path}',
+      );
+      _toast(
+        albumOk
+            ? '已导出 ${p.basename(f.path)} (相册已保存)'
+            : '已导出 ${p.basename(f.path)}',
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _statusText = '导出失败: $e');
@@ -1344,8 +1412,12 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   /// [overlayMin]/[overlayMax]/[overlayAvg] 同时非 null 时, 在左上角烘焙一
   /// 条半透明温度补丁 (MAX/MIN/AVG), 与详情页看到的叠加保持一致.
   Future<Uint8List> _renderToPng(
-      RenderedFrame r, List<TempMarker> markers,
-      {double? overlayMin, double? overlayMax, double? overlayAvg}) async {
+    RenderedFrame r,
+    List<TempMarker> markers, {
+    double? overlayMin,
+    double? overlayMax,
+    double? overlayAvg,
+  }) async {
     // 先把 RGB888 转成 ui.Image
     final rgba = Uint8List(r.width * r.height * 4);
     for (var i = 0, j = 0; i < r.rgb.length; i += 3, j += 4) {
@@ -1365,8 +1437,10 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     final baseImg = await completer.future;
 
     final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder,
-        Rect.fromLTWH(0, 0, r.width.toDouble(), r.height.toDouble()));
+    final canvas = Canvas(
+      recorder,
+      Rect.fromLTWH(0, 0, r.width.toDouble(), r.height.toDouble()),
+    );
     canvas.drawImage(baseImg, Offset.zero, Paint());
 
     // markers: 在帧像素坐标上绘制 (导出为帧分辨率 PNG).
@@ -1468,26 +1542,39 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       (
         color: const Color(0xFFFF6E40),
         label: mk('MAX', labelSize, FontWeight.w600, Colors.white70),
-        value: mk('${tMax.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
-            Colors.white),
+        value: mk(
+          '${tMax.toStringAsFixed(1)}°',
+          fontSize,
+          FontWeight.w700,
+          Colors.white,
+        ),
       ),
       (
         color: const Color(0xFF40C4FF),
         label: mk('MIN', labelSize, FontWeight.w600, Colors.white70),
-        value: mk('${tMin.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
-            Colors.white),
+        value: mk(
+          '${tMin.toStringAsFixed(1)}°',
+          fontSize,
+          FontWeight.w700,
+          Colors.white,
+        ),
       ),
       (
         color: const Color(0xFFFFD740),
         label: mk('AVG', labelSize, FontWeight.w600, Colors.white70),
-        value: mk('${tAvg.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
-            Colors.white),
+        value: mk(
+          '${tAvg.toStringAsFixed(1)}°',
+          fontSize,
+          FontWeight.w700,
+          Colors.white,
+        ),
       ),
     ];
 
     // 每个 item 宽度 = 圆点 + 间隔 + max(label, value) 宽
     double itemW(({Color color, TextPainter label, TextPainter value}) it) {
-      final textW = it.label.width > it.value.width ? it.label.width : it.value.width;
+      final textW =
+          it.label.width > it.value.width ? it.label.width : it.value.width;
       return dotR * 2 + 4 + textW;
     }
 
@@ -1726,11 +1813,10 @@ class _ParamsRow extends StatelessWidget {
 
     Widget label(String t) => Padding(
           padding: const EdgeInsets.only(right: 4),
-          child: Text(t,
-              style: TextStyle(
-                fontSize: 11,
-                color: scheme.onSurfaceVariant,
-              )),
+          child: Text(
+            t,
+            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+          ),
         );
 
     final colorWidgets = <Widget>[
@@ -1739,7 +1825,8 @@ class _ParamsRow extends StatelessWidget {
         value: params.colormapName,
         items: _colormapZh.keys.toList(),
         onChanged: (v) => onParamsChanged(
-            params.copyWith(colormapName: v, useCustomColors: false)),
+          params.copyWith(colormapName: v, useCustomColors: false),
+        ),
         labelOf: (v) => _colormapZh[v] ?? v,
       ),
       const SizedBox(width: 14),
@@ -1747,8 +1834,7 @@ class _ParamsRow extends StatelessWidget {
       _Dropdown<String>(
         value: params.mappingCurve,
         items: const ['linear', 'nonlinear'],
-        onChanged: (v) =>
-            onParamsChanged(params.copyWith(mappingCurve: v)),
+        onChanged: (v) => onParamsChanged(params.copyWith(mappingCurve: v)),
         labelOf: (v) => v == 'linear' ? '线性' : 'S 曲线',
       ),
     ];
@@ -1758,8 +1844,9 @@ class _ParamsRow extends StatelessWidget {
         _Dropdown<FusionMode>(
           value: params.fusion.mode,
           items: FusionMode.values,
-          onChanged: (v) => onParamsChanged(params.copyWith(
-              fusion: _fusionWith(params.fusion, mode: v))),
+          onChanged: (v) => onParamsChanged(
+            params.copyWith(fusion: _fusionWith(params.fusion, mode: v)),
+          ),
           labelOf: (v) => switch (v) {
             FusionMode.off => '关闭',
             FusionMode.blend => '混合',
@@ -1790,8 +1877,9 @@ class _ParamsRow extends StatelessWidget {
             value: f.alpha,
             min: 0,
             max: 1,
-            onChanged: (v) => onParamsChanged(params.copyWith(
-                fusion: _fusionWith(f, alpha: v))),
+            onChanged: (v) => onParamsChanged(
+              params.copyWith(fusion: _fusionWith(f, alpha: v)),
+            ),
           ),
           _slider(
             context,
@@ -1799,8 +1887,9 @@ class _ParamsRow extends StatelessWidget {
             value: f.gamma,
             min: 0.3,
             max: 3.0,
-            onChanged: (v) => onParamsChanged(params.copyWith(
-                fusion: _fusionWith(f, gamma: v))),
+            onChanged: (v) => onParamsChanged(
+              params.copyWith(fusion: _fusionWith(f, gamma: v)),
+            ),
           ),
         ]);
       } else if (f.mode == FusionMode.edge) {
@@ -1811,8 +1900,9 @@ class _ParamsRow extends StatelessWidget {
             value: f.gamma,
             min: 0.3,
             max: 3.0,
-            onChanged: (v) => onParamsChanged(params.copyWith(
-                fusion: _fusionWith(f, gamma: v))),
+            onChanged: (v) => onParamsChanged(
+              params.copyWith(fusion: _fusionWith(f, gamma: v)),
+            ),
           ),
           _slider(
             context,
@@ -1820,8 +1910,9 @@ class _ParamsRow extends StatelessWidget {
             value: f.edgeStrength,
             min: 0,
             max: 1,
-            onChanged: (v) => onParamsChanged(params.copyWith(
-                fusion: _fusionWith(f, edgeStrength: v))),
+            onChanged: (v) => onParamsChanged(
+              params.copyWith(fusion: _fusionWith(f, edgeStrength: v)),
+            ),
           ),
           _slider(
             context,
@@ -1830,8 +1921,9 @@ class _ParamsRow extends StatelessWidget {
             min: 0,
             max: 0.5,
             digits: 3,
-            onChanged: (v) => onParamsChanged(params.copyWith(
-                fusion: _fusionWith(f, edgeThresh: v))),
+            onChanged: (v) => onParamsChanged(
+              params.copyWith(fusion: _fusionWith(f, edgeThresh: v)),
+            ),
           ),
           _slider(
             context,
@@ -1839,8 +1931,9 @@ class _ParamsRow extends StatelessWidget {
             value: f.edgeWidth,
             min: 0,
             max: 6,
-            onChanged: (v) => onParamsChanged(params.copyWith(
-                fusion: _fusionWith(f, edgeWidth: v))),
+            onChanged: (v) => onParamsChanged(
+              params.copyWith(fusion: _fusionWith(f, edgeWidth: v)),
+            ),
           ),
         ]);
       }
@@ -1869,10 +1962,7 @@ class _ParamsRow extends StatelessWidget {
           const SizedBox(height: 6),
           shell(fusionWidgets),
         ],
-        if (row2.isNotEmpty) ...[
-          const SizedBox(height: 6),
-          shell(row2),
-        ],
+        if (row2.isNotEmpty) ...[const SizedBox(height: 6), shell(row2)],
       ],
     );
   }
@@ -1918,10 +2008,7 @@ class _ParamsRow extends StatelessWidget {
             child: Text(
               value.toStringAsFixed(digits),
               textAlign: TextAlign.right,
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-              ),
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
             ),
           ),
         ],
@@ -1930,7 +2017,8 @@ class _ParamsRow extends StatelessWidget {
   }
 }
 
-class _Dropdown<T> extends StatelessWidget {  const _Dropdown({
+class _Dropdown<T> extends StatelessWidget {
+  const _Dropdown({
     required this.value,
     required this.items,
     required this.onChanged,
@@ -1975,14 +2063,10 @@ class _Dropdown<T> extends StatelessWidget {  const _Dropdown({
 /// - 与位于 `<download_root>/raw/` + sha256 指纹的「持久缓存」 (PhotoCacheIndex) 互不干涉:
 ///   持久缓存跨进程存活, 单次缓存仅当前 tab state 生命周期内, 刷新按钮即清空.
 class _PhotoSessionEntry {
-  _PhotoSessionEntry({
-    required this.raw,
-    required this.decoded,
-  });
+  _PhotoSessionEntry({required this.raw, required this.decoded});
 
   final Uint8List raw;
   final PhotoDecoded decoded;
   ui.Image? thumb;
   double? thermalAvgC;
 }
-

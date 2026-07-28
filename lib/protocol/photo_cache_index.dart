@@ -6,6 +6,10 @@
 /// SHA-256 作为图片唯一指纹, 在下载早期阶段即可识别本地是否已缓存,
 /// 命中则立即取消剩余传输, 直接从 `<root>/raw/<filename>` 读出.
 ///
+/// HTPH v3 的热像视图位于文件末尾 8 字节。它必须使用“前 4 KB + 尾部”
+/// 指纹，否则主体相同但缩放/偏移不同的照片会误命中。因此 v3 禁用早期
+/// 中止缓存；同一会话内仍由图片页内存缓存秒开.
+///
 /// 索引文件: `<photo_root>/index.json`. 结构:
 /// ```json
 /// {
@@ -83,8 +87,7 @@ class PhotoCacheIndex {
       _entries.clear();
       entries.forEach((k, v) {
         if (k is String && v is Map) {
-          _entries[k] =
-              PhotoCacheEntry.fromJson(k, v.cast<String, dynamic>());
+          _entries[k] = PhotoCacheEntry.fromJson(k, v.cast<String, dynamic>());
         }
       });
     } catch (_) {
@@ -105,13 +108,28 @@ class PhotoCacheIndex {
     }
   }
 
-  /// 计算"前 4 KB 字节"的 sha256 hex.
+  /// HTPH v3 是否需要完整文件才能形成包含视图尾部的稳定指纹.
+  static bool requiresCompleteFile(Uint8List bytes) =>
+      bytes.length >= 5 &&
+      bytes[0] == 0x48 &&
+      bytes[1] == 0x54 &&
+      bytes[2] == 0x50 &&
+      bytes[3] == 0x48 &&
+      bytes[4] >= 3;
+
+  /// 计算缓存指纹. v1/v2/JPEG 取前 4 KB；HTPH v3 完整文件取
+  /// “前 4 KB + 最后 8 字节”，把照片自带的热像视图纳入身份.
   static String fingerprint(Uint8List bytes) {
     final n = bytes.length < 4096 ? bytes.length : 4096;
-    final head = (n == bytes.length)
-        ? bytes
-        : Uint8List.sublistView(bytes, 0, n);
-    return sha256.convert(head).toString();
+    final head =
+        (n == bytes.length) ? bytes : Uint8List.sublistView(bytes, 0, n);
+    if (!requiresCompleteFile(bytes) || bytes.length <= 4096) {
+      return sha256.convert(head).toString();
+    }
+    final fingerprintBytes = BytesBuilder(copy: false)
+      ..add(head)
+      ..add(Uint8List.sublistView(bytes, bytes.length - 8));
+    return sha256.convert(fingerprintBytes.takeBytes()).toString();
   }
 
   /// 查找指纹对应的缓存条目, 同时校验底层 raw 文件仍存在且大小一致.

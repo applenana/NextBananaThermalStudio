@@ -7,13 +7,18 @@
 ///    或 1024 floats. 元数据含 `mode` 时走此分支.
 /// 3. v2 HTPH   : `[0..3]'HTPH'` `[4]ver` `[5]flags` `[6..9]Tmax` `[10..13]Tmin`
 ///    `[14..15]visW (LE u16, has_visible)` `[16..17]visH` 之后是热成像 floats,
-///    最后是 visible RGB565 LE. flags: bit0=full_screen, bit1=has_visible,
-///    bit2-3=fusion_mode (仅指示设备保存时的状态, 解码侧忽略).
+///    最后是 visible RGB565 LE.
+/// 4. v3 HTPH   : 完整保留 v2 主体布局，在所有热成像/可见光数据之后追加
+///    `[4B]thermalScale(f32)` `[2B]thermalX(i16)` `[2B]thermalY(i16)`.
+///    因此旧解码器读取 v3 时仍能正确读取主体，只会忽略新增尾部.
+///
+/// flags: bit0=full_screen, bit1=has_visible, bit2-3=fusion_mode.
 library;
 
 import 'dart:typed_data';
 
 import '../app_state.dart' show PhotoMeta;
+import '../render/render_params.dart' show ThermalViewParams;
 
 enum PhotoFormat { jpegLike, v1Simple, v1Full, v2Htph, unknown }
 
@@ -36,6 +41,10 @@ class PhotoDecoded {
   /// 原始 JPEG 字节 (仅 jpegLike 有).
   final Uint8List? jpegBytes;
 
+  /// 拍照瞬间设备使用的热像缩放/偏移. 仅 HTPH v3+ 携带;
+  /// null 表示旧照片没有该元数据, 调用方必须保持旧版默认渲染行为.
+  final ThermalViewParams? thermalView;
+
   /// 调试: 描述信息 (模式 / 融合标志等).
   final String summary;
 
@@ -50,6 +59,7 @@ class PhotoDecoded {
     this.visW = 0,
     this.visH = 0,
     this.jpegBytes,
+    this.thermalView,
     this.summary = '',
   });
 }
@@ -70,7 +80,10 @@ class PhotoDecoder {
     }
     // HTPH magic
     if (raw.length >= 14 &&
-        raw[0] == 0x48 && raw[1] == 0x54 && raw[2] == 0x50 && raw[3] == 0x48) {
+        raw[0] == 0x48 &&
+        raw[1] == 0x54 &&
+        raw[2] == 0x50 &&
+        raw[3] == 0x48) {
       return _decodeV2(raw);
     }
     // v1 完整 / 简易
@@ -129,6 +142,7 @@ class PhotoDecoder {
     final tMin = bd.getFloat32(10, Endian.little);
 
     int cursor = 14;
+    ThermalViewParams? thermalView;
     int visW = 0, visH = 0;
     if (hasVisible) {
       if (raw.length < cursor + 4) {
@@ -158,10 +172,31 @@ class PhotoDecoder {
         visRgb = _rgb565ToRgb888Rotated(bytes, visW, visH);
         finalVisW = visH;
         finalVisH = visW;
+        cursor += visBytes;
       }
     }
 
-    const fusionNames = {0: 'OFF', 1: 'EDGE', 2: 'BLEND'};
+    // v3 尾部位于完整 v2 主体之后。分块下载尚未收到可见光尾部时不猜测，
+    // 先按旧图预览；完整文件到达后再合入照片自己的视图参数。
+    final bodyComplete =
+        !hasVisible || (visW > 0 && visH > 0 && visRgb != null);
+    if (ver >= 3 && bodyComplete && raw.length >= cursor + 8) {
+      final scale = bd.getFloat32(cursor, Endian.little);
+      final xOffset = bd.getInt16(cursor + 4, Endian.little);
+      final yOffset = bd.getInt16(cursor + 6, Endian.little);
+      thermalView = ThermalViewParams(
+        enabled: true,
+        scale: _safeThermalScale(scale),
+        xOffset: xOffset.clamp(-100, 100).toInt(),
+        yOffset: yOffset.clamp(-100, 100).toInt(),
+      );
+    }
+
+    const fusionNames = {0: 'OFF', 1: 'BLEND', 2: 'EDGE', 3: 'HALF_SAMPLE'};
+    final viewSummary = thermalView == null
+        ? 'thermalView=legacy'
+        : 'thermalView=${thermalView.scale.toStringAsFixed(1)}x/'
+            '${thermalView.xOffset}/${thermalView.yOffset}';
     return PhotoDecoded(
       format: PhotoFormat.v2Htph,
       thermal: mirrored,
@@ -172,10 +207,12 @@ class PhotoDecoder {
       visibleRgb: visRgb,
       visW: finalVisW,
       visH: finalVisH,
+      thermalView: thermalView,
       summary: 'v2 HTPH v$ver ${h}x$w '
           '${fullScreen ? "full" : "square"} '
           'fusion=${fusionNames[fusionMode] ?? "?"} '
-          'visible=${hasVisible ? "${visW}x$visH" : "no"}',
+          'visible=${hasVisible ? "${visW}x$visH" : "no"} '
+          '$viewSummary',
     );
   }
 
@@ -225,6 +262,10 @@ class PhotoDecoder {
     return out;
   }
 
-  static double _safe(double v) =>
-      (v.isNaN || v.isInfinite) ? 0.0 : v;
+  static double _safe(double v) => (v.isNaN || v.isInfinite) ? 0.0 : v;
+
+  static double _safeThermalScale(double v) {
+    if (v.isNaN || v.isInfinite) return 1.0;
+    return v.clamp(1.0, 2.0).toDouble();
+  }
 }
