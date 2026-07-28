@@ -16,6 +16,45 @@ import '../temperature/temperature_recorder.dart';
 import 'banana_toast.dart';
 import 'temperature_export_dialog.dart';
 
+String get _historyFontFamily {
+  if (Platform.isWindows) return 'Microsoft YaHei UI';
+  if (Platform.isMacOS || Platform.isIOS) return '.AppleSystemUIFont';
+  return 'sans-serif';
+}
+
+class _HistoryTypography extends StatelessWidget {
+  const _HistoryTypography({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final fontFamily = _historyFontFamily;
+    final appBarTitleStyle = theme.appBarTheme.titleTextStyle;
+    final appBarToolbarStyle = theme.appBarTheme.toolbarTextStyle;
+    return Theme(
+      data: theme.copyWith(
+        textTheme: theme.textTheme.apply(fontFamily: fontFamily),
+        primaryTextTheme: theme.primaryTextTheme.apply(fontFamily: fontFamily),
+        appBarTheme: theme.appBarTheme.copyWith(
+          titleTextStyle: appBarTitleStyle?.copyWith(
+            fontFamily: fontFamily,
+            fontWeight: FontWeight.w600,
+          ),
+          toolbarTextStyle: appBarToolbarStyle?.copyWith(
+            fontFamily: fontFamily,
+          ),
+        ),
+      ),
+      child: DefaultTextStyle.merge(
+        style: TextStyle(fontFamily: fontFamily),
+        child: child,
+      ),
+    );
+  }
+}
+
 enum _HistoryDateFilter { all, today, sevenDays, thirtyDays }
 
 class TemperatureHistoryTab extends StatefulWidget {
@@ -141,12 +180,14 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
   void _openNarrowDetail(TemperatureHistorySession session) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => Scaffold(
-          appBar: AppBar(title: const Text('历史分析')),
-          body: SafeArea(
-            child: _HistorySessionDetail(
-              sessionId: session.id,
-              onDeleted: () => Navigator.of(context).pop(),
+        builder: (_) => _HistoryTypography(
+          child: Scaffold(
+            appBar: AppBar(title: const Text('历史分析')),
+            body: SafeArea(
+              child: _HistorySessionDetail(
+                sessionId: session.id,
+                onDeleted: () => Navigator.of(context).pop(),
+              ),
             ),
           ),
         ),
@@ -156,52 +197,58 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    if (!_store.initialized) {
-      return _HistoryUnavailable(
-        error: _store.lastError,
-        onRetry: () async {
-          try {
-            await _store.initialize();
-          } catch (_) {}
-          if (mounted) setState(() {});
+    return _HistoryTypography(
+      child: Builder(
+        builder: (context) {
+          final scheme = Theme.of(context).colorScheme;
+          if (!_store.initialized) {
+            return _HistoryUnavailable(
+              error: _store.lastError,
+              onRetry: () async {
+                try {
+                  await _store.initialize();
+                } catch (_) {}
+                if (mounted) setState(() {});
+              },
+            );
+          }
+          return LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= 900;
+              final list = _buildSessionPane(context, wide: wide);
+              if (!wide) return list;
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SizedBox(width: 350, child: list),
+                  const SizedBox(width: 12),
+                  VerticalDivider(
+                    width: 1,
+                    color: scheme.outlineVariant.withValues(alpha: 0.35),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _selectedId == null
+                        ? const _HistoryEmptyDetail()
+                        : _HistorySessionDetail(
+                            key: ValueKey(_selectedId),
+                            sessionId: _selectedId!,
+                            onDeleted: () {
+                              final remaining = _filteredSessions;
+                              setState(
+                                () => _selectedId = remaining.isEmpty
+                                    ? null
+                                    : remaining.first.id,
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              );
+            },
+          );
         },
-      );
-    }
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final wide = constraints.maxWidth >= 900;
-        final list = _buildSessionPane(context, wide: wide);
-        if (!wide) return list;
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            SizedBox(width: 350, child: list),
-            const SizedBox(width: 12),
-            VerticalDivider(
-              width: 1,
-              color: scheme.outlineVariant.withValues(alpha: 0.35),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _selectedId == null
-                  ? const _HistoryEmptyDetail()
-                  : _HistorySessionDetail(
-                      key: ValueKey(_selectedId),
-                      sessionId: _selectedId!,
-                      onDeleted: () {
-                        final remaining = _filteredSessions;
-                        setState(
-                          () => _selectedId = remaining.isEmpty
-                              ? null
-                              : remaining.first.id,
-                        );
-                      },
-                    ),
-            ),
-          ],
-        );
-      },
+      ),
     );
   }
 
@@ -229,7 +276,7 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
                 children: [
                   Text(
                     '温度历史',
-                    style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
                   ),
                   Text('本地会话、趋势复盘与数据分析', style: TextStyle(fontSize: 11)),
                 ],
@@ -402,7 +449,7 @@ class _HistorySessionCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontSize: 13,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
@@ -696,8 +743,8 @@ class _HistorySessionDetailState extends State<_HistorySessionDetail> {
                           session.name,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            fontSize: 19,
-                            fontWeight: FontWeight.w700,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
@@ -862,7 +909,7 @@ class _HistorySessionDetailState extends State<_HistorySessionDetail> {
               children: [
                 const Text(
                   '趋势分析',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(width: 4),
                 _rangeChip(_HistoryChartRange.all, '全部'),
@@ -943,7 +990,7 @@ class _HistorySessionDetailState extends State<_HistorySessionDetail> {
                                   '${spot.y.toStringAsFixed(2)} °C',
                                   const TextStyle(
                                     color: Colors.white,
-                                    fontWeight: FontWeight.w600,
+                                    fontWeight: FontWeight.w500,
                                   ),
                                 ),
                             ],
@@ -1161,7 +1208,7 @@ class _HistoryKpi extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
@@ -1191,7 +1238,7 @@ class _HistoryRecentSamples extends StatelessWidget {
           children: [
             const Text(
               '最近采样',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 8),
             SingleChildScrollView(
@@ -1268,7 +1315,7 @@ class _ActiveBadge extends StatelessWidget {
             style: TextStyle(
               color: Color(0xFF43A047),
               fontSize: 10,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
@@ -1294,7 +1341,7 @@ class _HistoryUnavailable extends StatelessWidget {
             const SizedBox(height: 12),
             const Text(
               '温度历史存储尚未就绪',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
             ),
             if (error != null) ...[
               const SizedBox(height: 7),
