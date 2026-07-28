@@ -28,6 +28,7 @@ import 'connection_bar.dart';
 import 'gallery_shell.dart';
 import 'photo_download_tab.dart' show photoTabRefreshTrigger;
 import 'realtime_tab.dart';
+import 'temperature_history_tab.dart';
 import 'widgets/window_title_bar.dart';
 import 'window_size_ffi.dart';
 import 'banana_toast.dart';
@@ -175,13 +176,20 @@ class _HomeShellState extends State<HomeShell> {
                 active: _index == 1,
                 onTap: () => _select(1),
               ),
+              _NavItem(
+                icon: Icons.history_outlined,
+                iconActive: Icons.history_rounded,
+                label: '历史',
+                active: _index == 2,
+                onTap: () => _select(2),
+              ),
               const Spacer(),
               _NavItem(
                 icon: Icons.settings_outlined,
                 iconActive: Icons.settings,
                 label: '设置',
-                active: _index == 2,
-                onTap: () => _select(2),
+                active: _index == 3,
+                onTap: () => _select(3),
               ),
               const SizedBox(height: 12),
             ],
@@ -240,6 +248,7 @@ class _HomeShellState extends State<HomeShell> {
               children: const [
                 RealtimeTab(),
                 GalleryShell(),
+                TemperatureHistoryTab(),
                 _SettingsPlaceholder(),
               ],
             ),
@@ -340,6 +349,11 @@ class _BottomNav extends StatelessWidget {
       icon: Icons.photo_library_outlined,
       iconActive: Icons.photo_library,
       label: '图库',
+    ),
+    _BottomNavItemData(
+      icon: Icons.history_outlined,
+      iconActive: Icons.history_rounded,
+      label: '历史',
     ),
     _BottomNavItemData(
       icon: Icons.settings_outlined,

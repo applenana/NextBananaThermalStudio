@@ -20,6 +20,7 @@ import '../main.dart'
         setTemperatureRecordInterval;
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
+import '../temperature/temperature_history_store.dart';
 import '../temperature/temperature_recorder.dart';
 import 'connection_bar.dart';
 import 'software_gallery_tab.dart' show softwareGalleryRefreshTrigger;
@@ -1153,8 +1154,10 @@ Future<void> _confirmClearTemperatureRecords(BuildContext context) async {
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      title: const Text('清理历史记录？'),
-      content: Text('将删除当前会话的 $count 条温度记录，方便重新开始记录。此操作无法撤销。'),
+      title: const Text('开始新的测温记录？'),
+      content: Text(
+        '当前 $count 条数据会保存到“历史”栏目，实时趋势随后清空并从下一帧开始新会话。',
+      ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -1162,17 +1165,19 @@ Future<void> _confirmClearTemperatureRecords(BuildContext context) async {
         ),
         FilledButton(
           onPressed: () => Navigator.of(dialogContext).pop(true),
-          child: const Text('确认清理'),
+          child: const Text('保存并新建'),
         ),
       ],
     ),
   );
   if (confirmed != true || !context.mounted) return;
+  await TemperatureHistoryStore.instance.finishActiveSession();
+  if (!context.mounted) return;
   TemperatureRecorder.instance.clearRecords();
   BananaToast.show(
     context,
-    '历史记录已清理，将从下一帧开始记录新数据',
-    icon: Icons.delete_sweep_rounded,
+    '当前会话已保存，将从下一帧开始新记录',
+    icon: Icons.save_rounded,
   );
 }
 
@@ -1341,7 +1346,7 @@ class _FullscreenLeftPanel extends StatelessWidget {
                 ),
               ),
               IconButton(
-                tooltip: '清理历史记录',
+                tooltip: '保存当前会话并新建',
                 visualDensity: VisualDensity.compact,
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints.tightFor(
@@ -1352,7 +1357,7 @@ class _FullscreenLeftPanel extends StatelessWidget {
                     ? null
                     : () => _confirmClearTemperatureRecords(context),
                 icon: const Icon(
-                  Icons.delete_sweep_rounded,
+                  Icons.save_as_rounded,
                   size: 16,
                   color: Colors.white70,
                 ),
@@ -1938,7 +1943,7 @@ class _ChartCard extends StatelessWidget {
                   icon: const Icon(Icons.timer_outlined, size: 19),
                 ),
                 IconButton(
-                  tooltip: '清理历史记录',
+                  tooltip: '保存当前会话并新建',
                   visualDensity: VisualDensity.compact,
                   constraints: const BoxConstraints.tightFor(
                     width: 36,
@@ -1947,7 +1952,7 @@ class _ChartCard extends StatelessWidget {
                   onPressed: records.isEmpty
                       ? null
                       : () => _confirmClearTemperatureRecords(context),
-                  icon: const Icon(Icons.delete_sweep_rounded, size: 19),
+                  icon: const Icon(Icons.save_as_rounded, size: 19),
                 ),
                 IconButton(
                   tooltip: '导出温度记录',

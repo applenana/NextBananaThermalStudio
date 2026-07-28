@@ -39,6 +39,15 @@ class TemperaturePointReading {
     'y': y,
     'temperature_c': temperature,
   };
+
+  factory TemperaturePointReading.fromJson(Map<String, dynamic> json) {
+    return TemperaturePointReading(
+      id: (json['id'] as num).toInt(),
+      x: (json['x'] as num).toInt(),
+      y: (json['y'] as num).toInt(),
+      temperature: (json['temperature_c'] as num).toDouble(),
+    );
+  }
 }
 
 @immutable
@@ -76,6 +85,29 @@ class TemperatureSample {
     'multi_point_average_c': multiPointAverage,
     'points': [for (final reading in pointReadings) reading.toJson()],
   };
+
+  factory TemperatureSample.fromJson(Map<String, dynamic> json) {
+    final rawPoints = json['points'];
+    return TemperatureSample(
+      sequence: (json['sequence'] as num).toInt(),
+      timestamp: DateTime.parse(json['timestamp'] as String),
+      deviceSerial: json['device_serial'] as String?,
+      maximum: (json['maximum_c'] as num).toDouble(),
+      minimum: (json['minimum_c'] as num).toDouble(),
+      average: (json['average_c'] as num).toDouble(),
+      singleTemperature: (json['single_point_c'] as num?)?.toDouble(),
+      multiPointAverage: (json['multi_point_average_c'] as num?)?.toDouble(),
+      pointReadings: rawPoints is List
+          ? List.unmodifiable(
+              rawPoints.whereType<Map>().map(
+                (point) => TemperaturePointReading.fromJson(
+                  Map<String, dynamic>.from(point),
+                ),
+              ),
+            )
+          : const [],
+    );
+  }
 }
 
 class TemperatureRecorder extends ChangeNotifier {
@@ -100,6 +132,8 @@ class TemperatureRecorder extends ChangeNotifier {
   List<MeasurementPoint> get points => List.unmodifiable(_points);
   MeasurementPoint? get singlePoint => _singlePoint;
   List<TemperatureSample> get records => List.unmodifiable(_records);
+  TemperatureSample? get latestRecord =>
+      _records.isEmpty ? null : _records.last;
   int get recordCount => _records.length;
   bool get hasSelection => _points.isNotEmpty || _singlePoint != null;
   Duration get sampleInterval => _sampleInterval;

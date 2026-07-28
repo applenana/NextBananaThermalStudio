@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io' show Platform;
 
 import 'app_state.dart';
+import 'temperature/temperature_history_store.dart';
 import 'temperature/temperature_recorder.dart';
 import 'ui/activation_overlay.dart';
 import 'ui/home_shell.dart';
@@ -214,6 +215,11 @@ Future<void> resetAllSettings() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _loadPersistedSettings();
+  try {
+    await TemperatureHistoryStore.instance.initialize();
+  } catch (_) {
+    // 历史目录不可用时不阻止实时测温，历史页会显示具体错误。
+  }
   // Windows: 启动系统亮度轮询 (Flutter embedder 在部分 LTSC 上
   // 读不到 platformBrightness, 这里直接读注册表兑定).
   startWindowsBrightnessWatcher();

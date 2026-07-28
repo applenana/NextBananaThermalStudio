@@ -9,18 +9,25 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
 import '../temperature/temperature_export_service.dart';
+import '../temperature/temperature_history_store.dart';
 import '../temperature/temperature_recorder.dart';
 
 Future<void> showTemperatureExportDialog(
   BuildContext context, {
   required bool singlePointMode,
   String? initialDirectory,
+  List<TemperatureSample>? samples,
+  String title = '导出温度记录',
+  bool allowClear = true,
 }) {
   return showDialog<void>(
     context: context,
     builder: (_) => _TemperatureExportDialog(
       singlePointMode: singlePointMode,
       initialDirectory: initialDirectory,
+      samples: samples,
+      title: title,
+      allowClear: allowClear,
     ),
   );
 }
@@ -28,10 +35,16 @@ Future<void> showTemperatureExportDialog(
 class _TemperatureExportDialog extends StatefulWidget {
   final bool singlePointMode;
   final String? initialDirectory;
+  final List<TemperatureSample>? samples;
+  final String title;
+  final bool allowClear;
 
   const _TemperatureExportDialog({
     required this.singlePointMode,
     required this.initialDirectory,
+    required this.samples,
+    required this.title,
+    required this.allowClear,
   });
 
   @override
@@ -52,7 +65,7 @@ class _TemperatureExportDialogState extends State<_TemperatureExportDialog> {
   void initState() {
     super.initState();
     _samples = List<TemperatureSample>.from(
-      TemperatureRecorder.instance.records,
+      widget.samples ?? TemperatureRecorder.instance.records,
     );
   }
 
@@ -127,8 +140,8 @@ class _TemperatureExportDialogState extends State<_TemperatureExportDialog> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('清空温度记录？'),
-        content: const Text('已记录的最高、最低、平均及测温点数据都会被清空，此操作无法撤销。'),
+        title: const Text('开始新的测温记录？'),
+        content: const Text('当前数据会先保存到“历史”栏目，然后清空实时趋势并从下一帧开始新会话。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -136,16 +149,18 @@ class _TemperatureExportDialogState extends State<_TemperatureExportDialog> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('确认清空'),
+            child: const Text('保存并新建'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
+    await TemperatureHistoryStore.instance.finishActiveSession();
+    if (!mounted) return;
     TemperatureRecorder.instance.clearRecords();
     setState(() {
       _samples = [];
-      _status = '记录已清空，将从下一帧重新开始记录。';
+      _status = '当前会话已保存，将从下一帧重新开始记录。';
     });
   }
 
@@ -163,7 +178,7 @@ class _TemperatureExportDialogState extends State<_TemperatureExportDialog> {
         children: [
           const Icon(Icons.ios_share_rounded, size: 22),
           const SizedBox(width: 10),
-          const Expanded(child: Text('导出温度记录')),
+          Expanded(child: Text(widget.title)),
           IconButton(
             tooltip: '关闭',
             onPressed: _busy ? null : () => Navigator.of(context).pop(),
@@ -273,11 +288,12 @@ class _TemperatureExportDialogState extends State<_TemperatureExportDialog> {
         ),
       ),
       actions: [
-        TextButton.icon(
-          onPressed: (_busy || _samples.isEmpty) ? null : _clearRecords,
-          icon: const Icon(Icons.delete_sweep_rounded, size: 18),
-          label: const Text('清空记录'),
-        ),
+        if (widget.allowClear)
+          TextButton.icon(
+            onPressed: (_busy || _samples.isEmpty) ? null : _clearRecords,
+            icon: const Icon(Icons.save_as_rounded, size: 18),
+            label: const Text('保存并新建'),
+          ),
         TextButton(
           onPressed: _busy ? null : () => Navigator.of(context).pop(),
           child: const Text('关闭'),

@@ -16,6 +16,7 @@ import 'protocol/thermal_view_config.dart';
 import 'render/render_params.dart';
 import 'serial/serial_service.dart';
 import 'storage/capture_service.dart';
+import 'temperature/temperature_history_store.dart';
 import 'temperature/temperature_recorder.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 
@@ -557,8 +558,17 @@ class AppState extends ChangeNotifier {
     tMin = mn;
     tAvg = av;
     thermalFrame = mirrored;
-    TemperatureRecorder.instance.recordFrame(
-      timestamp: DateTime.now(),
+    final recordedAt = DateTime.now();
+    final recorder = TemperatureRecorder.instance;
+    final history = TemperatureHistoryStore.instance;
+    if (history.prepareForSample(
+      timestamp: recordedAt,
+      deviceSerial: deviceSerial,
+    )) {
+      recorder.clearRecords();
+    }
+    final recorded = recorder.recordFrame(
+      timestamp: recordedAt,
       deviceSerial: deviceSerial,
       maximum: mx,
       minimum: mn,
@@ -568,6 +578,13 @@ class AppState extends ChangeNotifier {
       srcHeight: th,
       renderParams: renderParams,
     );
+    final sample = recorder.latestRecord;
+    if (recorded && sample != null) {
+      history.appendSample(
+        sample,
+        sampleIntervalMs: recorder.sampleInterval.inMilliseconds,
+      );
+    }
     // 录制由 30fps 计时器统一驱动 (见 _recordTick), 不再随热成像回调追加,
     // 这样关掉热成像后仍能继续录制纯可见光 / 空帧.
     notifyListeners();
