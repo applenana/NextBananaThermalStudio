@@ -16,45 +16,6 @@ import '../temperature/temperature_recorder.dart';
 import 'banana_toast.dart';
 import 'temperature_export_dialog.dart';
 
-String get _historyFontFamily {
-  if (Platform.isWindows) return 'Microsoft YaHei UI';
-  if (Platform.isMacOS || Platform.isIOS) return '.AppleSystemUIFont';
-  return 'sans-serif';
-}
-
-class _HistoryTypography extends StatelessWidget {
-  const _HistoryTypography({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final fontFamily = _historyFontFamily;
-    final appBarTitleStyle = theme.appBarTheme.titleTextStyle;
-    final appBarToolbarStyle = theme.appBarTheme.toolbarTextStyle;
-    return Theme(
-      data: theme.copyWith(
-        textTheme: theme.textTheme.apply(fontFamily: fontFamily),
-        primaryTextTheme: theme.primaryTextTheme.apply(fontFamily: fontFamily),
-        appBarTheme: theme.appBarTheme.copyWith(
-          titleTextStyle: appBarTitleStyle?.copyWith(
-            fontFamily: fontFamily,
-            fontWeight: FontWeight.w600,
-          ),
-          toolbarTextStyle: appBarToolbarStyle?.copyWith(
-            fontFamily: fontFamily,
-          ),
-        ),
-      ),
-      child: DefaultTextStyle.merge(
-        style: TextStyle(fontFamily: fontFamily),
-        child: child,
-      ),
-    );
-  }
-}
-
 enum _HistoryDateFilter { all, today, sevenDays, thirtyDays }
 
 class TemperatureHistoryTab extends StatefulWidget {
@@ -180,14 +141,12 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
   void _openNarrowDetail(TemperatureHistorySession session) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => _HistoryTypography(
-          child: Scaffold(
-            appBar: AppBar(title: const Text('历史分析')),
-            body: SafeArea(
-              child: _HistorySessionDetail(
-                sessionId: session.id,
-                onDeleted: () => Navigator.of(context).pop(),
-              ),
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: const Text('历史分析')),
+          body: SafeArea(
+            child: _HistorySessionDetail(
+              sessionId: session.id,
+              onDeleted: () => Navigator.of(context).pop(),
             ),
           ),
         ),
@@ -197,58 +156,52 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
 
   @override
   Widget build(BuildContext context) {
-    return _HistoryTypography(
-      child: Builder(
-        builder: (context) {
-          final scheme = Theme.of(context).colorScheme;
-          if (!_store.initialized) {
-            return _HistoryUnavailable(
-              error: _store.lastError,
-              onRetry: () async {
-                try {
-                  await _store.initialize();
-                } catch (_) {}
-                if (mounted) setState(() {});
-              },
-            );
-          }
-          return LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth >= 900;
-              final list = _buildSessionPane(context, wide: wide);
-              if (!wide) return list;
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  SizedBox(width: 350, child: list),
-                  const SizedBox(width: 12),
-                  VerticalDivider(
-                    width: 1,
-                    color: scheme.outlineVariant.withValues(alpha: 0.35),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _selectedId == null
-                        ? const _HistoryEmptyDetail()
-                        : _HistorySessionDetail(
-                            key: ValueKey(_selectedId),
-                            sessionId: _selectedId!,
-                            onDeleted: () {
-                              final remaining = _filteredSessions;
-                              setState(
-                                () => _selectedId = remaining.isEmpty
-                                    ? null
-                                    : remaining.first.id,
-                              );
-                            },
-                          ),
-                  ),
-                ],
-              );
-            },
-          );
+    final scheme = Theme.of(context).colorScheme;
+    if (!_store.initialized) {
+      return _HistoryUnavailable(
+        error: _store.lastError,
+        onRetry: () async {
+          try {
+            await _store.initialize();
+          } catch (_) {}
+          if (mounted) setState(() {});
         },
-      ),
+      );
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 900;
+        final list = _buildSessionPane(context, wide: wide);
+        if (!wide) return list;
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(width: 350, child: list),
+            const SizedBox(width: 12),
+            VerticalDivider(
+              width: 1,
+              color: scheme.outlineVariant.withValues(alpha: 0.35),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _selectedId == null
+                  ? const _HistoryEmptyDetail()
+                  : _HistorySessionDetail(
+                      key: ValueKey(_selectedId),
+                      sessionId: _selectedId!,
+                      onDeleted: () {
+                        final remaining = _filteredSessions;
+                        setState(
+                          () => _selectedId = remaining.isEmpty
+                              ? null
+                              : remaining.first.id,
+                        );
+                      },
+                    ),
+            ),
+          ],
+        );
+      },
     );
   }
 
