@@ -362,6 +362,27 @@ class TemperatureHistoryStore extends ChangeNotifier {
     });
   }
 
+  Future<void> deleteSessions(Iterable<String> sessionIds) async {
+    final ids = sessionIds.toSet();
+    final targets = _sessions
+        .where((session) => ids.contains(session.id))
+        .toList(growable: false);
+    if (targets.isEmpty) return;
+
+    if (targets.any((session) => session.id == _activeSession?.id)) {
+      _finalizeActiveSync();
+      await flush();
+    }
+    _sessions.removeWhere((session) => ids.contains(session.id));
+    notifyListeners();
+    await _enqueue(() async {
+      for (final session in targets) {
+        final directory = _sessionDirectory(session.id);
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+  }
+
   Future<TemperatureHistorySession> importJsonFile(String filePath) async {
     final source = File(filePath);
     return importJsonContent(

@@ -30,6 +30,9 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
   final _searchController = TextEditingController();
   _HistoryDateFilter _dateFilter = _HistoryDateFilter.all;
   String? _selectedId;
+  final Set<String> _selectedSessionIds = <String>{};
+  bool _selectionMode = false;
+  bool _deleting = false;
   bool _importing = false;
 
   @override
@@ -53,6 +56,9 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
         !sessions.any((session) => session.id == _selectedId)) {
       _selectedId = sessions.isEmpty ? null : sessions.first.id;
     }
+    _selectedSessionIds.removeWhere(
+      (id) => !sessions.any((session) => session.id == id),
+    );
     setState(() {});
   }
 
@@ -82,6 +88,98 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
           };
         })
         .toList(growable: false);
+  }
+
+  void _pruneSelectionToFilter() {
+    final visibleIds = _filteredSessions.map((session) => session.id).toSet();
+    _selectedSessionIds.removeWhere((id) => !visibleIds.contains(id));
+  }
+
+  void _onSearchChanged(String _) {
+    setState(_pruneSelectionToFilter);
+  }
+
+  void _setDateFilter(_HistoryDateFilter value) {
+    setState(() {
+      _dateFilter = value;
+      _pruneSelectionToFilter();
+    });
+  }
+
+  bool get _allFilteredSelected =>
+      _filteredSessions.isNotEmpty &&
+      _filteredSessions.every(
+        (session) => _selectedSessionIds.contains(session.id),
+      );
+
+  void _toggleSelectionMode() {
+    setState(() {
+      _selectionMode = !_selectionMode;
+      if (!_selectionMode) _selectedSessionIds.clear();
+    });
+  }
+
+  void _toggleSessionSelection(String sessionId) {
+    setState(() {
+      if (!_selectedSessionIds.add(sessionId)) {
+        _selectedSessionIds.remove(sessionId);
+      }
+    });
+  }
+
+  void _selectAllFiltered() {
+    final filteredIds = _filteredSessions.map((session) => session.id);
+    setState(() {
+      if (_allFilteredSelected) {
+        _selectedSessionIds.removeAll(filteredIds);
+      } else {
+        _selectedSessionIds.addAll(filteredIds);
+      }
+    });
+  }
+
+  Future<void> _deleteSelected() async {
+    final ids = _selectedSessionIds.toList(growable: false);
+    if (ids.isEmpty || _deleting) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.delete_sweep_outlined, size: 32),
+        title: Text('删除 ${ids.length} 条历史记录？'),
+        content: const Text('所选记录及其原始测温数据将从本地永久删除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('确认删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final includesActive =
+        _store.activeSession != null && ids.contains(_store.activeSession!.id);
+    setState(() => _deleting = true);
+    try {
+      if (includesActive) TemperatureRecorder.instance.clearRecords();
+      await _store.deleteSessions(ids);
+      if (!mounted) return;
+      setState(() {
+        _selectedSessionIds.clear();
+        _selectionMode = false;
+      });
+      BananaToast.show(
+        context,
+        '已删除 ${ids.length} 条历史记录',
+        icon: Icons.delete_sweep_outlined,
+      );
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
   }
 
   Future<void> _importJson() async {
@@ -229,7 +327,7 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
                 children: [
                   Text(
                     '温度历史',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                   ),
                   Text('本地会话、趋势复盘与数据分析', style: TextStyle(fontSize: 11)),
                 ],
@@ -252,6 +350,15 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
                     )
                   : const Icon(Icons.file_download_outlined, size: 19),
             ),
+            const SizedBox(width: 4),
+            IconButton.filledTonal(
+              tooltip: _selectionMode ? '退出批量选择' : '批量管理历史',
+              onPressed: _deleting ? null : _toggleSelectionMode,
+              icon: Icon(
+                _selectionMode ? Icons.close_rounded : Icons.checklist_rounded,
+                size: 19,
+              ),
+            ),
           ],
         ),
         if (!wide && _store.storagePath != null)
@@ -267,7 +374,7 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
         const SizedBox(height: 12),
         TextField(
           controller: _searchController,
-          onChanged: (_) => setState(() {}),
+          onChanged: _onSearchChanged,
           decoration: InputDecoration(
             hintText: '搜索名称或设备序列号',
             prefixIcon: const Icon(Icons.search_rounded, size: 20),
@@ -277,7 +384,7 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
                     tooltip: '清除搜索',
                     onPressed: () {
                       _searchController.clear();
-                      setState(() {});
+                      setState(_pruneSelectionToFilter);
                     },
                     icon: const Icon(Icons.close_rounded, size: 18),
                   ),
@@ -300,6 +407,49 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
             ],
           ),
         ),
+        if (_selectionMode) ...[
+          const SizedBox(height: 7),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: scheme.primaryContainer.withValues(alpha: 0.45),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Wrap(
+                spacing: 2,
+                runSpacing: 2,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    '已选 ${_selectedSessionIds.length} / ${sessions.length}',
+                    style: TextStyle(
+                      color: scheme.onPrimaryContainer,
+                      fontSize: 11,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: sessions.isEmpty ? null : _selectAllFiltered,
+                    child: Text(_allFilteredSelected ? '取消全选' : '全选当前'),
+                  ),
+                  TextButton(
+                    onPressed: _selectedSessionIds.isEmpty
+                        ? null
+                        : () => setState(_selectedSessionIds.clear),
+                    child: const Text('清空选择'),
+                  ),
+                  FilledButton.tonalIcon(
+                    onPressed: _selectedSessionIds.isEmpty || _deleting
+                        ? null
+                        : _deleteSelected,
+                    icon: const Icon(Icons.delete_sweep_outlined, size: 16),
+                    label: const Text('删除'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
         const SizedBox(height: 8),
         if (_store.lastError != null)
           Container(
@@ -327,13 +477,21 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
                     return _HistorySessionCard(
                       session: session,
                       selected: wide && session.id == _selectedId,
+                      selectionMode: _selectionMode,
+                      batchSelected: _selectedSessionIds.contains(session.id),
                       onTap: () {
+                        if (_selectionMode) {
+                          _toggleSessionSelection(session.id);
+                          return;
+                        }
                         if (wide) {
                           setState(() => _selectedId = session.id);
                         } else {
                           _openNarrowDetail(session);
                         }
                       },
+                      onSelectChanged: (_) =>
+                          _toggleSessionSelection(session.id),
                     );
                   },
                 ),
@@ -348,7 +506,7 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
       child: ChoiceChip(
         label: Text(label),
         selected: _dateFilter == value,
-        onSelected: (_) => setState(() => _dateFilter = value),
+        onSelected: (_) => _setDateFilter(value),
         visualDensity: VisualDensity.compact,
       ),
     );
@@ -359,18 +517,26 @@ class _HistorySessionCard extends StatelessWidget {
   const _HistorySessionCard({
     required this.session,
     required this.selected,
+    required this.selectionMode,
+    required this.batchSelected,
     required this.onTap,
+    required this.onSelectChanged,
   });
 
   final TemperatureHistorySession session;
   final bool selected;
+  final bool selectionMode;
+  final bool batchSelected;
   final VoidCallback onTap;
+  final ValueChanged<bool?> onSelectChanged;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Material(
-      color: selected
+      color: batchSelected
+          ? scheme.primaryContainer.withValues(alpha: 0.65)
+          : selected
           ? scheme.primaryContainer.withValues(alpha: 0.5)
           : scheme.surfaceContainer,
       borderRadius: BorderRadius.circular(14),
@@ -401,8 +567,8 @@ class _HistorySessionCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ),
@@ -411,7 +577,14 @@ class _HistorySessionCard extends StatelessWidget {
                       padding: EdgeInsets.only(left: 5),
                       child: Icon(Icons.file_download_done_rounded, size: 15),
                     ),
-                  const Icon(Icons.chevron_right_rounded, size: 18),
+                  if (selectionMode)
+                    Checkbox(
+                      value: batchSelected,
+                      onChanged: onSelectChanged,
+                      visualDensity: VisualDensity.compact,
+                    )
+                  else
+                    const Icon(Icons.chevron_right_rounded, size: 18),
                 ],
               ),
               const SizedBox(height: 7),
@@ -696,7 +869,7 @@ class _HistorySessionDetailState extends State<_HistorySessionDetail> {
                           session.name,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            fontSize: 18,
+                            fontSize: 16,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -862,7 +1035,7 @@ class _HistorySessionDetailState extends State<_HistorySessionDetail> {
               children: [
                 const Text(
                   '趋势分析',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
                 ),
                 const SizedBox(width: 4),
                 _rangeChip(_HistoryChartRange.all, '全部'),
@@ -1160,8 +1333,8 @@ class _HistoryKpi extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ],
@@ -1191,7 +1364,7 @@ class _HistoryRecentSamples extends StatelessWidget {
           children: [
             const Text(
               '最近采样',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
             ),
             const SizedBox(height: 8),
             SingleChildScrollView(
@@ -1268,7 +1441,7 @@ class _ActiveBadge extends StatelessWidget {
             style: TextStyle(
               color: Color(0xFF43A047),
               fontSize: 10,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w500,
             ),
           ),
         ],
@@ -1294,7 +1467,7 @@ class _HistoryUnavailable extends StatelessWidget {
             const SizedBox(height: 12),
             const Text(
               '温度历史存储尚未就绪',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
             ),
             if (error != null) ...[
               const SizedBox(height: 7),

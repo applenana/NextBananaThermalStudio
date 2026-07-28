@@ -129,4 +129,30 @@ void main() {
       isFalse,
     );
   });
+
+  test('支持批量删除历史会话及其本地目录', () async {
+    final start = DateTime.utc(2026, 7, 29, 11);
+    for (var index = 0; index < 3; index++) {
+      store.appendSample(
+        _sample(1, start.add(Duration(minutes: index))),
+        sampleIntervalMs: 1000,
+      );
+      if (index < 2) await store.finishActiveSession();
+    }
+
+    final sessions = store.sessions;
+    expect(sessions.first.active, isTrue);
+    final deletedIds = [sessions[0].id, sessions[2].id];
+    await store.deleteSessions(deletedIds);
+
+    expect(store.activeSession, isNull);
+    expect(store.sessions, hasLength(1));
+    expect(store.sessions.single.id, sessions[1].id);
+    for (final id in deletedIds) {
+      expect(
+        Directory('${root.path}${Platform.pathSeparator}$id').existsSync(),
+        isFalse,
+      );
+    }
+  });
 }
