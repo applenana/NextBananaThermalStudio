@@ -1149,15 +1149,15 @@ LineChartBarData _temperatureLine(
 }
 
 Future<void> _confirmClearTemperatureRecords(BuildContext context) async {
-  final count = TemperatureRecorder.instance.recordCount;
+  final recorder = TemperatureRecorder.instance;
+  final count = recorder.recordCount;
   if (count == 0) return;
+  final nextRecordLabel = recorder.recordingPaused ? '恢复记录时' : '下一帧';
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
       title: const Text('开始新的测温记录？'),
-      content: Text(
-        '当前 $count 条数据会保存到“历史”栏目，实时趋势随后清空并从下一帧开始新会话。',
-      ),
+      content: Text('当前 $count 条数据会保存到“历史”栏目，实时趋势随后清空并在$nextRecordLabel开始新会话。'),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -1173,11 +1173,23 @@ Future<void> _confirmClearTemperatureRecords(BuildContext context) async {
   if (confirmed != true || !context.mounted) return;
   await TemperatureHistoryStore.instance.finishActiveSession();
   if (!context.mounted) return;
-  TemperatureRecorder.instance.clearRecords();
+  recorder.clearRecords();
   BananaToast.show(
     context,
-    '当前会话已保存，将从下一帧开始新记录',
+    '当前会话已保存，将在$nextRecordLabel开始新记录',
     icon: Icons.save_rounded,
+  );
+}
+
+void _toggleTemperatureRecording(BuildContext context) {
+  final recorder = TemperatureRecorder.instance;
+  recorder.toggleRecordingPaused();
+  BananaToast.show(
+    context,
+    recorder.recordingPaused ? '温度趋势记录已暂停，热成像画面继续显示' : '温度趋势记录已恢复，将继续当前会话',
+    icon: recorder.recordingPaused
+        ? Icons.pause_circle_outline_rounded
+        : Icons.play_circle_outline_rounded,
   );
 }
 
@@ -1328,6 +1340,27 @@ class _FullscreenLeftPanel extends StatelessWidget {
                     fontWeight: FontWeight.w700,
                   ),
                 ),
+              ),
+              AnimatedBuilder(
+                animation: TemperatureRecorder.instance,
+                builder: (context, _) {
+                  final paused = TemperatureRecorder.instance.recordingPaused;
+                  return IconButton(
+                    tooltip: paused ? '恢复温度记录' : '暂停温度记录',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 26,
+                      height: 26,
+                    ),
+                    onPressed: () => _toggleTemperatureRecording(context),
+                    icon: Icon(
+                      paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                      size: 17,
+                      color: paused ? Colors.amberAccent : Colors.white70,
+                    ),
+                  );
+                },
               ),
               IconButton(
                 tooltip:
@@ -1882,7 +1915,8 @@ class _ChartCard extends StatelessWidget {
     context.watch<AppState>();
     final scheme = Theme.of(context).colorScheme;
     final singlePointMode = _ThermalMarkersStore.instance.cursorMode;
-    final records = TemperatureRecorder.instance.recentRecords();
+    final recorder = TemperatureRecorder.instance;
+    final records = recorder.recentRecords();
     final selectedLabel = singlePointMode ? '单点' : '多点均值';
     final selectedSpots = _temperatureSpots(
       records,
@@ -1925,15 +1959,34 @@ class _ChartCard extends StatelessWidget {
                 ),
                 const Spacer(),
                 Text(
-                  '${TemperatureRecorder.instance.recordCount} 条',
+                  recorder.recordingPaused
+                      ? '已暂停 · ${recorder.recordCount} 条'
+                      : '${recorder.recordCount} 条',
                   style: TextStyle(
-                    color: scheme.onSurfaceVariant,
+                    color: recorder.recordingPaused
+                        ? scheme.primary
+                        : scheme.onSurfaceVariant,
                     fontSize: 11,
                   ),
                 ),
                 IconButton(
-                  tooltip:
-                      '记录频率：${TemperatureRecorder.instance.sampleIntervalLabel}',
+                  tooltip: recorder.recordingPaused ? '恢复温度记录' : '暂停温度记录',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 36,
+                    height: 36,
+                  ),
+                  onPressed: () => _toggleTemperatureRecording(context),
+                  icon: Icon(
+                    recorder.recordingPaused
+                        ? Icons.play_arrow_rounded
+                        : Icons.pause_rounded,
+                    size: 20,
+                    color: recorder.recordingPaused ? scheme.primary : null,
+                  ),
+                ),
+                IconButton(
+                  tooltip: '记录频率：${recorder.sampleIntervalLabel}',
                   visualDensity: VisualDensity.compact,
                   constraints: const BoxConstraints.tightFor(
                     width: 36,

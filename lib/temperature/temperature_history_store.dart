@@ -223,6 +223,7 @@ class TemperatureHistoryStore extends ChangeNotifier {
   bool prepareForSample({
     required DateTime timestamp,
     required String? deviceSerial,
+    bool ignoreAutomaticGap = false,
   }) {
     final active = _activeSession;
     if (active == null) return false;
@@ -234,7 +235,7 @@ class TemperatureHistoryStore extends ChangeNotifier {
     final shouldSplit =
         deviceChanged ||
         gap.isNegative ||
-        gap > automaticGap ||
+        (!ignoreAutomaticGap && gap > automaticGap) ||
         timestamp.difference(active.startedAt) >= maximumSessionDuration ||
         active.sampleCount >= maximumSessionSamples;
     if (!shouldSplit) return false;

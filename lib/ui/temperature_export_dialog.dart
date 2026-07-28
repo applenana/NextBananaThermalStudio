@@ -137,11 +137,13 @@ class _TemperatureExportDialogState extends State<_TemperatureExportDialog> {
   }
 
   Future<void> _clearRecords() async {
+    final recorder = TemperatureRecorder.instance;
+    final nextLabel = recorder.recordingPaused ? '恢复记录时' : '下一帧';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('开始新的测温记录？'),
-        content: const Text('当前数据会先保存到“历史”栏目，然后清空实时趋势并从下一帧开始新会话。'),
+        content: Text('当前数据会先保存到“历史”栏目，然后清空实时趋势并在$nextLabel开始新会话。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -157,10 +159,10 @@ class _TemperatureExportDialogState extends State<_TemperatureExportDialog> {
     if (confirmed != true || !mounted) return;
     await TemperatureHistoryStore.instance.finishActiveSession();
     if (!mounted) return;
-    TemperatureRecorder.instance.clearRecords();
+    recorder.clearRecords();
     setState(() {
       _samples = [];
-      _status = '当前会话已保存，将从下一帧重新开始记录。';
+      _status = '当前会话已保存，将在$nextLabel重新开始记录。';
     });
   }
 

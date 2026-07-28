@@ -561,11 +561,14 @@ class AppState extends ChangeNotifier {
     final recordedAt = DateTime.now();
     final recorder = TemperatureRecorder.instance;
     final history = TemperatureHistoryStore.instance;
-    if (history.prepareForSample(
-      timestamp: recordedAt,
-      deviceSerial: deviceSerial,
-    )) {
-      recorder.clearRecords();
+    if (!recorder.recordingPaused) {
+      if (history.prepareForSample(
+        timestamp: recordedAt,
+        deviceSerial: deviceSerial,
+        ignoreAutomaticGap: recorder.takeResumeGapAllowance(),
+      )) {
+        recorder.clearRecords();
+      }
     }
     final recorded = recorder.recordFrame(
       timestamp: recordedAt,

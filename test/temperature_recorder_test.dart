@@ -94,6 +94,36 @@ void main() {
     expect(record(const Duration(milliseconds: 200)), isTrue);
   });
 
+  test('暂停时停止采样，恢复后立即继续原会话', () {
+    final recorder = TemperatureRecorder();
+    final start = DateTime.utc(2026, 7, 28, 10);
+
+    bool record(Duration offset) => recorder.recordFrame(
+      timestamp: start.add(offset),
+      deviceSerial: null,
+      maximum: 30,
+      minimum: 20,
+      average: 25,
+      thermalFrame: Float32List.fromList([25]),
+      srcWidth: 1,
+      srcHeight: 1,
+      renderParams: renderParams,
+    );
+
+    expect(record(Duration.zero), isTrue);
+    recorder.pauseRecording();
+    expect(recorder.recordingPaused, isTrue);
+    expect(record(const Duration(minutes: 1)), isFalse);
+    expect(recorder.recordCount, 1);
+
+    recorder.resumeRecording();
+    expect(recorder.recordingPaused, isFalse);
+    expect(recorder.takeResumeGapAllowance(), isTrue);
+    expect(recorder.takeResumeGapAllowance(), isFalse);
+    expect(record(const Duration(minutes: 1)), isTrue);
+    expect(recorder.recordCount, 2);
+  });
+
   test('CSV 和 JSON 导出包含测温点与结构化字段', () {
     final sample = TemperatureSample(
       sequence: 1,

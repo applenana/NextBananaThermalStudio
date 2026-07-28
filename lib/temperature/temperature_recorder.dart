@@ -126,6 +126,8 @@ class TemperatureRecorder extends ChangeNotifier {
   final List<TemperatureSample> _records = [];
   MeasurementPoint? _singlePoint;
   DateTime? _lastRecordedAt;
+  bool _recordingPaused = false;
+  bool _resumeGapAllowancePending = false;
   int _nextPointId = 1;
   int _nextSequence = 1;
 
@@ -137,6 +139,7 @@ class TemperatureRecorder extends ChangeNotifier {
   int get recordCount => _records.length;
   bool get hasSelection => _points.isNotEmpty || _singlePoint != null;
   Duration get sampleInterval => _sampleInterval;
+  bool get recordingPaused => _recordingPaused;
 
   String get sampleIntervalLabel {
     final milliseconds = _sampleInterval.inMilliseconds;
@@ -157,6 +160,35 @@ class TemperatureRecorder extends ChangeNotifier {
     // 频率切换从下一帧立即生效，不受旧间隔剩余时间影响。
     _lastRecordedAt = null;
     notifyListeners();
+  }
+
+  void pauseRecording() {
+    if (_recordingPaused) return;
+    _recordingPaused = true;
+    notifyListeners();
+  }
+
+  void resumeRecording() {
+    if (!_recordingPaused) return;
+    _recordingPaused = false;
+    _lastRecordedAt = null;
+    _resumeGapAllowancePending = true;
+    notifyListeners();
+  }
+
+  void toggleRecordingPaused() {
+    if (_recordingPaused) {
+      resumeRecording();
+    } else {
+      pauseRecording();
+    }
+  }
+
+  /// 恢复后的第一帧可继续原会话，不把用户主动暂停误判为设备断流。
+  bool takeResumeGapAllowance() {
+    if (!_resumeGapAllowancePending) return false;
+    _resumeGapAllowancePending = false;
+    return true;
   }
 
   MeasurementPoint addPoint(int x, int y) {
@@ -207,6 +239,7 @@ class TemperatureRecorder extends ChangeNotifier {
     required int srcHeight,
     required RenderParams renderParams,
   }) {
+    if (_recordingPaused) return false;
     final last = _lastRecordedAt;
     if (last != null && timestamp.difference(last) < _sampleInterval) {
       return false;

@@ -102,6 +102,27 @@ void main() {
     expect(store.sessions.map((session) => session.sampleCount), [1, 1]);
   });
 
+  test('主动暂停恢复可忽略一次断流间隔并继续原会话', () async {
+    final start = DateTime.utc(2026, 7, 29, 9);
+    store.appendSample(_sample(1, start), sampleIntervalMs: 1000);
+    expect(
+      store.prepareForSample(
+        timestamp: start.add(const Duration(minutes: 1)),
+        deviceSerial: 'DEVICE-A',
+        ignoreAutomaticGap: true,
+      ),
+      isFalse,
+    );
+    store.appendSample(
+      _sample(2, start.add(const Duration(minutes: 1))),
+      sampleIntervalMs: 1000,
+    );
+    await store.finishActiveSession();
+
+    expect(store.sessions, hasLength(1));
+    expect(store.sessions.single.sampleCount, 2);
+  });
+
   test('支持重命名、删除与导入现有 JSON 导出', () async {
     final start = DateTime.utc(2026, 7, 29, 10);
     final payload = jsonEncode({

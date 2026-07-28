@@ -227,11 +227,13 @@ class _TemperatureHistoryTabState extends State<TemperatureHistoryTab> {
     final active = _store.activeSession;
     if (active == null) return;
     await _store.finishActiveSession();
-    TemperatureRecorder.instance.clearRecords();
+    final recorder = TemperatureRecorder.instance;
+    recorder.clearRecords();
     if (!mounted) return;
+    final nextLabel = recorder.recordingPaused ? '恢复记录时' : '下一帧';
     BananaToast.show(
       context,
-      '“${active.name}”已归档，下一帧将创建新会话',
+      '“${active.name}”已归档，将在$nextLabel创建新会话',
       icon: Icons.inventory_2_outlined,
     );
   }
