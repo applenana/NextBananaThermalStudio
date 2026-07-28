@@ -40,6 +40,12 @@ class ThermalCanvas extends StatefulWidget {
   /// 单击已存在的 marker 时回调 (传入索引). 可用来实现删除.
   final void Function(int index)? onRemoveMarker;
 
+  /// 固定的单点测温光标。鼠标移出画面后仍会保留。
+  final TempMarker? fixedCursor;
+
+  /// 单击画面时更新固定单点测温光标。
+  final void Function(int px, int py, double temp)? onSetFixedCursor;
+
   /// 是否叠加最高温像素角标 (橙黄 ▼ + H 标签). 与 [markers] 风格独立,
   /// 仅展示、不接受点击.
   final bool showHotSpot;
@@ -56,6 +62,8 @@ class ThermalCanvas extends StatefulWidget {
     this.markers = const [],
     this.onAddMarker,
     this.onRemoveMarker,
+    this.fixedCursor,
+    this.onSetFixedCursor,
     this.showHotSpot = false,
     this.showColdSpot = false,
   });
@@ -64,8 +72,66 @@ class ThermalCanvas extends StatefulWidget {
   State<ThermalCanvas> createState() => _ThermalCanvasState();
 }
 
-class _ThermalCanvasState extends State<ThermalCanvas> {
+class _ThermalCanvasState extends State<ThermalCanvas>
+    with SingleTickerProviderStateMixin {
   Offset? _hoverLocal;
+  late final AnimationController _extremeController;
+  _ExtremeSpot? _hotFrom;
+  _ExtremeSpot? _hotTo;
+  _ExtremeSpot? _coldFrom;
+  _ExtremeSpot? _coldTo;
+
+  @override
+  void initState() {
+    super.initState();
+    _extremeController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 140),
+      value: 1,
+    );
+    _updateExtremeTargets(widget.frame, animate: false);
+  }
+
+  @override
+  void didUpdateWidget(covariant ThermalCanvas oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.fixedCursor != null && widget.fixedCursor == null) {
+      _hoverLocal = null;
+    }
+    if (oldWidget.frame != widget.frame) {
+      _updateExtremeTargets(widget.frame, animate: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _extremeController.dispose();
+    super.dispose();
+  }
+
+  void _updateExtremeTargets(RenderedFrame? frame, {required bool animate}) {
+    final targets = _findExtremeSpots(frame);
+    if (targets.hot == null || targets.cold == null) {
+      _extremeController.stop();
+      _hotFrom = _hotTo = null;
+      _coldFrom = _coldTo = null;
+      return;
+    }
+
+    if (!animate || _hotTo == null || _coldTo == null) {
+      _hotFrom = _hotTo = targets.hot;
+      _coldFrom = _coldTo = targets.cold;
+      _extremeController.value = 1;
+      return;
+    }
+
+    final progress = Curves.easeOutCubic.transform(_extremeController.value);
+    _hotFrom = _ExtremeSpot.lerp(_hotFrom!, _hotTo!, progress);
+    _coldFrom = _ExtremeSpot.lerp(_coldFrom!, _coldTo!, progress);
+    _hotTo = targets.hot;
+    _coldTo = targets.cold;
+    _extremeController.forward(from: 0);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -88,9 +154,10 @@ class _ThermalCanvasState extends State<ThermalCanvas> {
                 color: scheme.onSurfaceVariant.withValues(alpha: 0.4),
               ),
               const SizedBox(height: 8),
-              Text(widget.placeholder,
-                  style: TextStyle(
-                      color: scheme.onSurfaceVariant, fontSize: 13)),
+              Text(
+                widget.placeholder,
+                style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
+              ),
             ],
           ),
         ),
@@ -109,17 +176,17 @@ class _ThermalCanvasState extends State<ThermalCanvas> {
           h = c.maxHeight;
           w = h * imgAspect;
         }
-        final origin = Offset(
-          (c.maxWidth - w) / 2,
-          (c.maxHeight - h) / 2,
-        );
+        final origin = Offset((c.maxWidth - w) / 2, (c.maxHeight - h) / 2);
 
         void handleTap(Offset localPos) {
           final relX = localPos.dx - origin.dx;
           final relY = localPos.dy - origin.dy;
           if (relX < 0 || relY < 0 || relX > w || relY > h) return;
           final px = (relX / w * frame.width).floor().clamp(0, frame.width - 1);
-          final py = (relY / h * frame.height).floor().clamp(0, frame.height - 1);
+          final py = (relY / h * frame.height).floor().clamp(
+            0,
+            frame.height - 1,
+          );
 
           if (widget.onRemoveMarker != null) {
             final hitFx = (8 / w * frame.width).ceil().clamp(1, 999);
@@ -137,13 +204,19 @@ class _ThermalCanvasState extends State<ThermalCanvas> {
             final temp = frame.temperatureField[py * frame.width + px];
             widget.onAddMarker!(px, py, temp);
           }
+          if (widget.onSetFixedCursor != null) {
+            final temp = frame.temperatureField[py * frame.width + px];
+            widget.onSetFixedCursor!(px, py, temp);
+          }
         }
 
         return Stack(
           children: [
             Positioned.fill(
               child: MouseRegion(
-                cursor: widget.onAddMarker != null
+                cursor:
+                    (widget.onAddMarker != null ||
+                        widget.onSetFixedCursor != null)
                     ? SystemMouseCursors.precise
                     : SystemMouseCursors.basic,
                 onHover: widget.showCursorTemp
@@ -154,25 +227,31 @@ class _ThermalCanvasState extends State<ThermalCanvas> {
                     : null,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTapDown: (widget.onAddMarker != null ||
-                          widget.onRemoveMarker != null)
+                  onTapDown:
+                      (widget.onAddMarker != null ||
+                          widget.onRemoveMarker != null ||
+                          widget.onSetFixedCursor != null)
                       ? (d) => handleTap(d.localPosition)
                       : (widget.showCursorTemp
-                          // 触屏单点跟随测温: 没有 hover 时, 用 tap 落点更新十字.
-                          ? (d) =>
-                              setState(() => _hoverLocal = d.localPosition)
-                          : null),
+                            // 触屏单点跟随测温: 没有 hover 时, 用 tap 落点更新十字.
+                            ? (d) =>
+                                  setState(() => _hoverLocal = d.localPosition)
+                            : null),
                   // 触屏单点跟随测温: 通过 Pan 持续更新十字位置 (类 PC 端鼠标移动).
                   // 仅在不冲突 marker 添加/删除时启用, 由父级通过 onAddMarker=null
                   // 切换到该模式.
-                  onPanStart: (widget.showCursorTemp &&
-                          widget.onAddMarker == null &&
-                          widget.onRemoveMarker == null)
+                  onPanStart: widget.onSetFixedCursor != null
+                      ? (d) => handleTap(d.localPosition)
+                      : (widget.showCursorTemp &&
+                            widget.onAddMarker == null &&
+                            widget.onRemoveMarker == null)
                       ? (d) => setState(() => _hoverLocal = d.localPosition)
                       : null,
-                  onPanUpdate: (widget.showCursorTemp &&
-                          widget.onAddMarker == null &&
-                          widget.onRemoveMarker == null)
+                  onPanUpdate: widget.onSetFixedCursor != null
+                      ? (d) => handleTap(d.localPosition)
+                      : (widget.showCursorTemp &&
+                            widget.onAddMarker == null &&
+                            widget.onRemoveMarker == null)
                       ? (d) => setState(() => _hoverLocal = d.localPosition)
                       : null,
                   child: RgbImageView(
@@ -210,14 +289,19 @@ class _ThermalCanvasState extends State<ThermalCanvas> {
                 child: IgnorePointer(
                   child: CustomPaint(
                     painter: _ExtremesPainter(
-                      frame: frame,
+                      progress: _extremeController,
+                      hotFrom: _hotFrom,
+                      hotTo: _hotTo,
+                      coldFrom: _coldFrom,
+                      coldTo: _coldTo,
                       showHot: widget.showHotSpot,
                       showCold: widget.showColdSpot,
                     ),
                   ),
                 ),
               ),
-            if (widget.showCursorTemp && _hoverLocal != null)
+            if (widget.showCursorTemp &&
+                (widget.fixedCursor != null || _hoverLocal != null))
               _buildCursorOverlay(frame, origin, Size(w, h)),
             if (widget.infoBar != null)
               Positioned(
@@ -233,15 +317,38 @@ class _ThermalCanvasState extends State<ThermalCanvas> {
   }
 
   Widget _buildCursorOverlay(RenderedFrame frame, Offset origin, Size imgSize) {
-    final hover = _hoverLocal!;
-    final relX = hover.dx - origin.dx;
-    final relY = hover.dy - origin.dy;
-    if (relX < 0 || relY < 0 || relX > imgSize.width || relY > imgSize.height) {
-      return const SizedBox.shrink();
+    final fixed = widget.fixedCursor;
+    late final double relX;
+    late final double relY;
+    late final double temp;
+    if (fixed != null &&
+        fixed.px >= 0 &&
+        fixed.px < frame.width &&
+        fixed.py >= 0 &&
+        fixed.py < frame.height) {
+      relX = (fixed.px + 0.5) / frame.width * imgSize.width;
+      relY = (fixed.py + 0.5) / frame.height * imgSize.height;
+      temp = fixed.temp;
+    } else {
+      final hover = _hoverLocal!;
+      relX = hover.dx - origin.dx;
+      relY = hover.dy - origin.dy;
+      if (relX < 0 ||
+          relY < 0 ||
+          relX > imgSize.width ||
+          relY > imgSize.height) {
+        return const SizedBox.shrink();
+      }
+      final px = (relX / imgSize.width * frame.width).floor().clamp(
+        0,
+        frame.width - 1,
+      );
+      final py = (relY / imgSize.height * frame.height).floor().clamp(
+        0,
+        frame.height - 1,
+      );
+      temp = frame.temperatureField[py * frame.width + px];
     }
-    final px = (relX / imgSize.width * frame.width).floor().clamp(0, frame.width - 1);
-    final py = (relY / imgSize.height * frame.height).floor().clamp(0, frame.height - 1);
-    final temp = frame.temperatureField[py * frame.width + px];
 
     return Positioned(
       left: origin.dx,
@@ -373,67 +480,121 @@ class _MarkersPainter extends CustomPainter {
       o.frameHeight != frameHeight;
 }
 
-/// 最高 / 最低 温像素角标. 风格独立于 [_MarkersPainter] 的圆形多点标签:
+class _ExtremeSpot {
+  final double nx;
+  final double ny;
+  final double temp;
+
+  const _ExtremeSpot({required this.nx, required this.ny, required this.temp});
+
+  static _ExtremeSpot lerp(_ExtremeSpot a, _ExtremeSpot b, double t) {
+    return _ExtremeSpot(
+      nx: a.nx + (b.nx - a.nx) * t,
+      ny: a.ny + (b.ny - a.ny) * t,
+      temp: a.temp + (b.temp - a.temp) * t,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is _ExtremeSpot &&
+      other.nx == nx &&
+      other.ny == ny &&
+      other.temp == temp;
+
+  @override
+  int get hashCode => Object.hash(nx, ny, temp);
+}
+
+({_ExtremeSpot? hot, _ExtremeSpot? cold}) _findExtremeSpots(
+  RenderedFrame? frame,
+) {
+  if (frame == null || frame.temperatureField.isEmpty) {
+    return (hot: null, cold: null);
+  }
+
+  final field = frame.temperatureField;
+  int hotIdx = -1;
+  int coldIdx = -1;
+  double hot = -double.infinity;
+  double cold = double.infinity;
+  for (int i = 0; i < field.length; i++) {
+    final v = field[i];
+    if (!v.isFinite) continue;
+    if (v > hot) {
+      hot = v;
+      hotIdx = i;
+    }
+    if (v < cold) {
+      cold = v;
+      coldIdx = i;
+    }
+  }
+  if (hotIdx < 0 || coldIdx < 0) return (hot: null, cold: null);
+
+  final width = frame.width;
+  final height = frame.height;
+  return (
+    hot: _ExtremeSpot(
+      nx: (hotIdx % width + 0.5) / width,
+      ny: (hotIdx ~/ width + 0.5) / height,
+      temp: hot,
+    ),
+    cold: _ExtremeSpot(
+      nx: (coldIdx % width + 0.5) / width,
+      ny: (coldIdx ~/ width + 0.5) / height,
+      temp: cold,
+    ),
+  );
+}
+
+/// 最高 / 最低温像素角标. 风格独立于 [_MarkersPainter] 的圆形多点标签:
 ///   - 最高: 红色等腰三角 ▼ (尖端指向像素), 标签 `H 42.5°`
 ///   - 最低: 蓝色等腰三角 ▲ (尖端指向像素), 标签 `L 18.2°`
-/// 标签字体小一号, 加细描边阴影; 仅展示, 不响应事件.
+/// 标签字体小一号, 加细描边阴影; 坐标以 140ms ease-out 动画快速跟随.
 class _ExtremesPainter extends CustomPainter {
-  final RenderedFrame frame;
+  final Animation<double> progress;
+  final _ExtremeSpot? hotFrom;
+  final _ExtremeSpot? hotTo;
+  final _ExtremeSpot? coldFrom;
+  final _ExtremeSpot? coldTo;
   final bool showHot;
   final bool showCold;
+
   _ExtremesPainter({
-    required this.frame,
+    required this.progress,
+    required this.hotFrom,
+    required this.hotTo,
+    required this.coldFrom,
+    required this.coldTo,
     required this.showHot,
     required this.showCold,
-  });
+  }) : super(repaint: progress);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final field = frame.temperatureField;
-    if (field.isEmpty) return;
     if (!showHot && !showCold) return;
+    final t = Curves.easeOutCubic.transform(progress.value);
 
-    int hotIdx = -1, coldIdx = -1;
-    double hot = -double.infinity, cold = double.infinity;
-    for (int i = 0; i < field.length; i++) {
-      final v = field[i];
-      if (v.isNaN) continue;
-      if (v > hot) {
-        hot = v;
-        hotIdx = i;
-      }
-      if (v < cold) {
-        cold = v;
-        coldIdx = i;
-      }
-    }
-    if (hotIdx < 0 || coldIdx < 0) return;
-
-    final fw = frame.width;
-    final sx = size.width / fw;
-    final sy = size.height / frame.height;
-
-    if (showHot) {
-      final hx = (hotIdx % fw + 0.5) * sx;
-      final hy = (hotIdx ~/ fw + 0.5) * sy;
+    if (showHot && hotFrom != null && hotTo != null) {
+      final spot = _ExtremeSpot.lerp(hotFrom!, hotTo!, t);
       _paintSpot(
         canvas,
         size,
-        anchor: Offset(hx, hy),
+        anchor: Offset(spot.nx * size.width, spot.ny * size.height),
         color: const Color(0xFFFFCC00),
-        tip: 'H ${hot.toStringAsFixed(1)}°',
+        tip: 'H ${spot.temp.toStringAsFixed(1)}°',
         hot: true,
       );
     }
-    if (showCold) {
-      final cx = (coldIdx % fw + 0.5) * sx;
-      final cy = (coldIdx ~/ fw + 0.5) * sy;
+    if (showCold && coldFrom != null && coldTo != null) {
+      final spot = _ExtremeSpot.lerp(coldFrom!, coldTo!, t);
       _paintSpot(
         canvas,
         size,
-        anchor: Offset(cx, cy),
+        anchor: Offset(spot.nx * size.width, spot.ny * size.height),
         color: const Color(0xFF80D8FF),
-        tip: 'L ${cold.toStringAsFixed(1)}°',
+        tip: 'L ${spot.temp.toStringAsFixed(1)}°',
         hot: false,
       );
     }
@@ -500,7 +661,12 @@ class _ExtremesPainter extends CustomPainter {
         ? (anchor.dy - r * 1.4 - tp.height - 2)
         : (anchor.dy + r * 1.4 + 2);
     final lyClamped = ly.clamp(2.0, size.height - tp.height - 2);
-    final rect = Rect.fromLTWH(lx - 4, lyClamped - 1, tp.width + 8, tp.height + 2);
+    final rect = Rect.fromLTWH(
+      lx - 4,
+      lyClamped - 1,
+      tp.width + 8,
+      tp.height + 2,
+    );
     canvas.drawRRect(
       RRect.fromRectAndRadius(rect, const Radius.circular(3)),
       Paint()..color = Colors.black.withValues(alpha: 0.65),
@@ -510,5 +676,10 @@ class _ExtremesPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ExtremesPainter o) =>
-      o.frame != frame || o.showHot != showHot || o.showCold != showCold;
+      o.hotFrom != hotFrom ||
+      o.hotTo != hotTo ||
+      o.coldFrom != coldFrom ||
+      o.coldTo != coldTo ||
+      o.showHot != showHot ||
+      o.showCold != showCold;
 }

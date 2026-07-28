@@ -92,6 +92,17 @@ class Win32Window {
                                   WPARAM const wparam,
                                   LPARAM const lparam) noexcept;
 
+  // Lets the Flutter child occupy the full client area while forwarding the
+  // outer 6 px resize hit-zone to the host window.
+  static LRESULT CALLBACK ChildWndProc(HWND window,
+                                       UINT message,
+                                       WPARAM wparam,
+                                       LPARAM lparam,
+                                       UINT_PTR subclass_id,
+                                       DWORD_PTR reference_data);
+
+  LRESULT ResizeHitTest(LPARAM lparam) const noexcept;
+
   // Retrieves a class instance pointer for |window|
   static Win32Window* GetThisFromHandle(HWND const window) noexcept;
 

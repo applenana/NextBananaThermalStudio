@@ -6,17 +6,25 @@ import 'dart:typed_data';
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show DeviceOrientation, SystemChrome;
+import 'package:flutter/services.dart'
+    show DeviceOrientation, LogicalKeyboardKey, SystemChrome;
 import 'package:provider/provider.dart';
 
-import '../app_state.dart';import '../fusion/fusion.dart';
-import '../main.dart' show appWideBreakpoint, appConsoleExpanded;
-import '../protocol/frame_parser.dart';
+import '../app_state.dart';
+import '../fusion/fusion.dart';
+import '../main.dart'
+    show
+        appWideBreakpoint,
+        appConsoleExpanded,
+        appPhotoDownloadDir,
+        setTemperatureRecordInterval;
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
+import '../temperature/temperature_recorder.dart';
 import 'connection_bar.dart';
 import 'software_gallery_tab.dart' show softwareGalleryRefreshTrigger;
 import 'banana_toast.dart';
+import 'temperature_export_dialog.dart';
 import 'widgets/rgb_image_view.dart';
 import 'widgets/thermal_canvas.dart';
 
@@ -33,10 +41,12 @@ class _ThermalMarkersStore extends ChangeNotifier {
   _ThermalMarkersStore._();
   static final _ThermalMarkersStore instance = _ThermalMarkersStore._();
 
-  final List<({int x, int y})> points = [];
+  TemperatureRecorder get _recorder => TemperatureRecorder.instance;
+  List<MeasurementPoint> get points => _recorder.points;
+  MeasurementPoint? get singlePoint => _recorder.singlePoint;
 
-  /// false=多点标签 (点击放置/移除 marker), true=按住拖动十字光标显示温度.
-  bool _cursorMode = false;
+  /// false=多点标签 (点击放置/移除 marker), true=单点测温光标.
+  bool _cursorMode = !Platform.isAndroid;
   bool get cursorMode => _cursorMode;
   set cursorMode(bool v) {
     if (_cursorMode == v) return;
@@ -45,21 +55,28 @@ class _ThermalMarkersStore extends ChangeNotifier {
   }
 
   void add(int px, int py) {
-    points.add((x: px, y: py));
+    _recorder.addPoint(px, py);
+    notifyListeners();
+  }
+
+  void setSingle(int px, int py) {
+    _recorder.setSinglePoint(px, py);
     notifyListeners();
   }
 
   void removeAt(int i) {
-    if (i < 0 || i >= points.length) return;
-    points.removeAt(i);
+    if (i < 0 || i >= _recorder.points.length) return;
+    _recorder.removePointAt(i);
     notifyListeners();
   }
 
   void clear() {
-    if (points.isEmpty) return;
-    points.clear();
+    if (!_recorder.hasSelection) return;
+    _recorder.clearSelections();
     notifyListeners();
   }
+
+  bool get hasCursor => _recorder.hasSelection;
 }
 
 class RealtimeTab extends StatelessWidget {
@@ -272,12 +289,14 @@ class _KpiTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(label,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: labelSize,
-                        color: scheme.onSurfaceVariant,
-                      )),
+                  Text(
+                    label,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: labelSize,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
                   const SizedBox(height: 2),
                   Text(
                     '${value.toStringAsFixed(1)} °C',
@@ -316,11 +335,13 @@ class _ThermalCardState extends State<_ThermalCard> {
   void initState() {
     super.initState();
     _store.addListener(_onStoreChanged);
+    TemperatureRecorder.instance.addListener(_onStoreChanged);
   }
 
   @override
   void dispose() {
     _store.removeListener(_onStoreChanged);
+    TemperatureRecorder.instance.removeListener(_onStoreChanged);
     super.dispose();
   }
 
@@ -334,9 +355,25 @@ class _ThermalCardState extends State<_ThermalCard> {
     return [
       for (final p in _store.points)
         if (p.x >= 0 && p.x < frame.width && p.y >= 0 && p.y < frame.height)
-          TempMarker(
-              p.x, p.y, frame.temperatureField[p.y * frame.width + p.x]),
+          TempMarker(p.x, p.y, frame.temperatureField[p.y * frame.width + p.x]),
     ];
+  }
+
+  TempMarker? _liveSingleCursor(RenderedFrame? frame) {
+    final p = _store.singlePoint;
+    if (frame == null ||
+        p == null ||
+        p.x < 0 ||
+        p.x >= frame.width ||
+        p.y < 0 ||
+        p.y >= frame.height) {
+      return null;
+    }
+    return TempMarker(
+      p.x,
+      p.y,
+      frame.temperatureField[p.y * frame.width + p.x],
+    );
   }
 
   Future<void> _openFullscreen() async {
@@ -349,25 +386,37 @@ class _ThermalCardState extends State<_ThermalCard> {
     // 0/150/400/800/1300 ms 五拨补发, 必然命中保活窗口拉回推流.
     final app = context.read<AppState>();
     final isTablet = MediaQuery.of(context).size.shortestSide >= 600;
-    if (!isTablet) {
+    final rotateAndroidPhone = Platform.isAndroid && !isTablet;
+    if (rotateAndroidPhone) {
       await SystemChrome.setPreferredOrientations([
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
       ]);
     }
-    if (!mounted) return;
+    if (!mounted) {
+      if (rotateAndroidPhone) {
+        await SystemChrome.setPreferredOrientations([
+          DeviceOrientation.portraitUp,
+          DeviceOrientation.portraitDown,
+        ]);
+      }
+      return;
+    }
     app.kickStreamsBurst();
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        fullscreenDialog: true,
-        builder: (_) => const _FullscreenThermalView(),
-      ),
-    );
-    if (!isTablet) {
-      await SystemChrome.setPreferredOrientations([
-        DeviceOrientation.portraitUp,
-        DeviceOrientation.portraitDown,
-      ]);
+    try {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => const _FullscreenThermalView(),
+        ),
+      );
+    } finally {
+      if (rotateAndroidPhone) {
+        await SystemChrome.setPreferredOrientations([
+          DeviceOrientation.portraitUp,
+          DeviceOrientation.portraitDown,
+        ]);
+      }
     }
     if (!mounted) return;
     app.kickStreamsBurst();
@@ -377,6 +426,8 @@ class _ThermalCardState extends State<_ThermalCard> {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final isAndroid = Platform.isAndroid;
+    final isWindows = Platform.isWindows;
+    final supportsViewTools = isAndroid || isWindows;
     final edge = widget.edgeToEdge;
 
     RenderedFrame? frame;
@@ -405,9 +456,10 @@ class _ThermalCardState extends State<_ThermalCard> {
         children: [
           const Icon(Icons.thermostat_rounded, size: 18),
           const SizedBox(width: 8),
-          const Text('主画面',
-              style: TextStyle(
-                  fontWeight: FontWeight.w700, fontSize: 15)),
+          const Text(
+            '主画面',
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+          ),
           const Spacer(),
           if (isAndroid) ...const [
             _StreamToggleIcon(
@@ -434,8 +486,9 @@ class _ThermalCardState extends State<_ThermalCard> {
       ),
     );
 
-    // Android 双模式: false=多点标签 (点击放置/移除 marker), true=单点跟随光标
-    // (按住拖动显示十字与温度, 类 PC). 切换时清空 marker 视图以免干扰.
+    // Android / Windows 双模式: false=多点标签 (点击放置/移除 marker),
+    // true=单点测温。Windows 点击后固定光标，再次点击即可移动位置；
+    // 模式和标记由单例保存，普通/全屏视图无缝共用。
     final cursorMode = _store.cursorMode;
     // 仅可见光路径: 用户只开了 vstream, 此时 frame 为 null, 直接走 RgbImageView
     // 显示纯可见光画面, 不走热像渲染管线 (避免假装等待热像数据).
@@ -450,16 +503,50 @@ class _ThermalCardState extends State<_ThermalCard> {
         : ThermalCanvas(
             frame: frame,
             markers: cursorMode ? const [] : _liveMarkers(frame),
-            onAddMarker: (isAndroid && !cursorMode)
+            onAddMarker: (supportsViewTools && !cursorMode)
                 ? (px, py, _) => _store.add(px, py)
                 : null,
-            onRemoveMarker: (isAndroid && !cursorMode) ? _store.removeAt : null,
-            showCursorTemp:
-                isAndroid ? cursorMode : app.renderParams.showCursorTemp,
+            onRemoveMarker: (supportsViewTools && !cursorMode)
+                ? _store.removeAt
+                : null,
+            fixedCursor: (supportsViewTools && cursorMode)
+                ? _liveSingleCursor(frame)
+                : null,
+            onSetFixedCursor: (supportsViewTools && cursorMode)
+                ? (px, py, _) => _store.setSingle(px, py)
+                : null,
+            showCursorTemp: isAndroid
+                ? cursorMode
+                : (cursorMode && app.renderParams.showCursorTemp),
             showHotSpot: app.renderParams.showHotSpot,
             showColdSpot: app.renderParams.showColdSpot,
             placeholder: '等待推流数据…',
           );
+
+    final viewTools = Column(
+      children: [
+        _FloatingMiniButton(
+          icon: Icons.fullscreen_rounded,
+          tooltip: '全屏',
+          onTap: (frame == null && !visibleOnly) ? null : _openFullscreen,
+        ),
+        const SizedBox(height: 8),
+        _FloatingMiniButton(
+          icon: cursorMode
+              ? Icons.touch_app_rounded
+              : Icons.my_location_rounded,
+          tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
+          highlighted: cursorMode,
+          onTap: () => _store.cursorMode = !cursorMode,
+        ),
+        const SizedBox(height: 8),
+        _FloatingMiniButton(
+          icon: Icons.cleaning_services_rounded,
+          tooltip: '清理光标',
+          onTap: _store.hasCursor ? _store.clear : null,
+        ),
+      ],
+    );
 
     Widget canvasArea;
     if (isAndroid) {
@@ -467,36 +554,7 @@ class _ThermalCardState extends State<_ThermalCard> {
         children: [
           Positioned.fill(child: canvas),
           // 悬浮按钮: 全屏 / 模式切换 / 清理光标
-          Positioned(
-            right: 8,
-            top: 8,
-            child: Column(
-              children: [
-                _FloatingMiniButton(
-                  icon: Icons.fullscreen_rounded,
-                  tooltip: '全屏',
-                  onTap: (frame == null && !visibleOnly)
-                      ? null
-                      : _openFullscreen,
-                ),
-                const SizedBox(height: 8),
-                _FloatingMiniButton(
-                  icon: cursorMode
-                      ? Icons.touch_app_rounded
-                      : Icons.my_location_rounded,
-                  tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
-                  highlighted: cursorMode,
-                  onTap: () => _store.cursorMode = !cursorMode,
-                ),
-                const SizedBox(height: 8),
-                _FloatingMiniButton(
-                  icon: Icons.cleaning_services_rounded,
-                  tooltip: '清理光标',
-                  onTap: _store.points.isEmpty ? null : _store.clear,
-                ),
-              ],
-            ),
-          ),
+          Positioned(right: 8, top: 8, child: viewTools),
           // 拍摄/录制栏: 主画面框内右下角嵌入挂载. 桌面与 Android 共用,
           // 蓝色胶囊 + 四角圆角, 与画面边缘留 12px 间距, 不溢出 Card 边框.
           // Android 端开启 compact 模式 (整体小一号).
@@ -512,6 +570,8 @@ class _ThermalCardState extends State<_ThermalCard> {
       canvasArea = Stack(
         children: [
           Positioned.fill(child: canvas),
+          if (supportsViewTools)
+            Positioned(right: 12, top: 12, child: viewTools),
           const Positioned(
             right: 12,
             bottom: 12,
@@ -527,10 +587,7 @@ class _ThermalCardState extends State<_ThermalCard> {
         header,
         if (!edge) const SizedBox(height: 12),
         Expanded(
-          child: Padding(
-            padding: canvasPad,
-            child: canvasArea,
-          ),
+          child: Padding(padding: canvasPad, child: canvasArea),
         ),
       ],
     );
@@ -538,20 +595,18 @@ class _ThermalCardState extends State<_ThermalCard> {
     if (edge) {
       // Android edgeToEdge: 保留 Card 默认 margin/圆角 (避免画面贴屏边
       // 裁掉圆角), 仅推进 clipBehavior 让画布裁切到圆角内.
-      return Card(
-        clipBehavior: Clip.antiAlias,
-        child: inner,
-      );
+      return Card(clipBehavior: Clip.antiAlias, child: inner);
     }
     return Card(child: inner);
   }
 }
 
-/// Android 主画面右上角悬浮迷你按钮 (半透明圆形, 黑底白图).
+/// 主画面右上角悬浮迷你按钮 (Android / Windows 共用).
 class _FloatingMiniButton extends StatelessWidget {
   final IconData icon;
   final String tooltip;
   final VoidCallback? onTap;
+
   /// 高亮态: 表示当前功能已激活 (例: 单点光标模式开启时).
   final bool highlighted;
   const _FloatingMiniButton({
@@ -581,11 +636,7 @@ class _FloatingMiniButton extends StatelessWidget {
           child: SizedBox(
             width: 36,
             height: 36,
-            child: Icon(
-              icon,
-              size: 20,
-              color: fg,
-            ),
+            child: Icon(icon, size: 20, color: fg),
           ),
         ),
       ),
@@ -619,8 +670,8 @@ class _StreamToggleIcon extends StatelessWidget {
     final bg = !enabled
         ? Colors.transparent
         : (on
-            ? scheme.primaryContainer.withValues(alpha: 0.6)
-            : scheme.surfaceContainerHighest);
+              ? scheme.primaryContainer.withValues(alpha: 0.6)
+              : scheme.surfaceContainerHighest);
     return Tooltip(
       message: '$tooltip · ${on ? "开" : "关"}',
       child: Material(
@@ -647,7 +698,7 @@ class _StreamToggleIcon extends StatelessWidget {
   }
 }
 
-/// 全屏热像视图 (Android only). 横屏占满, 顶部右侧浮按钮: 退出 / 清理光标.
+/// 全屏热像视图 (Android / Windows). 顶部右侧浮按钮: 退出 / 光标模式 / 清理.
 ///
 /// 不再接收外部 callbacks: 主画面 marker / 光标模式都委托给文件级单例
 /// [_ThermalMarkersStore]. 这样手机端进入全屏强制旋转触发 home_shell
@@ -656,8 +707,7 @@ class _StreamToggleIcon extends StatelessWidget {
 class _FullscreenThermalView extends StatefulWidget {
   const _FullscreenThermalView();
   @override
-  State<_FullscreenThermalView> createState() =>
-      _FullscreenThermalViewState();
+  State<_FullscreenThermalView> createState() => _FullscreenThermalViewState();
 }
 
 class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
@@ -682,6 +732,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
   void initState() {
     super.initState();
     _store.addListener(_onStoreChanged);
+    TemperatureRecorder.instance.addListener(_onStoreChanged);
     // 兜底: 首帧渲染完立即 kick 一次推流, 防止旋转动画卡顿造成心跳漏拍后
     // 固件已自停的情况.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -693,6 +744,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
   @override
   void dispose() {
     _store.removeListener(_onStoreChanged);
+    TemperatureRecorder.instance.removeListener(_onStoreChanged);
     super.dispose();
   }
 
@@ -724,163 +776,207 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                   p.x < frame.width &&
                   p.y >= 0 &&
                   p.y < frame.height)
-                TempMarker(p.x, p.y,
-                    frame.temperatureField[p.y * frame.width + p.x]),
+                TempMarker(
+                  p.x,
+                  p.y,
+                  frame.temperatureField[p.y * frame.width + p.x],
+                ),
           ];
+    final singlePoint = _store.singlePoint;
+    final liveSingleCursor =
+        (!cursorMode ||
+            frame == null ||
+            singlePoint == null ||
+            singlePoint.x < 0 ||
+            singlePoint.x >= frame.width ||
+            singlePoint.y < 0 ||
+            singlePoint.y >= frame.height)
+        ? null
+        : TempMarker(
+            singlePoint.x,
+            singlePoint.y,
+            frame.temperatureField[singlePoint.y * frame.width + singlePoint.x],
+          );
     // 仅可见光路径: 当无热像但有可见光数据时, 用 RgbImageView 替代 ThermalCanvas.
     final visibleOnly = frame == null && app.visibleRgb888 != null;
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            // 全屏底色: 纯黑容器, 不挂手势, 让点击事件能直达上层 ThermalCanvas.
-            // (历史问题: 这里曾叠 GestureDetector(onTap: pop), 在 gesture
-            //  arena 与 ThermalCanvas 的 TapGestureRecognizer 互抢, 导致
-            //  多点 marker 点击无响应. 退出全屏改由右上角浮动按钮承担.)
-            const Positioned.fill(
-              child: ColoredBox(color: Colors.black),
-            ),
-            // 画面区铺满: 热像 4:3 在 16:9 横屏屏幕上天然有左右黑边,
-            // 透明浮窗正好飘在黑边之上, 不遮挡有效画面.
-            Positioned.fill(
-              child: Padding(
-                padding: const EdgeInsets.all(8),
-                child: visibleOnly
-                    ? RgbImageView(
-                        rgb: app.visibleRgb888,
-                        width: app.visibleWidth,
-                        height: app.visibleHeight,
-                        fit: BoxFit.contain,
-                      )
-                    : ThermalCanvas(
-                        frame: frame,
-                        markers: liveMarkers,
-                        onAddMarker: cursorMode
-                            ? null
-                            : (px, py, _) => _store.add(px, py),
-                        onRemoveMarker:
-                            cursorMode ? null : _store.removeAt,
-                        showCursorTemp: cursorMode,
-                        showHotSpot: app.renderParams.showHotSpot,
-                        showColdSpot: app.renderParams.showColdSpot,
-                        placeholder: '等待推流数据…',
-                      ),
-              ),
-            ),
-            // 左侧透明浮窗: 温度 KPI + 趋势曲线 (可拖动, 可折叠)
-            // 右侧透明浮窗: 推流开关 + 融合参数 (可拖动, 可折叠)
-            // 用 Positioned.fill 把 LayoutBuilder 撑满 Stack, 否则 LayoutBuilder
-            // 作为 Stack 非定位子级时尺寸退化, 右侧默认位置算不准.
-            Positioned.fill(
-              child: LayoutBuilder(
-                builder: (ctx, c) {
-                  final maxW = c.maxWidth;
-                  final maxH = c.maxHeight;
-                  _leftPos ??= const Offset(8, 8);
-                  // 右侧浮窗: 未被用户拖动过时, 随 maxW 动态重算 (修复旋转前后 maxW
-                  // 变化导致默认位置贴着左侧浮窗的问题).
-                  if (!_rightDragged) {
-                    _rightPos = Offset(maxW - _panelW - 8, 64);
-                  }
-                  final lp = _leftPos!;
-                  final rp = _rightPos!;
-                  final leftH = _leftCollapsed
-                      ? _collapsedH
-                      : (maxH - lp.dy - _bottomMargin)
-                          .clamp(_minPanelH, maxH);
-                  final rightH = _rightCollapsed
-                      ? _collapsedH
-                      : (maxH - rp.dy - _bottomMargin)
-                          .clamp(_minPanelH, maxH);
-                  void dragLeft(Offset d) {
-                    setState(() {
-                      final nx = (lp.dx + d.dx)
-                          .clamp(0.0, (maxW - _panelW).clamp(0.0, maxW));
-                      final ny = (lp.dy + d.dy)
-                          .clamp(0.0, (maxH - _collapsedH).clamp(0.0, maxH));
-                      _leftPos = Offset(nx, ny);
-                    });
-                  }
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            Navigator.of(context).maybePop(),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: SafeArea(
+            child: Stack(
+              children: [
+                // 全屏底色: 纯黑容器, 不挂手势, 让点击事件能直达上层 ThermalCanvas.
+                // (历史问题: 这里曾叠 GestureDetector(onTap: pop), 在 gesture
+                //  arena 与 ThermalCanvas 的 TapGestureRecognizer 互抢, 导致
+                //  多点 marker 点击无响应. 退出全屏改由右上角浮动按钮承担.)
+                const Positioned.fill(child: ColoredBox(color: Colors.black)),
+                // 画面区铺满: 热像 4:3 在 16:9 横屏屏幕上天然有左右黑边,
+                // 透明浮窗正好飘在黑边之上, 不遮挡有效画面.
+                Positioned.fill(
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: visibleOnly
+                        ? RgbImageView(
+                            rgb: app.visibleRgb888,
+                            width: app.visibleWidth,
+                            height: app.visibleHeight,
+                            fit: BoxFit.contain,
+                          )
+                        : ThermalCanvas(
+                            frame: frame,
+                            markers: liveMarkers,
+                            onAddMarker: cursorMode
+                                ? null
+                                : (px, py, _) => _store.add(px, py),
+                            onRemoveMarker: cursorMode ? null : _store.removeAt,
+                            fixedCursor: liveSingleCursor,
+                            onSetFixedCursor:
+                                ((Platform.isAndroid || Platform.isWindows) &&
+                                    cursorMode)
+                                ? (px, py, _) => _store.setSingle(px, py)
+                                : null,
+                            showCursorTemp: cursorMode,
+                            showHotSpot: app.renderParams.showHotSpot,
+                            showColdSpot: app.renderParams.showColdSpot,
+                            placeholder: '等待推流数据…',
+                          ),
+                  ),
+                ),
+                // 左侧透明浮窗: 温度 KPI + 趋势曲线 (可拖动, 可折叠)
+                // 右侧透明浮窗: 推流开关 + 融合参数 (可拖动, 可折叠)
+                // 用 Positioned.fill 把 LayoutBuilder 撑满 Stack, 否则 LayoutBuilder
+                // 作为 Stack 非定位子级时尺寸退化, 右侧默认位置算不准.
+                Positioned.fill(
+                  child: LayoutBuilder(
+                    builder: (ctx, c) {
+                      final maxW = c.maxWidth;
+                      final maxH = c.maxHeight;
+                      _leftPos ??= const Offset(8, 8);
+                      // 右侧浮窗: 未被用户拖动过时, 随 maxW 动态重算 (修复旋转前后 maxW
+                      // 变化导致默认位置贴着左侧浮窗的问题).
+                      if (!_rightDragged) {
+                        _rightPos = Offset(maxW - _panelW - 8, 64);
+                      }
+                      final lp = _leftPos!;
+                      final rp = _rightPos!;
+                      final leftH = _leftCollapsed
+                          ? _collapsedH
+                          : (maxH - lp.dy - _bottomMargin).clamp(
+                              _minPanelH,
+                              maxH,
+                            );
+                      final rightH = _rightCollapsed
+                          ? _collapsedH
+                          : (maxH - rp.dy - _bottomMargin).clamp(
+                              _minPanelH,
+                              maxH,
+                            );
+                      void dragLeft(Offset d) {
+                        setState(() {
+                          final nx = (lp.dx + d.dx).clamp(
+                            0.0,
+                            (maxW - _panelW).clamp(0.0, maxW),
+                          );
+                          final ny = (lp.dy + d.dy).clamp(
+                            0.0,
+                            (maxH - _collapsedH).clamp(0.0, maxH),
+                          );
+                          _leftPos = Offset(nx, ny);
+                        });
+                      }
 
-                  void dragRight(Offset d) {
-                    setState(() {
-                      _rightDragged = true;
-                      final nx = (rp.dx + d.dx)
-                          .clamp(0.0, (maxW - _panelW).clamp(0.0, maxW));
-                      final ny = (rp.dy + d.dy)
-                          .clamp(0.0, (maxH - _collapsedH).clamp(0.0, maxH));
-                      _rightPos = Offset(nx, ny);
-                    });
-                  }
+                      void dragRight(Offset d) {
+                        setState(() {
+                          _rightDragged = true;
+                          final nx = (rp.dx + d.dx).clamp(
+                            0.0,
+                            (maxW - _panelW).clamp(0.0, maxW),
+                          );
+                          final ny = (rp.dy + d.dy).clamp(
+                            0.0,
+                            (maxH - _collapsedH).clamp(0.0, maxH),
+                          );
+                          _rightPos = Offset(nx, ny);
+                        });
+                      }
 
-                  return Stack(
+                      return Stack(
+                        children: [
+                          Positioned(
+                            left: lp.dx,
+                            top: lp.dy,
+                            width: _panelW,
+                            height: leftH,
+                            child: _FullscreenLeftPanel(
+                              onDrag: dragLeft,
+                              collapsed: _leftCollapsed,
+                              onToggleCollapsed: () => setState(
+                                () => _leftCollapsed = !_leftCollapsed,
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            left: rp.dx,
+                            top: rp.dy,
+                            width: _panelW,
+                            height: rightH,
+                            child: _FullscreenRightPanel(
+                              onDrag: dragRight,
+                              collapsed: _rightCollapsed,
+                              onToggleCollapsed: () => setState(
+                                () => _rightCollapsed = !_rightCollapsed,
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+                Positioned(
+                  right: 12,
+                  top: 12,
+                  child: Column(
                     children: [
-                      Positioned(
-                        left: lp.dx,
-                        top: lp.dy,
-                        width: _panelW,
-                        height: leftH,
-                        child: _FullscreenLeftPanel(
-                          onDrag: dragLeft,
-                          collapsed: _leftCollapsed,
-                          onToggleCollapsed: () => setState(
-                              () => _leftCollapsed = !_leftCollapsed),
-                        ),
+                      _FloatingMiniButton(
+                        icon: Icons.fullscreen_exit_rounded,
+                        tooltip: '退出全屏',
+                        onTap: () => Navigator.of(context).maybePop(),
                       ),
-                      Positioned(
-                        left: rp.dx,
-                        top: rp.dy,
-                        width: _panelW,
-                        height: rightH,
-                        child: _FullscreenRightPanel(
-                          onDrag: dragRight,
-                          collapsed: _rightCollapsed,
-                          onToggleCollapsed: () => setState(
-                              () => _rightCollapsed = !_rightCollapsed),
-                        ),
+                      const SizedBox(height: 8),
+                      _FloatingMiniButton(
+                        icon: cursorMode
+                            ? Icons.touch_app_rounded
+                            : Icons.my_location_rounded,
+                        tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
+                        highlighted: cursorMode,
+                        onTap: () => _store.cursorMode = !cursorMode,
+                      ),
+                      const SizedBox(height: 8),
+                      _FloatingMiniButton(
+                        icon: Icons.cleaning_services_rounded,
+                        tooltip: '清理光标',
+                        onTap: _store.hasCursor ? _store.clear : null,
                       ),
                     ],
-                  );
-                },
-              ),
-            ),
-            Positioned(
-              right: 12,
-              top: 12,
-              child: Column(
-                children: [
-                  _FloatingMiniButton(
-                    icon: Icons.fullscreen_exit_rounded,
-                    tooltip: '退出全屏',
-                    onTap: () => Navigator.of(context).maybePop(),
                   ),
-                  const SizedBox(height: 8),
-                  _FloatingMiniButton(
-                    icon: cursorMode
-                        ? Icons.touch_app_rounded
-                        : Icons.my_location_rounded,
-                    tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
-                    highlighted: cursorMode,
-                    onTap: () => _store.cursorMode = !cursorMode,
-                  ),
-                  const SizedBox(height: 8),
-                  _FloatingMiniButton(
-                    icon: Icons.cleaning_services_rounded,
-                    tooltip: '清理光标',
-                    onTap: _store.points.isEmpty ? null : _store.clear,
-                  ),
-                ],
-              ),
+                ),
+                // 全屏右下角嵌入式拍摄/录制栏: 与非全屏 canvasArea 内的胶囊一致,
+                // 满足 "全屏也能拍摄录像" 的需求.
+                const Positioned(
+                  right: 12,
+                  bottom: 12,
+                  child: _CaptureBar(embedded: true, compact: true),
+                ),
+              ],
             ),
-            // 全屏右下角嵌入式拍摄/录制栏: 与非全屏 canvasArea 内的胶囊一致,
-            // 满足 "全屏也能拍摄录像" 的需求.
-            const Positioned(
-              right: 12,
-              bottom: 12,
-              child: _CaptureBar(embedded: true, compact: true),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -888,7 +984,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
 }
 
 // =========================================================================
-// 全屏视图左右透明浮窗 (仅 Android 全屏路由内使用, 不影响其它平台)
+// 全屏视图左右透明浮窗 (Android / Windows 全屏路由共用)
 // =========================================================================
 
 /// 通用透明浮窗外壳: 半透明黑底 + 细边 + 圆角. 内部 child 自行处理布局.
@@ -923,11 +1019,7 @@ class _DragHandle extends StatelessWidget {
   final ValueChanged<Offset> onDrag;
   final VoidCallback? onTap;
   final bool collapsed;
-  const _DragHandle({
-    required this.onDrag,
-    this.onTap,
-    this.collapsed = false,
-  });
+  const _DragHandle({required this.onDrag, this.onTap, this.collapsed = false});
 
   @override
   Widget build(BuildContext context) {
@@ -1000,8 +1092,7 @@ class _GlassStreamRow extends StatelessWidget {
                   style: TextStyle(
                     color: value ? Colors.white : Colors.white70,
                     fontSize: 11,
-                    fontWeight:
-                        value ? FontWeight.w700 : FontWeight.w500,
+                    fontWeight: value ? FontWeight.w700 : FontWeight.w500,
                   ),
                 ),
               ),
@@ -1014,8 +1105,9 @@ class _GlassStreamRow extends StatelessWidget {
                   boxShadow: value
                       ? [
                           BoxShadow(
-                            color: const Color(0xFF66BB6A)
-                                .withValues(alpha: 0.55),
+                            color: const Color(
+                              0xFF66BB6A,
+                            ).withValues(alpha: 0.55),
                             blurRadius: 6,
                           ),
                         ]
@@ -1028,6 +1120,128 @@ class _GlassStreamRow extends StatelessWidget {
       ),
     );
   }
+}
+
+List<FlSpot> _temperatureSpots(
+  List<TemperatureSample> samples,
+  double? Function(TemperatureSample sample) valueOf,
+) {
+  return [
+    for (var i = 0; i < samples.length; i++)
+      if (valueOf(samples[i]) case final double value)
+        FlSpot(i.toDouble(), value),
+  ];
+}
+
+LineChartBarData _temperatureLine(
+  List<FlSpot> spots,
+  Color color, {
+  double width = 2,
+}) {
+  return LineChartBarData(
+    spots: spots,
+    color: color,
+    barWidth: width,
+    isCurved: true,
+    dotData: const FlDotData(show: false),
+  );
+}
+
+Future<void> _confirmClearTemperatureRecords(BuildContext context) async {
+  final count = TemperatureRecorder.instance.recordCount;
+  if (count == 0) return;
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('清理历史记录？'),
+      content: Text('将删除当前会话的 $count 条温度记录，方便重新开始记录。此操作无法撤销。'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: const Text('确认清理'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  TemperatureRecorder.instance.clearRecords();
+  BananaToast.show(
+    context,
+    '历史记录已清理，将从下一帧开始记录新数据',
+    icon: Icons.delete_sweep_rounded,
+  );
+}
+
+Future<void> _showTemperatureRecordSettings(BuildContext context) async {
+  const options = <(int, String, String)>[
+    (200, '5 次/秒', '高频，适合快速变化；数据量最大'),
+    (500, '2 次/秒', '较高频率，兼顾细节与数据量'),
+    (1000, '1 次/秒', '推荐，适合常规持续监测'),
+    (2000, '每 2 秒一次', '适合较长时间记录'),
+    (5000, '每 5 秒一次', '适合慢变化和长时间监测'),
+    (10000, '每 10 秒一次', '最低数据量，适合超长时间记录'),
+  ];
+  final current = TemperatureRecorder.instance.sampleInterval.inMilliseconds;
+  final selected = await showDialog<int>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.timer_outlined, size: 22),
+          SizedBox(width: 10),
+          Text('温度记录频率'),
+        ],
+      ),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final option in options)
+                ListTile(
+                  leading: Icon(
+                    option.$1 == current
+                        ? Icons.radio_button_checked_rounded
+                        : Icons.radio_button_unchecked_rounded,
+                    color: option.$1 == current
+                        ? Theme.of(dialogContext).colorScheme.primary
+                        : null,
+                  ),
+                  title: Text(option.$2),
+                  subtitle: Text(option.$3),
+                  selected: option.$1 == current,
+                  onTap: () => Navigator.of(dialogContext).pop(option.$1),
+                ),
+              const SizedBox(height: 4),
+              const Text(
+                '修改后从下一帧立即生效，已有历史数据不会改变。',
+                style: TextStyle(fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('取消'),
+        ),
+      ],
+    ),
+  );
+  if (selected == null || selected == current || !context.mounted) return;
+  await setTemperatureRecordInterval(selected);
+  if (!context.mounted) return;
+  BananaToast.show(
+    context,
+    '记录频率已改为 ${TemperatureRecorder.instance.sampleIntervalLabel}',
+    icon: Icons.timer_outlined,
+  );
 }
 
 /// 左侧透明浮窗: 当前最高/最低/平均温 + 趋势曲线.
@@ -1054,8 +1268,14 @@ class _FullscreenLeftPanel extends StatelessWidget {
       );
     }
     final app = context.watch<AppState>();
-    List<FlSpot> spotsOf(List<double> arr) =>
-        [for (var i = 0; i < arr.length; i++) FlSpot(i.toDouble(), arr[i])];
+    final singlePointMode = _ThermalMarkersStore.instance.cursorMode;
+    final records = TemperatureRecorder.instance.recentRecords();
+    final selectedLabel = singlePointMode ? '单点' : '多点均值';
+    final selectedSpots = _temperatureSpots(
+      records,
+      (sample) =>
+          singlePointMode ? sample.singleTemperature : sample.multiPointAverage,
+    );
 
     return _GlassPanel(
       padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
@@ -1063,10 +1283,7 @@ class _FullscreenLeftPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (onDrag != null)
-            _DragHandle(
-              onDrag: onDrag!,
-              onTap: onToggleCollapsed,
-            ),
+            _DragHandle(onDrag: onDrag!, onTap: onToggleCollapsed),
           _GlassKpi(
             label: '最高',
             value: app.tMax,
@@ -1089,20 +1306,83 @@ class _FullscreenLeftPanel extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           Row(
-            children: const [
-              Icon(Icons.show_chart_rounded, size: 14, color: Colors.white70),
-              SizedBox(width: 6),
-              Text('温度趋势',
-                  style: TextStyle(
+            children: [
+              const Icon(
+                Icons.show_chart_rounded,
+                size: 14,
+                color: Colors.white70,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  selectedSpots.isEmpty ? '温度趋势' : '温度趋势 · $selectedLabel',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
                     color: Colors.white,
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
-                  )),
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip:
+                    '记录频率：${TemperatureRecorder.instance.sampleIntervalLabel}',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: 26,
+                  height: 26,
+                ),
+                onPressed: () => _showTemperatureRecordSettings(context),
+                icon: const Icon(
+                  Icons.timer_outlined,
+                  size: 16,
+                  color: Colors.white70,
+                ),
+              ),
+              IconButton(
+                tooltip: '清理历史记录',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: 26,
+                  height: 26,
+                ),
+                onPressed: records.isEmpty
+                    ? null
+                    : () => _confirmClearTemperatureRecords(context),
+                icon: const Icon(
+                  Icons.delete_sweep_rounded,
+                  size: 16,
+                  color: Colors.white70,
+                ),
+              ),
+              IconButton(
+                tooltip: '导出温度记录',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: 26,
+                  height: 26,
+                ),
+                onPressed: records.isEmpty
+                    ? null
+                    : () => showTemperatureExportDialog(
+                        context,
+                        singlePointMode: singlePointMode,
+                        initialDirectory: appPhotoDownloadDir.value,
+                      ),
+                icon: const Icon(
+                  Icons.download_rounded,
+                  size: 16,
+                  color: Colors.white70,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 4),
           Expanded(
-            child: app.historyMax.isEmpty
+            child: records.isEmpty
                 ? const Center(
                     child: Text(
                       '暂无数据',
@@ -1123,27 +1403,36 @@ class _FullscreenLeftPanel extends StatelessWidget {
                       borderData: FlBorderData(show: false),
                       titlesData: const FlTitlesData(show: false),
                       lineBarsData: [
-                        LineChartBarData(
-                          spots: spotsOf(app.historyMax),
-                          color: const Color(0xFFFF5252),
-                          barWidth: 1.6,
-                          isCurved: true,
-                          dotData: const FlDotData(show: false),
+                        _temperatureLine(
+                          _temperatureSpots(
+                            records,
+                            (sample) => sample.maximum,
+                          ),
+                          const Color(0xFFFF5252),
+                          width: 1.6,
                         ),
-                        LineChartBarData(
-                          spots: spotsOf(app.historyMin),
-                          color: const Color(0xFF42A5F5),
-                          barWidth: 1.6,
-                          isCurved: true,
-                          dotData: const FlDotData(show: false),
+                        _temperatureLine(
+                          _temperatureSpots(
+                            records,
+                            (sample) => sample.minimum,
+                          ),
+                          const Color(0xFF42A5F5),
+                          width: 1.6,
                         ),
-                        LineChartBarData(
-                          spots: spotsOf(app.historyAvg),
-                          color: const Color(0xFF66BB6A),
-                          barWidth: 1.6,
-                          isCurved: true,
-                          dotData: const FlDotData(show: false),
+                        _temperatureLine(
+                          _temperatureSpots(
+                            records,
+                            (sample) => sample.average,
+                          ),
+                          const Color(0xFF66BB6A),
+                          width: 1.6,
                         ),
+                        if (selectedSpots.isNotEmpty)
+                          _temperatureLine(
+                            selectedSpots,
+                            const Color(0xFFAB47BC),
+                            width: 2,
+                          ),
                       ],
                     ),
                   ),
@@ -1181,10 +1470,7 @@ class _GlassKpi extends StatelessWidget {
         const SizedBox(width: 8),
         Text(
           label,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 11,
-          ),
+          style: const TextStyle(color: Colors.white70, fontSize: 11),
         ),
         const Spacer(),
         Text(
@@ -1229,9 +1515,7 @@ class _FullscreenRightPanel extends StatelessWidget {
     final fp = app.renderParams.fusion;
 
     void setFusion(FusionParams Function(FusionParams p) update) {
-      app.updateRenderParams(
-        app.renderParams.copyWith(fusion: update(fp)),
-      );
+      app.updateRenderParams(app.renderParams.copyWith(fusion: update(fp)));
     }
 
     return _GlassPanel(
@@ -1241,20 +1525,19 @@ class _FullscreenRightPanel extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (onDrag != null)
-              _DragHandle(
-                onDrag: onDrag!,
-                onTap: onToggleCollapsed,
-              ),
+              _DragHandle(onDrag: onDrag!, onTap: onToggleCollapsed),
             Row(
               children: const [
                 Icon(Icons.stream_rounded, size: 14, color: Colors.white70),
                 SizedBox(width: 6),
-                Text('推流',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    )),
+                Text(
+                  '推流',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 6),
@@ -1280,93 +1563,102 @@ class _FullscreenRightPanel extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 10),
-            Container(
-              height: 1,
-              color: Colors.white.withValues(alpha: 0.08),
-            ),
+            Container(height: 1, color: Colors.white.withValues(alpha: 0.08)),
             const SizedBox(height: 8),
             Row(
               children: const [
                 Icon(Icons.tune_rounded, size: 14, color: Colors.white70),
                 SizedBox(width: 6),
-                Text('融合参数',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    )),
+                Text(
+                  '融合参数',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 8),
             _GlassModeChips(
               value: fp.mode,
-              onChanged: (m) => setFusion((p) => FusionParams(
-                    mode: m,
-                    gamma: p.gamma,
-                    alpha: p.alpha,
-                    edgeStrength: p.edgeStrength,
-                    edgeThresh: p.edgeThresh,
-                    edgeWidth: p.edgeWidth,
-                    edgeColor: p.edgeColor,
-                  )),
+              onChanged: (m) => setFusion(
+                (p) => FusionParams(
+                  mode: m,
+                  gamma: p.gamma,
+                  alpha: p.alpha,
+                  edgeStrength: p.edgeStrength,
+                  edgeThresh: p.edgeThresh,
+                  edgeWidth: p.edgeWidth,
+                  edgeColor: p.edgeColor,
+                ),
+              ),
             ),
             const SizedBox(height: 6),
             if (fp.mode == FusionMode.blend) ...[
               _GlassSlider(
                 label: 'Alpha',
                 value: fp.alpha,
-                onChanged: (v) => setFusion((p) => FusionParams(
-                      mode: p.mode,
-                      alpha: v,
-                      gamma: p.gamma,
-                      edgeStrength: p.edgeStrength,
-                      edgeThresh: p.edgeThresh,
-                      edgeWidth: p.edgeWidth,
-                      edgeColor: p.edgeColor,
-                    )),
+                onChanged: (v) => setFusion(
+                  (p) => FusionParams(
+                    mode: p.mode,
+                    alpha: v,
+                    gamma: p.gamma,
+                    edgeStrength: p.edgeStrength,
+                    edgeThresh: p.edgeThresh,
+                    edgeWidth: p.edgeWidth,
+                    edgeColor: p.edgeColor,
+                  ),
+                ),
               ),
               _GlassSlider(
                 label: 'Gamma',
                 value: fp.gamma,
                 min: 0.2,
                 max: 3.0,
-                onChanged: (v) => setFusion((p) => FusionParams(
-                      mode: p.mode,
-                      alpha: p.alpha,
-                      gamma: v,
-                      edgeStrength: p.edgeStrength,
-                      edgeThresh: p.edgeThresh,
-                      edgeWidth: p.edgeWidth,
-                      edgeColor: p.edgeColor,
-                    )),
+                onChanged: (v) => setFusion(
+                  (p) => FusionParams(
+                    mode: p.mode,
+                    alpha: p.alpha,
+                    gamma: v,
+                    edgeStrength: p.edgeStrength,
+                    edgeThresh: p.edgeThresh,
+                    edgeWidth: p.edgeWidth,
+                    edgeColor: p.edgeColor,
+                  ),
+                ),
               ),
             ] else if (fp.mode == FusionMode.edge) ...[
               _GlassSlider(
                 label: '强度',
                 value: fp.edgeStrength,
-                onChanged: (v) => setFusion((p) => FusionParams(
-                      mode: p.mode,
-                      alpha: p.alpha,
-                      gamma: p.gamma,
-                      edgeStrength: v,
-                      edgeThresh: p.edgeThresh,
-                      edgeWidth: p.edgeWidth,
-                      edgeColor: p.edgeColor,
-                    )),
+                onChanged: (v) => setFusion(
+                  (p) => FusionParams(
+                    mode: p.mode,
+                    alpha: p.alpha,
+                    gamma: p.gamma,
+                    edgeStrength: v,
+                    edgeThresh: p.edgeThresh,
+                    edgeWidth: p.edgeWidth,
+                    edgeColor: p.edgeColor,
+                  ),
+                ),
               ),
               _GlassSlider(
                 label: '阈值',
                 value: fp.edgeThresh,
                 max: 0.5,
-                onChanged: (v) => setFusion((p) => FusionParams(
-                      mode: p.mode,
-                      alpha: p.alpha,
-                      gamma: p.gamma,
-                      edgeStrength: p.edgeStrength,
-                      edgeThresh: v,
-                      edgeWidth: p.edgeWidth,
-                      edgeColor: p.edgeColor,
-                    )),
+                onChanged: (v) => setFusion(
+                  (p) => FusionParams(
+                    mode: p.mode,
+                    alpha: p.alpha,
+                    gamma: p.gamma,
+                    edgeStrength: p.edgeStrength,
+                    edgeThresh: v,
+                    edgeWidth: p.edgeWidth,
+                    edgeColor: p.edgeColor,
+                  ),
+                ),
               ),
               _GlassSlider(
                 label: '粗细',
@@ -1375,15 +1667,17 @@ class _FullscreenRightPanel extends StatelessWidget {
                 max: 6,
                 divisions: 20,
                 valueLabel: '${fp.edgeWidth.toStringAsFixed(1)}px',
-                onChanged: (v) => setFusion((p) => FusionParams(
-                      mode: p.mode,
-                      alpha: p.alpha,
-                      gamma: p.gamma,
-                      edgeStrength: p.edgeStrength,
-                      edgeThresh: p.edgeThresh,
-                      edgeWidth: v,
-                      edgeColor: p.edgeColor,
-                    )),
+                onChanged: (v) => setFusion(
+                  (p) => FusionParams(
+                    mode: p.mode,
+                    alpha: p.alpha,
+                    gamma: p.gamma,
+                    edgeStrength: p.edgeStrength,
+                    edgeThresh: p.edgeThresh,
+                    edgeWidth: v,
+                    edgeColor: p.edgeColor,
+                  ),
+                ),
               ),
             ],
           ],
@@ -1421,8 +1715,7 @@ class _GlassModeChips extends StatelessWidget {
                     style: TextStyle(
                       color: selected ? Colors.white : Colors.white70,
                       fontSize: 11,
-                      fontWeight:
-                          selected ? FontWeight.w800 : FontWeight.w500,
+                      fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
                     ),
                   ),
                 ),
@@ -1468,20 +1761,17 @@ class _GlassSlider extends StatelessWidget {
         children: [
           SizedBox(
             width: 38,
-            child: Text(label,
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 11,
-                )),
+            child: Text(
+              label,
+              style: const TextStyle(color: Colors.white70, fontSize: 11),
+            ),
           ),
           Expanded(
             child: SliderTheme(
               data: SliderTheme.of(context).copyWith(
                 trackHeight: 2,
-                overlayShape:
-                    const RoundSliderOverlayShape(overlayRadius: 12),
-                thumbShape:
-                    const RoundSliderThumbShape(enabledThumbRadius: 6),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
               ),
               child: Slider(
                 value: value,
@@ -1519,11 +1809,13 @@ class _ThermalStreamSwitch extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text('热成像',
-            style: TextStyle(
-              fontSize: 12,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            )),
+        Text(
+          '热成像',
+          style: TextStyle(
+            fontSize: 12,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
         const SizedBox(width: 6),
         Transform.scale(
           scale: 0.85,
@@ -1546,11 +1838,13 @@ class _VisibleStreamSwitch extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text('可见光',
-            style: TextStyle(
-              fontSize: 12,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            )),
+        Text(
+          '可见光',
+          style: TextStyle(
+            fontSize: 12,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
         const SizedBox(width: 6),
         Transform.scale(
           scale: 0.85,
@@ -1569,14 +1863,50 @@ class _ChartCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        _ThermalMarkersStore.instance,
+        TemperatureRecorder.instance,
+      ]),
+      builder: (context, _) => _buildCard(context),
+    );
+  }
+
+  Widget _buildCard(BuildContext context) {
+    // AppState 每次收到热帧都会通知，从而刷新记录器刚追加的最新采样。
+    context.watch<AppState>();
     final scheme = Theme.of(context).colorScheme;
-    List<FlSpot> spotsOf(List<double> arr) =>
-        [for (var i = 0; i < arr.length; i++) FlSpot(i.toDouble(), arr[i])];
+    final singlePointMode = _ThermalMarkersStore.instance.cursorMode;
+    final records = TemperatureRecorder.instance.recentRecords();
+    final selectedLabel = singlePointMode ? '单点' : '多点均值';
+    final selectedSpots = _temperatureSpots(
+      records,
+      (sample) =>
+          singlePointMode ? sample.singleTemperature : sample.multiPointAverage,
+    );
+    final labels = <String>['最高', '最低', '平均'];
+    final bars = <LineChartBarData>[
+      _temperatureLine(
+        _temperatureSpots(records, (sample) => sample.maximum),
+        const Color(0xFFFF5252),
+      ),
+      _temperatureLine(
+        _temperatureSpots(records, (sample) => sample.minimum),
+        const Color(0xFF42A5F5),
+      ),
+      _temperatureLine(
+        _temperatureSpots(records, (sample) => sample.average),
+        const Color(0xFF66BB6A),
+      ),
+      if (selectedSpots.isNotEmpty) ...[
+        _temperatureLine(selectedSpots, const Color(0xFFAB47BC), width: 2.4),
+      ],
+    ];
+    if (selectedSpots.isNotEmpty) labels.add(selectedLabel);
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        padding: const EdgeInsets.fromLTRB(16, 8, 10, 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1584,20 +1914,84 @@ class _ChartCard extends StatelessWidget {
               children: [
                 const Icon(Icons.show_chart_rounded, size: 18),
                 const SizedBox(width: 8),
-                const Text('温度趋势',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w700, fontSize: 14)),
+                const Text(
+                  '温度趋势',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                ),
                 const Spacer(),
-                _LegendDot(color: const Color(0xFFFF5252), label: '最高'),
-                const SizedBox(width: 8),
-                _LegendDot(color: const Color(0xFF42A5F5), label: '最低'),
-                const SizedBox(width: 8),
-                _LegendDot(color: const Color(0xFF66BB6A), label: '平均'),
+                Text(
+                  '${TemperatureRecorder.instance.recordCount} 条',
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 11,
+                  ),
+                ),
+                IconButton(
+                  tooltip:
+                      '记录频率：${TemperatureRecorder.instance.sampleIntervalLabel}',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 36,
+                    height: 36,
+                  ),
+                  onPressed: () => _showTemperatureRecordSettings(context),
+                  icon: const Icon(Icons.timer_outlined, size: 19),
+                ),
+                IconButton(
+                  tooltip: '清理历史记录',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 36,
+                    height: 36,
+                  ),
+                  onPressed: records.isEmpty
+                      ? null
+                      : () => _confirmClearTemperatureRecords(context),
+                  icon: const Icon(Icons.delete_sweep_rounded, size: 19),
+                ),
+                IconButton(
+                  tooltip: '导出温度记录',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 36,
+                    height: 36,
+                  ),
+                  onPressed: records.isEmpty
+                      ? null
+                      : () => showTemperatureExportDialog(
+                          context,
+                          singlePointMode: singlePointMode,
+                          initialDirectory: appPhotoDownloadDir.value,
+                        ),
+                  icon: const Icon(Icons.download_rounded, size: 19),
+                ),
               ],
             ),
-            const SizedBox(height: 4),
+            SizedBox(
+              height: 18,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    const _LegendDot(color: Color(0xFFFF5252), label: '最高'),
+                    const SizedBox(width: 10),
+                    const _LegendDot(color: Color(0xFF42A5F5), label: '最低'),
+                    const SizedBox(width: 10),
+                    const _LegendDot(color: Color(0xFF66BB6A), label: '平均'),
+                    if (selectedSpots.isNotEmpty) ...[
+                      const SizedBox(width: 10),
+                      _LegendDot(
+                        color: const Color(0xFFAB47BC),
+                        label: selectedLabel,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 2),
             Expanded(
-              child: app.historyMax.isEmpty
+              child: records.isEmpty
                   ? Center(
                       child: Text(
                         '暂无数据',
@@ -1607,66 +2001,49 @@ class _ChartCard extends StatelessWidget {
                         ),
                       ),
                     )
-                  : LineChart(LineChartData(
-                      lineTouchData: LineTouchData(
-                        touchTooltipData: LineTouchTooltipData(
-                          getTooltipColor: (_) =>
-                              scheme.surfaceContainerHighest
-                                  .withValues(alpha: 0.92),
-                          tooltipRoundedRadius: 8,
-                          tooltipPadding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 6),
-                          getTooltipItems: (touchedSpots) {
-                            const labels = ['最高', '最低', '平均'];
-                            return [
-                              for (final s in touchedSpots)
-                                LineTooltipItem(
-                                  '${labels[s.barIndex.clamp(0, 2)]} ${s.y.toStringAsFixed(2)} °C',
-                                  TextStyle(
-                                    color: s.bar.color ?? scheme.onSurface,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
+                  : LineChart(
+                      LineChartData(
+                        lineTouchData: LineTouchData(
+                          touchTooltipData: LineTouchTooltipData(
+                            getTooltipColor: (_) => scheme
+                                .surfaceContainerHighest
+                                .withValues(alpha: 0.92),
+                            tooltipRoundedRadius: 8,
+                            tooltipPadding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            getTooltipItems: (touchedSpots) {
+                              return [
+                                for (final spot in touchedSpots)
+                                  LineTooltipItem(
+                                    '${labels[spot.barIndex.clamp(0, labels.length - 1)]} '
+                                    '${spot.y.toStringAsFixed(2)} °C',
+                                    TextStyle(
+                                      color: spot.bar.color ?? scheme.onSurface,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
-                                ),
-                            ];
-                          },
+                              ];
+                            },
+                          ),
                         ),
+                        gridData: FlGridData(
+                          show: true,
+                          drawVerticalLine: false,
+                          getDrawingHorizontalLine: (_) => FlLine(
+                            color: scheme.outlineVariant.withValues(
+                              alpha: 0.15,
+                            ),
+                            strokeWidth: 1,
+                          ),
+                        ),
+                        borderData: FlBorderData(show: false),
+                        titlesData: const FlTitlesData(show: false),
+                        lineBarsData: bars,
                       ),
-                      gridData: FlGridData(
-                        show: true,
-                        drawVerticalLine: false,
-                        getDrawingHorizontalLine: (_) => FlLine(
-                          color:
-                              scheme.outlineVariant.withValues(alpha: 0.15),
-                          strokeWidth: 1,
-                        ),
-                      ),
-                      borderData: FlBorderData(show: false),
-                      titlesData: const FlTitlesData(show: false),
-                      lineBarsData: [
-                        LineChartBarData(
-                          spots: spotsOf(app.historyMax),
-                          color: const Color(0xFFFF5252),
-                          barWidth: 2,
-                          isCurved: true,
-                          dotData: const FlDotData(show: false),
-                        ),
-                        LineChartBarData(
-                          spots: spotsOf(app.historyMin),
-                          color: const Color(0xFF42A5F5),
-                          barWidth: 2,
-                          isCurved: true,
-                          dotData: const FlDotData(show: false),
-                        ),
-                        LineChartBarData(
-                          spots: spotsOf(app.historyAvg),
-                          color: const Color(0xFF66BB6A),
-                          barWidth: 2,
-                          isCurved: true,
-                          dotData: const FlDotData(show: false),
-                        ),
-                      ],
-                    )),
+                    ),
             ),
           ],
         ),
@@ -1752,15 +2129,18 @@ class _VisibleCard extends StatelessWidget {
               children: [
                 const Icon(Icons.photo_camera_rounded, size: 18),
                 const SizedBox(width: 8),
-                const Text('可见光',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                const Text(
+                  '可见光',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+                ),
                 const Spacer(),
-                Text('推流',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: scheme.onSurfaceVariant,
-                    )),
+                Text(
+                  '推流',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
                 const SizedBox(width: 6),
                 Transform.scale(
                   scale: 0.85,
@@ -1791,8 +2171,9 @@ class _VisibleCard extends StatelessWidget {
                               Icon(
                                 Icons.camera_alt_outlined,
                                 size: 40,
-                                color: scheme.onSurfaceVariant
-                                    .withValues(alpha: 0.4),
+                                color: scheme.onSurfaceVariant.withValues(
+                                  alpha: 0.4,
+                                ),
                               ),
                               const SizedBox(height: 8),
                               Text(
@@ -1932,8 +2313,11 @@ class _CollapseSection extends StatelessWidget {
   final IconData icon;
   final String title;
   final Widget child;
-  const _CollapseSection(
-      {required this.icon, required this.title, required this.child});
+  const _CollapseSection({
+    required this.icon,
+    required this.title,
+    required this.child,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1942,8 +2326,10 @@ class _CollapseSection extends StatelessWidget {
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
       child: ExpansionTile(
         leading: Icon(icon, size: 18),
-        title: Text(title,
-            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+        title: Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+        ),
         tilePadding: const EdgeInsets.symmetric(horizontal: 16),
         childrenPadding: EdgeInsets.zero,
         children: [child],
@@ -1981,11 +2367,17 @@ class _UpsamplePicker extends StatelessWidget {
             value: p.upsampleMethod,
             items: const [
               DropdownMenuItem(
-                  value: UpsampleMethod.nearest, child: Text('最近')),
+                value: UpsampleMethod.nearest,
+                child: Text('最近'),
+              ),
               DropdownMenuItem(
-                  value: UpsampleMethod.bilinear, child: Text('双线性')),
+                value: UpsampleMethod.bilinear,
+                child: Text('双线性'),
+              ),
               DropdownMenuItem(
-                  value: UpsampleMethod.bicubic, child: Text('双三次')),
+                value: UpsampleMethod.bicubic,
+                child: Text('双三次'),
+              ),
             ],
             onChanged: (v) =>
                 app.updateRenderParams(p.copyWith(upsampleMethod: v)),
@@ -2040,8 +2432,11 @@ class _LabeledDropdown<T> extends StatelessWidget {
               // 弹出菜单圆角 + 限高滚动, 避免长列表占满屏幕.
               borderRadius: BorderRadius.circular(14),
               menuMaxHeight: 280,
-              icon: Icon(Icons.expand_more_rounded,
-                  size: 18, color: scheme.onSurfaceVariant),
+              icon: Icon(
+                Icons.expand_more_rounded,
+                size: 18,
+                color: scheme.onSurfaceVariant,
+              ),
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
@@ -2077,8 +2472,8 @@ class _FilterSection extends StatelessWidget {
               child: _SwitchTile(
                 label: '双边滤波',
                 value: p.bilateralEnabled,
-                onChanged: (v) => app
-                    .updateRenderParams(p.copyWith(bilateralEnabled: v)),
+                onChanged: (v) =>
+                    app.updateRenderParams(p.copyWith(bilateralEnabled: v)),
               ),
             ),
             const SizedBox(width: 6),
@@ -2110,7 +2505,8 @@ class _FilterSection extends StatelessWidget {
                   min: 0.5,
                   max: 4.0,
                   onChanged: (v) => app.updateRenderParams(
-                      p.copyWith(bilateralSigmaSpatial: v)),
+                    p.copyWith(bilateralSigmaSpatial: v),
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -2121,7 +2517,8 @@ class _FilterSection extends StatelessWidget {
                   min: 0.1,
                   max: 5.0,
                   onChanged: (v) => app.updateRenderParams(
-                      p.copyWith(bilateralSigmaIntensity: v)),
+                    p.copyWith(bilateralSigmaIntensity: v),
+                  ),
                 ),
               ),
             ],
@@ -2164,11 +2561,8 @@ class _SwitchTile extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 12,
-                    fontWeight:
-                        value ? FontWeight.w700 : FontWeight.w500,
-                    color: value
-                        ? scheme.primary
-                        : scheme.onSurfaceVariant,
+                    fontWeight: value ? FontWeight.w700 : FontWeight.w500,
+                    color: value ? scheme.primary : scheme.onSurfaceVariant,
                   ),
                 ),
               ),
@@ -2177,8 +2571,7 @@ class _SwitchTile extends StatelessWidget {
                 child: Switch(
                   value: value,
                   onChanged: onChanged,
-                  materialTapTargetSize:
-                      MaterialTapTargetSize.shrinkWrap,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
               ),
             ],
@@ -2200,11 +2593,10 @@ class _SectionTitle extends StatelessWidget {
       children: [
         Icon(icon, size: 16),
         const SizedBox(width: 8),
-        Text(text,
-            style: const TextStyle(
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
-            )),
+        Text(
+          text,
+          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+        ),
       ],
     );
   }
@@ -2238,8 +2630,8 @@ class _ColormapDropdown extends StatelessWidget {
         for (final e in _names.entries)
           DropdownMenuItem(value: e.key, child: Text(e.value)),
       ],
-      onChanged: (v) => app.updateRenderParams(
-          app.renderParams.copyWith(colormapName: v)),
+      onChanged: (v) =>
+          app.updateRenderParams(app.renderParams.copyWith(colormapName: v)),
     );
   }
 }
@@ -2257,8 +2649,8 @@ class _CurveDropdown extends StatelessWidget {
         DropdownMenuItem(value: 'linear', child: Text('线性')),
         DropdownMenuItem(value: 'nonlinear', child: Text('S 曲线')),
       ],
-      onChanged: (v) => app.updateRenderParams(
-          app.renderParams.copyWith(mappingCurve: v)),
+      onChanged: (v) =>
+          app.updateRenderParams(app.renderParams.copyWith(mappingCurve: v)),
     );
   }
 }
@@ -2281,17 +2673,19 @@ class _FusionModeDropdown extends StatelessWidget {
         DropdownMenuItem(value: FusionMode.edge, child: Text('边缘叠加')),
       ],
       onChanged: (mode) {
-        app.updateRenderParams(app.renderParams.copyWith(
-          fusion: FusionParams(
-            mode: mode,
-            gamma: fp.gamma,
-            alpha: fp.alpha,
-            edgeStrength: fp.edgeStrength,
-            edgeThresh: fp.edgeThresh,
-            edgeWidth: fp.edgeWidth,
-            edgeColor: fp.edgeColor,
+        app.updateRenderParams(
+          app.renderParams.copyWith(
+            fusion: FusionParams(
+              mode: mode,
+              gamma: fp.gamma,
+              alpha: fp.alpha,
+              edgeStrength: fp.edgeStrength,
+              edgeThresh: fp.edgeThresh,
+              edgeWidth: fp.edgeWidth,
+              edgeColor: fp.edgeColor,
+            ),
           ),
-        ));
+        );
       },
     );
   }
@@ -2304,52 +2698,68 @@ class _FusionSliders extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final p = app.renderParams.fusion;
-    void set({double? alpha, double? gamma, double? es, double? et, double? ew}) {
-      app.updateRenderParams(app.renderParams.copyWith(
-        fusion: FusionParams(
-          mode: p.mode,
-          alpha: alpha ?? p.alpha,
-          gamma: gamma ?? p.gamma,
-          edgeStrength: es ?? p.edgeStrength,
-          edgeThresh: et ?? p.edgeThresh,
-          edgeWidth: ew ?? p.edgeWidth,
-          edgeColor: p.edgeColor,
+    void set({
+      double? alpha,
+      double? gamma,
+      double? es,
+      double? et,
+      double? ew,
+    }) {
+      app.updateRenderParams(
+        app.renderParams.copyWith(
+          fusion: FusionParams(
+            mode: p.mode,
+            alpha: alpha ?? p.alpha,
+            gamma: gamma ?? p.gamma,
+            edgeStrength: es ?? p.edgeStrength,
+            edgeThresh: et ?? p.edgeThresh,
+            edgeWidth: ew ?? p.edgeWidth,
+            edgeColor: p.edgeColor,
+          ),
         ),
-      ));
+      );
     }
 
     if (p.mode == FusionMode.blend) {
       return Column(
         children: [
-          _SliderRow(label: 'Alpha', value: p.alpha, onChanged: (v) => set(alpha: v)),
           _SliderRow(
-              label: 'Gamma',
-              value: p.gamma,
-              min: 0.2,
-              max: 3.0,
-              onChanged: (v) => set(gamma: v)),
+            label: 'Alpha',
+            value: p.alpha,
+            onChanged: (v) => set(alpha: v),
+          ),
+          _SliderRow(
+            label: 'Gamma',
+            value: p.gamma,
+            min: 0.2,
+            max: 3.0,
+            onChanged: (v) => set(gamma: v),
+          ),
         ],
       );
     } else if (p.mode == FusionMode.edge) {
       return Column(
         children: [
           _SliderRow(
-              label: '强度',
-              value: p.edgeStrength,
-              onChanged: (v) => set(es: v)),
+            label: '强度',
+            value: p.edgeStrength,
+            onChanged: (v) => set(es: v),
+          ),
           _SliderRow(
-              label: '阈值',
-              value: p.edgeThresh,
-              max: 0.5,
-              onChanged: (v) => set(et: v)),
+            label: '阈值',
+            value: p.edgeThresh,
+            max: 0.5,
+            onChanged: (v) => set(et: v),
+          ),
           _SliderRow(
-              label: '粗细',
-              value: p.edgeWidth.clamp(1.0, 6.0),
-              min: 1,
-              max: 6,
-              divisions: 20,
-              valueLabel: '${p.edgeWidth.toStringAsFixed(2)} px',
-              onChanged: (v) => set(ew: v)),
+            label: '粗细',
+            value: p.edgeWidth.clamp(1.0, 6.0),
+            min: 1,
+            max: 6,
+            divisions: 20,
+            valueLabel: '${p.edgeWidth.toStringAsFixed(2)} px',
+            onChanged: (v) => set(ew: v),
+          ),
         ],
       );
     }
@@ -2383,12 +2793,12 @@ class _SliderRow extends StatelessWidget {
       child: Row(
         children: [
           SizedBox(
-              width: 50,
-              child: Text(label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: scheme.onSurfaceVariant,
-                  ))),
+            width: 50,
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
+          ),
           Expanded(
             child: Slider(
               value: value,
@@ -2402,10 +2812,7 @@ class _SliderRow extends StatelessWidget {
             width: 48,
             child: Text(
               valueLabel ?? value.toStringAsFixed(2),
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12,
-              ),
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
               textAlign: TextAlign.right,
             ),
           ),
@@ -2419,7 +2826,11 @@ class _Chip extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback onTap;
-  const _Chip({required this.label, required this.selected, required this.onTap});
+  const _Chip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2504,15 +2915,18 @@ class _ConsoleCardState extends State<_ConsoleCard> {
               children: [
                 const Icon(Icons.terminal_rounded, size: 18),
                 const SizedBox(width: 8),
-                const Text('串口控制台',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w700, fontSize: 14)),
+                const Text(
+                  '串口控制台',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                ),
                 const Spacer(),
-                Text('${app.logs.length} 条',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: scheme.onSurfaceVariant,
-                    )),
+                Text(
+                  '${app.logs.length} 条',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
                 const SizedBox(width: 8),
                 _MiniIcon(
                   icon: Icons.delete_sweep_rounded,
@@ -2687,8 +3101,7 @@ class _VisibleFloatingLauncherState extends State<_VisibleFloatingLauncher> {
           color: on
               ? scheme.primaryContainer.withValues(alpha: 0.6)
               : scheme.surfaceContainerHighest,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           child: InkWell(
             borderRadius: BorderRadius.circular(8),
             onTap: _toggle,
@@ -2798,11 +3211,13 @@ class _VisibleFloatingPanelState extends State<_VisibleFloatingPanel> {
                     children: [
                       const Icon(Icons.photo_camera_rounded, size: 16),
                       const SizedBox(width: 6),
-                      const Text('可见光',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          )),
+                      const Text(
+                        '可见光',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                       const Spacer(),
                       InkWell(
                         onTap: widget.onClose,
@@ -2853,8 +3268,7 @@ class _VisibleFloatingPanelState extends State<_VisibleFloatingPanel> {
                           behavior: HitTestBehavior.opaque,
                           onPanUpdate: _resize,
                           child: MouseRegion(
-                            cursor:
-                                SystemMouseCursors.resizeDownRight,
+                            cursor: SystemMouseCursors.resizeDownRight,
                             child: Container(
                               width: 18,
                               height: 18,
@@ -2863,8 +3277,9 @@ class _VisibleFloatingPanelState extends State<_VisibleFloatingPanel> {
                               child: Icon(
                                 Icons.south_east_rounded,
                                 size: 12,
-                                color: scheme.onSurfaceVariant
-                                    .withValues(alpha: 0.7),
+                                color: scheme.onSurfaceVariant.withValues(
+                                  alpha: 0.7,
+                                ),
                               ),
                             ),
                           ),
@@ -2987,15 +3402,15 @@ class _CollapsedConsoleBarState extends State<_CollapsedConsoleBar> {
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
-                      color: _hover
-                          ? scheme.primary
-                          : scheme.onSurfaceVariant,
+                      color: _hover ? scheme.primary : scheme.onSurfaceVariant,
                     ),
                   ),
                   const SizedBox(width: 10),
                   Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 1),
+                      horizontal: 6,
+                      vertical: 1,
+                    ),
                     decoration: BoxDecoration(
                       color: scheme.surface,
                       borderRadius: BorderRadius.circular(6),
@@ -3027,8 +3442,9 @@ class _CollapsedConsoleBarState extends State<_CollapsedConsoleBar> {
                         Icon(
                           Icons.keyboard_arrow_up_rounded,
                           size: 16,
-                          color:
-                              _hover ? scheme.primary : scheme.onSurfaceVariant,
+                          color: _hover
+                              ? scheme.primary
+                              : scheme.onSurfaceVariant,
                         ),
                       ],
                     ),
@@ -3060,8 +3476,10 @@ class _ExpandedConsoleShell extends StatelessWidget {
 /// 录制中右按钮变为红色方块, 旁显示帧计数 / 时长.
 class _CaptureBar extends StatefulWidget {
   const _CaptureBar({this.embedded = false, this.compact = false});
+
   /// 嵌入式胶囊模式: 蓝色实色 + 四角圆角 + 紧凑控件, 用于桌面/Android 嵌挂在主画面 box 右下角.
   final bool embedded;
+
   /// 进一步压缩控件尺寸 (Android 端启用), 整体小一号.
   final bool compact;
   @override
@@ -3174,10 +3592,12 @@ class _CaptureBarState extends State<_CaptureBar> {
     final padV = embedded ? (compact ? 2.0 : 4.0) : 6.0;
     final iconSize = embedded ? (compact ? 18.0 : 22.0) : 24.0;
     final gap = embedded ? (compact ? 2.0 : 4.0) : 8.0;
-    final BorderRadius borderRadius =
-        BorderRadius.circular(embedded ? (compact ? 14.0 : 18.0) : 28.0);
-    final Border? border =
-        embedded ? null : Border.all(color: scheme.outlineVariant);
+    final BorderRadius borderRadius = BorderRadius.circular(
+      embedded ? (compact ? 14.0 : 18.0) : 28.0,
+    );
+    final Border? border = embedded
+        ? null
+        : Border.all(color: scheme.outlineVariant);
     final List<BoxShadow>? boxShadow = embedded
         ? const [
             BoxShadow(
@@ -3187,7 +3607,11 @@ class _CaptureBarState extends State<_CaptureBar> {
             ),
           ]
         : const [
-            BoxShadow(blurRadius: 6, color: Colors.black26, offset: Offset(0, 2)),
+            BoxShadow(
+              blurRadius: 6,
+              color: Colors.black26,
+              offset: Offset(0, 2),
+            ),
           ];
     return Material(
       color: Colors.transparent,
@@ -3250,14 +3674,10 @@ class _CaptureBarState extends State<_CaptureBar> {
             IconButton(
               onPressed: _busy ? null : _toggleRecord,
               icon: Icon(
-                recording
-                    ? Icons.stop_circle_rounded
-                    : Icons.videocam_rounded,
+                recording ? Icons.stop_circle_rounded : Icons.videocam_rounded,
               ),
               tooltip: recording ? '停止录制' : '开始录制 (跟随实时槽位)',
-              color: recording
-                  ? (embedded ? Colors.white : scheme.error)
-                  : fg,
+              color: recording ? (embedded ? Colors.white : scheme.error) : fg,
               iconSize: iconSize,
               padding: EdgeInsets.all(embedded ? (compact ? 2 : 4) : 8),
               constraints: embedded
@@ -3304,4 +3724,3 @@ class _SlotDot extends StatelessWidget {
     );
   }
 }
-

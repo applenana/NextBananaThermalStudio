@@ -70,7 +70,20 @@ RenderedFrame renderPipeline({
   final scale = params.upsampleScale.clamp(1, 32);
   final dstW = srcW * scale;
   final dstH = srcH * scale;
-  final upField = scale == 1
+  final thermalView = params.thermalView;
+  final upField = thermalView.enabled
+      ? upsampleThermalView(
+          src: field,
+          srcW: srcW,
+          srcH: srcH,
+          dstW: dstW,
+          dstH: dstH,
+          scale: thermalView.scale,
+          xOffset: thermalView.xOffset,
+          yOffset: thermalView.yOffset,
+          method: params.upsampleMethod,
+        )
+      : scale == 1
       ? Float32List.fromList(field)
       : upsample(
           src: field,
@@ -99,10 +112,10 @@ RenderedFrame renderPipeline({
     norm[i] = n.isNaN
         ? 0
         : n < 0
-            ? 0
-            : n > 1
-                ? 1
-                : n;
+        ? 0
+        : n > 1
+        ? 1
+        : n;
   }
 
   // -- 步骤 4: colormap -> RGB --

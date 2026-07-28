@@ -891,6 +891,35 @@ class _DetailBody extends StatefulWidget {
   State<_DetailBody> createState() => _DetailBodyState();
 }
 
+/// 视频导出时的极值标签位置状态。
+///
+/// 实时预览由 [ThermalCanvas] 自身执行 140ms ease-out 动画；导出则没有逐帧
+/// Widget 动画，因此按帧时间戳推进同样时长的快速过渡，避免成片里的标签跳动。
+class _VideoExtremeTrackingState {
+  Offset? _hot;
+  Offset? _cold;
+  int? _lastTimestampMs;
+
+  ({Offset hot, Offset cold}) update({
+    required Offset hot,
+    required Offset cold,
+    required int? timestampMs,
+  }) {
+    final previousTimestamp = _lastTimestampMs;
+    final deltaMs = timestampMs == null || previousTimestamp == null
+        ? 140
+        : timestampMs - previousTimestamp;
+    final progress = deltaMs <= 0 || deltaMs > 1000
+        ? 1.0
+        : (deltaMs / 140.0).clamp(0.0, 1.0);
+    final amount = Curves.easeOutCubic.transform(progress);
+    _hot = _hot == null ? hot : Offset.lerp(_hot, hot, amount)!;
+    _cold = _cold == null ? cold : Offset.lerp(_cold, cold, amount)!;
+    _lastTimestampMs = timestampMs;
+    return (hot: _hot!, cold: _cold!);
+  }
+}
+
 class _DetailBodyState extends State<_DetailBody> {
   CapturePackageReader? _reader;
   CaptureFrame? _frame;
@@ -906,6 +935,9 @@ class _DetailBodyState extends State<_DetailBody> {
   bool _showVisible = false;
   // 左上角温度叠加 (MAX/MIN/AVG) 开关, 默认开. 视频回放每帧 setState 触发刷新.
   bool _tempOverlayEnabled = true;
+  // 视频极值追踪独立于实时画面设置，默认关闭；勾选后预览与导出共用。
+  bool _trackHotSpot = false;
+  bool _trackColdSpot = false;
   // 顶部元数据卡是否展开 (默认折叠, 单行摘要).
   bool _metaExpanded = false;
   // 用户在画面上点击放置的温度标记 (坐标使用渲染后帧像素 (px, py),
@@ -1094,6 +1126,8 @@ class _DetailBodyState extends State<_DetailBody> {
     double? overlayMax,
     double? overlayAvg,
     List<TempMarker>? markers,
+    _VideoExtremeTrackingState? trackingState,
+    int? frameTimestampMs,
   }) async {
     final rgba = Uint8List(r.width * r.height * 4);
     for (var i = 0, j = 0; i < r.rgb.length; i += 3, j += 4) {
@@ -1105,7 +1139,8 @@ class _DetailBodyState extends State<_DetailBody> {
     final hasOverlay =
         overlayMin != null && overlayMax != null && overlayAvg != null;
     final hasMarkers = markers != null && markers.isNotEmpty;
-    if (!hasOverlay && !hasMarkers) {
+    final hasExtremeTracking = _trackHotSpot || _trackColdSpot;
+    if (!hasOverlay && !hasMarkers && !hasExtremeTracking) {
       return (rgba: rgba, width: r.width, height: r.height);
     }
     // 需要烘焙叠加: 走 Canvas, 之后再 toByteData(rawRgba).
@@ -1130,6 +1165,14 @@ class _DetailBodyState extends State<_DetailBody> {
       _drawMarkersOnCanvas(canvas, r.width.toDouble(), r.height.toDouble(),
           markers);
     }
+    if (hasExtremeTracking) {
+      _drawExtremeTrackingOnCanvas(
+        canvas,
+        r,
+        trackingState: trackingState,
+        frameTimestampMs: frameTimestampMs,
+      );
+    }
     final picture = recorder.endRecording();
     final outImg = await picture.toImage(r.width, r.height);
     final bd = await outImg.toByteData(format: ui.ImageByteFormat.rawRgba);
@@ -1148,6 +1191,8 @@ class _DetailBodyState extends State<_DetailBody> {
     double? overlayMax,
     double? overlayAvg,
     List<TempMarker>? markers,
+    _VideoExtremeTrackingState? trackingState,
+    int? frameTimestampMs,
   }) async {
     // PNG 编码路径仍走 Canvas (无叠加时也走, 以保持单一码路径并避免分支).
     final rgba = Uint8List(r.width * r.height * 4);
@@ -1177,6 +1222,14 @@ class _DetailBodyState extends State<_DetailBody> {
     if (markers != null && markers.isNotEmpty) {
       _drawMarkersOnCanvas(
           canvas, r.width.toDouble(), r.height.toDouble(), markers);
+    }
+    if (_trackHotSpot || _trackColdSpot) {
+      _drawExtremeTrackingOnCanvas(
+        canvas,
+        r,
+        trackingState: trackingState,
+        frameTimestampMs: frameTimestampMs,
+      );
     }
     final picture = recorder.endRecording();
     final outImg = await picture.toImage(r.width, r.height);
@@ -1235,6 +1288,146 @@ class _DetailBodyState extends State<_DetailBody> {
       );
       tp.paint(canvas, Offset(bx, by));
     }
+  }
+
+  /// 把最高/最低温追踪标签烘焙到导出帧。样式与实时 [ThermalCanvas]
+  /// 保持一致：热点黄色 ▼ + H，冷点冰蓝 ▲ + L。
+  void _drawExtremeTrackingOnCanvas(
+    Canvas canvas,
+    RenderedFrame frame, {
+    _VideoExtremeTrackingState? trackingState,
+    int? frameTimestampMs,
+  }) {
+    if ((!_trackHotSpot && !_trackColdSpot) ||
+        frame.temperatureField.isEmpty) {
+      return;
+    }
+    int hotIndex = -1;
+    int coldIndex = -1;
+    var hot = -double.infinity;
+    var cold = double.infinity;
+    for (var i = 0; i < frame.temperatureField.length; i++) {
+      final value = frame.temperatureField[i];
+      if (!value.isFinite) continue;
+      if (value > hot) {
+        hot = value;
+        hotIndex = i;
+      }
+      if (value < cold) {
+        cold = value;
+        coldIndex = i;
+      }
+    }
+    if (hotIndex < 0 || coldIndex < 0) return;
+    var hotAnchor = Offset(
+      hotIndex % frame.width + 0.5,
+      hotIndex ~/ frame.width + 0.5,
+    );
+    var coldAnchor = Offset(
+      coldIndex % frame.width + 0.5,
+      coldIndex ~/ frame.width + 0.5,
+    );
+    if (trackingState != null) {
+      final tracked = trackingState.update(
+        hot: hotAnchor,
+        cold: coldAnchor,
+        timestampMs: frameTimestampMs,
+      );
+      hotAnchor = tracked.hot;
+      coldAnchor = tracked.cold;
+    }
+    if (_trackHotSpot) {
+      _drawExtremeTag(
+        canvas,
+        Size(frame.width.toDouble(), frame.height.toDouble()),
+        anchor: hotAnchor,
+        color: const Color(0xFFFFCC00),
+        text: 'H ${hot.toStringAsFixed(1)}°',
+        hot: true,
+      );
+    }
+    if (_trackColdSpot) {
+      _drawExtremeTag(
+        canvas,
+        Size(frame.width.toDouble(), frame.height.toDouble()),
+        anchor: coldAnchor,
+        color: const Color(0xFF80D8FF),
+        text: 'L ${cold.toStringAsFixed(1)}°',
+        hot: false,
+      );
+    }
+  }
+
+  void _drawExtremeTag(
+    Canvas canvas,
+    Size size, {
+    required Offset anchor,
+    required Color color,
+    required String text,
+    required bool hot,
+  }) {
+    final shortSide = size.shortestSide;
+    final radius = (shortSide / 60).clamp(3.0, 8.0);
+    final fontSize = (shortSide / 32).clamp(9.0, 20.0);
+    final path = Path();
+    if (hot) {
+      path
+        ..moveTo(anchor.dx, anchor.dy)
+        ..lineTo(anchor.dx - radius, anchor.dy - radius * 1.4)
+        ..lineTo(anchor.dx + radius, anchor.dy - radius * 1.4);
+    } else {
+      path
+        ..moveTo(anchor.dx, anchor.dy)
+        ..lineTo(anchor.dx - radius, anchor.dy + radius * 1.4)
+        ..lineTo(anchor.dx + radius, anchor.dy + radius * 1.4);
+    }
+    path.close();
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.7)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = (radius / 3).clamp(1.0, 2.0)
+        ..strokeJoin = StrokeJoin.round,
+    );
+    canvas.drawPath(path, Paint()..color = color);
+    canvas.drawCircle(
+      anchor,
+      (radius / 4).clamp(1.0, 2.0),
+      Paint()..color = Colors.black.withValues(alpha: 0.85),
+    );
+
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: fontSize,
+          fontWeight: FontWeight.w700,
+          fontFamily: 'SmileySans',
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final x = (anchor.dx - painter.width / 2).clamp(
+      3.0,
+      size.width - painter.width - 3,
+    );
+    final desiredY = hot
+        ? anchor.dy - radius * 1.4 - painter.height - 2
+        : anchor.dy + radius * 1.4 + 2;
+    final y = desiredY.clamp(3.0, size.height - painter.height - 3);
+    final background = Rect.fromLTWH(
+      x - 4,
+      y - 1,
+      painter.width + 8,
+      painter.height + 2,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(background, const Radius.circular(3)),
+      Paint()..color = Colors.black.withValues(alpha: 0.68),
+    );
+    painter.paint(canvas, Offset(x, y));
   }
 
   void _drawTempOverlayOnCanvas(
@@ -1382,15 +1575,22 @@ class _DetailBodyState extends State<_DetailBody> {
   /// - 纯可见光: 直接返回 visiblePng (调用方决定文件扩展名).
   /// 返回 (bytes, ext: 'png' 或 'png'/'jpg').
   Future<(Uint8List bytes, String ext)?> _bakeFrame(
-      CaptureFrame frame, CaptureMeta meta) async {
+    CaptureFrame frame,
+    CaptureMeta meta, {
+    _VideoExtremeTrackingState? trackingState,
+  }) async {
     final th = await _renderThermalFrame(frame, meta);
     if (th != null) {
       final perFrameMarkers = _refreshMarkers(th.rendered);
-      final png = await _renderFrameToPng(th.rendered,
-          overlayMin: th.tMin,
-          overlayMax: th.tMax,
-          overlayAvg: th.tAvg,
-          markers: perFrameMarkers.isEmpty ? null : perFrameMarkers);
+      final png = await _renderFrameToPng(
+        th.rendered,
+        overlayMin: th.tMin,
+        overlayMax: th.tMax,
+        overlayAvg: th.tAvg,
+        markers: perFrameMarkers.isEmpty ? null : perFrameMarkers,
+        trackingState: trackingState,
+        frameTimestampMs: frame.tsMs,
+      );
       return (png, 'png');
     }
     if (frame.hasVisible && frame.visiblePng != null) {
@@ -1404,15 +1604,22 @@ class _DetailBodyState extends State<_DetailBody> {
   /// - 纯可见光: 解码 PNG → RGB888 → 填充 alpha. 没有温度叠加.
   /// - 都无: null.
   Future<({Uint8List rgba, int width, int height})?> _bakeFrameToRgba(
-      CaptureFrame frame, CaptureMeta meta) async {
+    CaptureFrame frame,
+    CaptureMeta meta, {
+    _VideoExtremeTrackingState? trackingState,
+  }) async {
     final th = await _renderThermalFrame(frame, meta);
     if (th != null) {
       final perFrameMarkers = _refreshMarkers(th.rendered);
-      return _renderFrameToRgba(th.rendered,
-          overlayMin: th.tMin,
-          overlayMax: th.tMax,
-          overlayAvg: th.tAvg,
-          markers: perFrameMarkers.isEmpty ? null : perFrameMarkers);
+      return _renderFrameToRgba(
+        th.rendered,
+        overlayMin: th.tMin,
+        overlayMax: th.tMax,
+        overlayAvg: th.tAvg,
+        markers: perFrameMarkers.isEmpty ? null : perFrameMarkers,
+        trackingState: trackingState,
+        frameTimestampMs: frame.tsMs,
+      );
     }
     if (frame.hasVisible && frame.visiblePng != null) {
       try {
@@ -1512,8 +1719,15 @@ class _DetailBodyState extends State<_DetailBody> {
         if (d > 10 && d < 2000) frameMs = d;
       } catch (_) {}
       final fps = (1000 / frameMs).round().clamp(1, 60);
+      final trackingState = (_trackHotSpot || _trackColdSpot)
+          ? _VideoExtremeTrackingState()
+          : null;
       // 2) 烘焙首帧, 确定画面尺寸 (强制偶数, 满足 H264 要求).
-      final first = await _bakeFrameToRgba(await r.readFrame(0), r.meta);
+      final first = await _bakeFrameToRgba(
+        await r.readFrame(0),
+        r.meta,
+        trackingState: trackingState,
+      );
       if (first == null) {
         if (!mounted) return;
         BananaToast.show(context, '首帧无可导出内容');
@@ -1549,7 +1763,11 @@ class _DetailBodyState extends State<_DetailBody> {
             _cropRgba(first.rgba, first.width, first.height, w, h));
         for (var i = 1; i < r.frameCount; i++) {
           final f = await r.readFrame(i);
-          final bake = await _bakeFrameToRgba(f, r.meta);
+          final bake = await _bakeFrameToRgba(
+            f,
+            r.meta,
+            trackingState: trackingState,
+          );
           if (bake == null) continue;
           await FlutterQuickVideoEncoder.appendVideoFrame(
               _cropRgba(bake.rgba, bake.width, bake.height, w, h));
@@ -1615,7 +1833,11 @@ class _DetailBodyState extends State<_DetailBody> {
       proc.stdin.add(_cropRgba(first.rgba, first.width, first.height, w, h));
       for (var i = 1; i < r.frameCount; i++) {
         final f = await r.readFrame(i);
-        final bake = await _bakeFrameToRgba(f, r.meta);
+        final bake = await _bakeFrameToRgba(
+          f,
+          r.meta,
+          trackingState: trackingState,
+        );
         if (bake == null) continue;
         proc.stdin.add(_cropRgba(bake.rgba, bake.width, bake.height, w, h));
         await proc.stdin.flush();
@@ -1676,10 +1898,17 @@ class _DetailBodyState extends State<_DetailBody> {
       final root = await _ensureExportRoot();
       final subDir = Directory(p.join(root.path, base));
       if (!await subDir.exists()) await subDir.create(recursive: true);
+      final trackingState = (_trackHotSpot || _trackColdSpot)
+          ? _VideoExtremeTrackingState()
+          : null;
       int ok = 0;
       for (var i = 0; i < r.frameCount; i++) {
         final f = await r.readFrame(i);
-        final baked = await _bakeFrame(f, r.meta);
+        final baked = await _bakeFrame(
+          f,
+          r.meta,
+          trackingState: trackingState,
+        );
         if (baked == null) continue;
         final (bytes, ext) = baked;
         final file = File(p.join(subDir.path,
@@ -1885,6 +2114,65 @@ class _DetailBodyState extends State<_DetailBody> {
           params: params,
           onParamsChanged: (v) => setState(() => _params = v),
         ),
+        if (isVideo && hasThermalInPkg) ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: scheme.outlineVariant.withValues(alpha: 0.45),
+              ),
+            ),
+            child: Wrap(
+              spacing: 12,
+              runSpacing: 2,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.track_changes_rounded,
+                      size: 17,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 6),
+                    const Text(
+                      '视频温度追踪',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+                _VideoTrackingCheckbox(
+                  value: _trackHotSpot,
+                  label: '热点追踪',
+                  color: const Color(0xFFFFCC00),
+                  onChanged: (value) =>
+                      setState(() => _trackHotSpot = value),
+                ),
+                _VideoTrackingCheckbox(
+                  value: _trackColdSpot,
+                  label: '冷点追踪',
+                  color: const Color(0xFF80D8FF),
+                  onChanged: (value) =>
+                      setState(() => _trackColdSpot = value),
+                ),
+                Text(
+                  '勾选效果会写入导出视频',
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 8),
         // ----- 主预览区 (占满剩余高度) -----
         Expanded(
@@ -2145,6 +2433,8 @@ class _DetailBodyState extends State<_DetailBody> {
                 frame: rendered,
                 showCursorTemp: true,
                 markers: liveMarkers,
+                showHotSpot: _trackHotSpot,
+                showColdSpot: _trackColdSpot,
                 onAddMarker: (px, py, temp) {
                   setState(() => _markers.add(TempMarker(px, py, temp)));
                 },
@@ -2500,6 +2790,57 @@ class _Dropdown<T> extends StatelessWidget {
 // ============================================================
 // 画面叠加: 右上角小圆按钮 (可见光显隐切换等).
 // ============================================================
+class _VideoTrackingCheckbox extends StatelessWidget {
+  const _VideoTrackingCheckbox({
+    required this.value,
+    required this.label,
+    required this.color,
+    required this.onChanged,
+  });
+
+  final bool value;
+  final String label;
+  final Color color;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => onChanged(!value),
+      child: Padding(
+        padding: const EdgeInsets.only(right: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Checkbox(
+              value: value,
+              onChanged: (next) => onChanged(next ?? false),
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              activeColor: color,
+              checkColor: Colors.black87,
+            ),
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _OverlayIconButton extends StatelessWidget {
   const _OverlayIconButton({
     required this.icon,

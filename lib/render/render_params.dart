@@ -17,6 +17,42 @@ import '../fusion/fusion.dart';
 
 enum UpsampleMethod { nearest, bilinear, bicubic }
 
+/// 设备端热像视图变换参数。
+///
+/// [enabled] 仅在成功收到设备 `thermal view` 响应后置为 true，避免旧固件
+/// 不支持查询时改变上位机原有的插值行为。偏移单位与设备一致：屏幕像素，
+/// 每 10 屏幕像素对应 1 个热传感器源像素。
+@immutable
+class ThermalViewParams {
+  final bool enabled;
+  final double scale;
+  final int xOffset;
+  final int yOffset;
+
+  const ThermalViewParams({
+    this.enabled = false,
+    this.scale = 1.0,
+    this.xOffset = 0,
+    this.yOffset = 0,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'enabled': enabled,
+    'scale': scale,
+    'xOffset': xOffset,
+    'yOffset': yOffset,
+  };
+
+  factory ThermalViewParams.fromJson(Map<String, dynamic> j) {
+    return ThermalViewParams(
+      enabled: j['enabled'] as bool? ?? false,
+      scale: (j['scale'] as num?)?.toDouble() ?? 1.0,
+      xOffset: (j['xOffset'] as num?)?.toInt() ?? 0,
+      yOffset: (j['yOffset'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 @immutable
 class RenderParams {
   // ---- 上采样 ----
@@ -43,6 +79,9 @@ class RenderParams {
   final int coldColor;
   final int midColor;
   final int hotColor;
+
+  // ---- 设备热像视图变换 ----
+  final ThermalViewParams thermalView;
 
   // ---- 融合 ----
   final FusionParams fusion;
@@ -72,6 +111,7 @@ class RenderParams {
     this.coldColor = 0x0000FF,
     this.midColor = 0x00FF00,
     this.hotColor = 0xFF0000,
+    this.thermalView = const ThermalViewParams(),
     this.fusion = const FusionParams(),
     this.showInfoOverlay = false,
     this.showCursorTemp = true,
@@ -91,6 +131,7 @@ class RenderParams {
     int? coldColor,
     int? midColor,
     int? hotColor,
+    ThermalViewParams? thermalView,
     FusionParams? fusion,
     bool? showInfoOverlay,
     bool? showCursorTemp,
@@ -111,6 +152,7 @@ class RenderParams {
       coldColor: coldColor ?? this.coldColor,
       midColor: midColor ?? this.midColor,
       hotColor: hotColor ?? this.hotColor,
+      thermalView: thermalView ?? this.thermalView,
       fusion: fusion ?? this.fusion,
       showInfoOverlay: showInfoOverlay ?? this.showInfoOverlay,
       showCursorTemp: showCursorTemp ?? this.showCursorTemp,
@@ -121,23 +163,24 @@ class RenderParams {
 
   /// 序列化为可写入 .btpkg meta 的 JSON Map (字段名稳定, 增加新字段时保持向后兼容).
   Map<String, dynamic> toJson() => {
-        'upsampleScale': upsampleScale,
-        'upsampleMethod': upsampleMethod.name,
-        'bilateralEnabled': bilateralEnabled,
-        'bilateralSigmaSpatial': bilateralSigmaSpatial,
-        'bilateralSigmaIntensity': bilateralSigmaIntensity,
-        'colormapName': colormapName,
-        'mappingCurve': mappingCurve,
-        'useCustomColors': useCustomColors,
-        'coldColor': coldColor,
-        'midColor': midColor,
-        'hotColor': hotColor,
-        'fusion': fusion.toJson(),
-        'showInfoOverlay': showInfoOverlay,
-        'showCursorTemp': showCursorTemp,
-        'showHotSpot': showHotSpot,
-        'showColdSpot': showColdSpot,
-      };
+    'upsampleScale': upsampleScale,
+    'upsampleMethod': upsampleMethod.name,
+    'bilateralEnabled': bilateralEnabled,
+    'bilateralSigmaSpatial': bilateralSigmaSpatial,
+    'bilateralSigmaIntensity': bilateralSigmaIntensity,
+    'colormapName': colormapName,
+    'mappingCurve': mappingCurve,
+    'useCustomColors': useCustomColors,
+    'coldColor': coldColor,
+    'midColor': midColor,
+    'hotColor': hotColor,
+    'thermalView': thermalView.toJson(),
+    'fusion': fusion.toJson(),
+    'showInfoOverlay': showInfoOverlay,
+    'showCursorTemp': showCursorTemp,
+    'showHotSpot': showHotSpot,
+    'showColdSpot': showColdSpot,
+  };
 
   factory RenderParams.fromJson(Map<String, dynamic> j) {
     UpsampleMethod parseMethod(String? s) {
@@ -148,6 +191,7 @@ class RenderParams {
     }
 
     final fusionJson = j['fusion'];
+    final thermalViewJson = j['thermalView'];
     return RenderParams(
       upsampleScale: (j['upsampleScale'] as num?)?.toInt() ?? 8,
       upsampleMethod: parseMethod(j['upsampleMethod'] as String?),
@@ -162,6 +206,9 @@ class RenderParams {
       coldColor: (j['coldColor'] as num?)?.toInt() ?? 0x0000FF,
       midColor: (j['midColor'] as num?)?.toInt() ?? 0x00FF00,
       hotColor: (j['hotColor'] as num?)?.toInt() ?? 0xFF0000,
+      thermalView: thermalViewJson is Map<String, dynamic>
+          ? ThermalViewParams.fromJson(thermalViewJson)
+          : const ThermalViewParams(),
       fusion: fusionJson is Map<String, dynamic>
           ? FusionParams.fromJson(fusionJson)
           : const FusionParams(),

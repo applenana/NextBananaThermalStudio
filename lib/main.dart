@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io' show Platform;
 
 import 'app_state.dart';
+import 'temperature/temperature_recorder.dart';
 import 'ui/activation_overlay.dart';
 import 'ui/home_shell.dart';
 import 'ui/window_size_ffi.dart';
@@ -23,6 +24,7 @@ const double _defaultWideBreakpoint = 800;
 const bool _defaultConsoleExpanded = true;
 const int _defaultWindowW = 1280;
 const int _defaultWindowH = 820;
+const int _defaultTemperatureRecordIntervalMs = 1000;
 
 const String _kThemeMode = 'theme_mode'; // int: 0 system / 1 light / 2 dark
 const String _kUiScale = 'ui_scale';
@@ -31,26 +33,29 @@ const String _kConsoleExpanded = 'console_expanded';
 const String _kPhotoDownloadDir = 'photo_download_dir';
 const String _kWindowW = 'window_w';
 const String _kWindowH = 'window_h';
+const String _kTemperatureRecordIntervalMs = 'temperature_record_interval_ms';
 
 /// 全局主题模式. 在 Header 的切换按钮里直接读写.
-final ValueNotifier<ThemeMode> appThemeMode =
-    ValueNotifier<ThemeMode>(_defaultThemeMode);
+final ValueNotifier<ThemeMode> appThemeMode = ValueNotifier<ThemeMode>(
+  _defaultThemeMode,
+);
 
 /// UI 缩放比例 (主要影响字体, 0.8 ~ 1.6).
 final ValueNotifier<double> appUiScale = ValueNotifier<double>(_defaultUiScale);
 
 /// 实时 Tab 宽屏 / 窄屏切换阈值.
-final ValueNotifier<double> appWideBreakpoint =
-    ValueNotifier<double>(_defaultWideBreakpoint);
+final ValueNotifier<double> appWideBreakpoint = ValueNotifier<double>(
+  _defaultWideBreakpoint,
+);
 
 /// 串口控制台展开 / 折叠.
-final ValueNotifier<bool> appConsoleExpanded =
-    ValueNotifier<bool>(_defaultConsoleExpanded);
+final ValueNotifier<bool> appConsoleExpanded = ValueNotifier<bool>(
+  _defaultConsoleExpanded,
+);
 
 /// 串口连接栏 (ConnectionBar) 展开 / 折叠 — 仅 Android 有折叠 UI.
 /// 桌面上该物不起作用, ConnectionBar 总是完整呈现.
-final ValueNotifier<bool> appConnectionBarExpanded =
-    ValueNotifier<bool>(true);
+final ValueNotifier<bool> appConnectionBarExpanded = ValueNotifier<bool>(true);
 
 /// 图库 Tab 是否处于"详情页"状态 (仅 Android 窄屏 list↔detail 切换时使用).
 /// 用于让 Android 系统返回键能优先关闭详情页, 由 [PhotoDownloadTab] 维护.
@@ -74,8 +79,7 @@ final ValueNotifier<bool> appSoftwareDetailOpen = ValueNotifier<bool>(false);
 VoidCallback? appCloseSoftwareDetail;
 
 /// 图库文件下载根目录. null 表示用默认 `<Documents>/BananaThermalStudio`.
-final ValueNotifier<String?> appPhotoDownloadDir =
-    ValueNotifier<String?>(null);
+final ValueNotifier<String?> appPhotoDownloadDir = ValueNotifier<String?>(null);
 
 SharedPreferences? _prefs;
 
@@ -88,6 +92,14 @@ Future<void> setPhotoDownloadDir(String? path) async {
   } else {
     await prefs.setString(_kPhotoDownloadDir, path);
   }
+}
+
+/// 持久化实时温度记录频率。允许 100 ms ~ 60 s。
+Future<void> setTemperatureRecordInterval(int milliseconds) async {
+  final safe = milliseconds.clamp(100, 60000);
+  TemperatureRecorder.instance.setSampleInterval(Duration(milliseconds: safe));
+  final prefs = _prefs ?? await SharedPreferences.getInstance();
+  await prefs.setInt(_kTemperatureRecordIntervalMs, safe);
 }
 
 /// 持久化窗口尺寸 + 实际调整窗口.
@@ -131,6 +143,16 @@ Future<void> _loadPersistedSettings() async {
   final pd = prefs.getString(_kPhotoDownloadDir);
   if (pd != null && pd.isNotEmpty) appPhotoDownloadDir.value = pd;
 
+  // 实时温度记录频率
+  final recordInterval = prefs.getInt(_kTemperatureRecordIntervalMs);
+  if (recordInterval != null &&
+      recordInterval >= 100 &&
+      recordInterval <= 60000) {
+    TemperatureRecorder.instance.setSampleInterval(
+      Duration(milliseconds: recordInterval),
+    );
+  }
+
   // 窗口尺寸 (启动时尝试还原, 仅桌面)
   if (Platform.isWindows) {
     final ww = prefs.getInt(_kWindowW);
@@ -171,12 +193,16 @@ Future<void> resetAllSettings() async {
   await prefs.remove(_kPhotoDownloadDir);
   await prefs.remove(_kWindowW);
   await prefs.remove(_kWindowH);
+  await prefs.remove(_kTemperatureRecordIntervalMs);
 
   appThemeMode.value = _defaultThemeMode;
   appUiScale.value = _defaultUiScale;
   appWideBreakpoint.value = _defaultWideBreakpoint;
   appConsoleExpanded.value = _defaultConsoleExpanded;
   appPhotoDownloadDir.value = null;
+  TemperatureRecorder.instance.setSampleInterval(
+    const Duration(milliseconds: _defaultTemperatureRecordIntervalMs),
+  );
 
   if (Platform.isWindows) {
     try {
@@ -201,9 +227,7 @@ void main() async {
       ),
     );
     // Edge-to-edge: 让 body 能延伸到状态栏/导航栏下, 配合 SafeArea 控制内容.
-    SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.edgeToEdge,
-    );
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     // 默认在移动端折叠串口控制台 (小屏寸土寸金).
     if (_prefs?.getBool(_kConsoleExpanded) == null) {
       appConsoleExpanded.value = false;
@@ -222,10 +246,7 @@ class BananaThermalApp extends StatelessWidget {
 
   ThemeData _buildTheme(Brightness brightness) {
     final isDark = brightness == Brightness.dark;
-    final base = ColorScheme.fromSeed(
-      seedColor: _seed,
-      brightness: brightness,
-    );
+    final base = ColorScheme.fromSeed(seedColor: _seed, brightness: brightness);
     final scheme = isDark
         ? base.copyWith(
             surface: const Color(0xFF111418),
@@ -242,88 +263,90 @@ class BananaThermalApp extends StatelessWidget {
             primary: const Color(0xFFE85D2D),
           );
     return ThemeData(
-          useMaterial3: true,
-          colorScheme: scheme,
+      useMaterial3: true,
+      colorScheme: scheme,
+      fontFamily: 'SmileySans',
+      scaffoldBackgroundColor: scheme.surface,
+      cardTheme: CardThemeData(
+        elevation: 0,
+        color: scheme.surfaceContainer,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        margin: EdgeInsets.zero,
+      ),
+      appBarTheme: AppBarTheme(
+        backgroundColor: scheme.surface,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        centerTitle: false,
+        titleTextStyle: TextStyle(
           fontFamily: 'SmileySans',
-          scaffoldBackgroundColor: scheme.surface,
-          cardTheme: CardThemeData(
-            elevation: 0,
-            color: scheme.surfaceContainer,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            margin: EdgeInsets.zero,
+          fontSize: 20,
+          fontWeight: FontWeight.w600,
+          color: scheme.onSurface,
+        ),
+      ),
+      dividerTheme: DividerThemeData(
+        color: scheme.outlineVariant.withValues(alpha: 0.2),
+        space: 1,
+        thickness: 1,
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
           ),
-          appBarTheme: AppBarTheme(
-            backgroundColor: scheme.surface,
-            elevation: 0,
-            scrolledUnderElevation: 0,
-            centerTitle: false,
-            titleTextStyle: TextStyle(
-              fontFamily: 'SmileySans',
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-              color: scheme.onSurface,
-            ),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
           ),
-          dividerTheme: DividerThemeData(
-            color: scheme.outlineVariant.withValues(alpha: 0.2),
-            space: 1,
-            thickness: 1,
-          ),
-          filledButtonTheme: FilledButtonThemeData(
-            style: FilledButton.styleFrom(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-            ),
-          ),
-          outlinedButtonTheme: OutlinedButtonThemeData(
-            style: OutlinedButton.styleFrom(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-            ),
-          ),
-          inputDecorationTheme: InputDecorationTheme(
-            filled: true,
-            fillColor: scheme.surfaceContainerHigh,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: BorderSide.none,
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: BorderSide.none,
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: BorderSide(color: scheme.primary, width: 1.5),
-            ),
-            isDense: true,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          ),
-          sliderTheme: SliderThemeData(
-            trackHeight: 4,
-            activeTrackColor: scheme.primary,
-            inactiveTrackColor: scheme.surfaceContainerHighest,
-            thumbColor: scheme.primary,
-            overlayColor: scheme.primary.withValues(alpha: 0.12),
-          ),
-          switchTheme: SwitchThemeData(
-            thumbColor: WidgetStateProperty.resolveWith((s) =>
-                s.contains(WidgetState.selected)
-                    ? scheme.primary
-                    : scheme.onSurfaceVariant),
-            trackColor: WidgetStateProperty.resolveWith((s) =>
-                s.contains(WidgetState.selected)
-                    ? scheme.primary.withValues(alpha: 0.4)
-                    : scheme.surfaceContainerHighest),
-          ),
-        );
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        ),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: scheme.surfaceContainerHigh,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: scheme.primary, width: 1.5),
+        ),
+        isDense: true,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 12,
+        ),
+      ),
+      sliderTheme: SliderThemeData(
+        trackHeight: 4,
+        activeTrackColor: scheme.primary,
+        inactiveTrackColor: scheme.surfaceContainerHighest,
+        thumbColor: scheme.primary,
+        overlayColor: scheme.primary.withValues(alpha: 0.12),
+      ),
+      switchTheme: SwitchThemeData(
+        thumbColor: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.selected)
+              ? scheme.primary
+              : scheme.onSurfaceVariant,
+        ),
+        trackColor: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.selected)
+              ? scheme.primary.withValues(alpha: 0.4)
+              : scheme.surfaceContainerHighest,
+        ),
+      ),
+    );
   }
 
   @override
@@ -351,47 +374,46 @@ class BananaThermalApp extends StatelessWidget {
               themeMode: effectiveMode,
               theme: _buildTheme(Brightness.light),
               darkTheme: _buildTheme(Brightness.dark),
-          // DPI / UI 缩放: 同时缩放控件与字体.
-          // 关键: 外层占位 = 父约束(窗口实际像素), 内部 child 约束 = 父约束/scale,
-          //       再用 Transform.scale 把内容放大回父约束尺寸.
-          // 否则 hit-test 区域 = SizedBox 尺寸 ≠ 视觉尺寸, 会出现点不到/黑边.
-          builder: (ctx, child) {
-            return ValueListenableBuilder<double>(
-              valueListenable: appUiScale,
-              builder: (c, scale, _) {
-                return LayoutBuilder(
-                  builder: (lc, cons) {
-                    final mq = MediaQuery.of(lc);
-                    final w = cons.maxWidth;
-                    final h = cons.maxHeight;
-                    final lw = w / scale;
-                    final lh = h / scale;
-                    return SizedBox(
-                      width: w,
-                      height: h,
-                      child: FittedBox(
-                        fit: BoxFit.fill,
-                        alignment: Alignment.topLeft,
-                        child: SizedBox(
-                          width: lw,
-                          height: lh,
-                          child: MediaQuery(
-                            data: mq.copyWith(
-                              size: Size(lw, lh),
-                              devicePixelRatio:
-                                  mq.devicePixelRatio * scale,
-                              textScaler: const TextScaler.linear(1.0),
+              // DPI / UI 缩放: 同时缩放控件与字体.
+              // 关键: 外层占位 = 父约束(窗口实际像素), 内部 child 约束 = 父约束/scale,
+              //       再用 Transform.scale 把内容放大回父约束尺寸.
+              // 否则 hit-test 区域 = SizedBox 尺寸 ≠ 视觉尺寸, 会出现点不到/黑边.
+              builder: (ctx, child) {
+                return ValueListenableBuilder<double>(
+                  valueListenable: appUiScale,
+                  builder: (c, scale, _) {
+                    return LayoutBuilder(
+                      builder: (lc, cons) {
+                        final mq = MediaQuery.of(lc);
+                        final w = cons.maxWidth;
+                        final h = cons.maxHeight;
+                        final lw = w / scale;
+                        final lh = h / scale;
+                        return SizedBox(
+                          width: w,
+                          height: h,
+                          child: FittedBox(
+                            fit: BoxFit.fill,
+                            alignment: Alignment.topLeft,
+                            child: SizedBox(
+                              width: lw,
+                              height: lh,
+                              child: MediaQuery(
+                                data: mq.copyWith(
+                                  size: Size(lw, lh),
+                                  devicePixelRatio: mq.devicePixelRatio * scale,
+                                  textScaler: const TextScaler.linear(1.0),
+                                ),
+                                child: child!,
+                              ),
                             ),
-                            child: child!,
                           ),
-                        ),
-                      ),
+                        );
+                      },
                     );
                   },
                 );
               },
-            );
-          },
               home: const NightLightSyncWatcher(
                 child: ActivationOverlay(child: HomeShell()),
               ),

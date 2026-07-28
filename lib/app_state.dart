@@ -12,9 +12,11 @@ import 'package:flutter/foundation.dart';
 import 'filters/kalman.dart';
 import 'fusion/fusion.dart';
 import 'protocol/frame_parser.dart';
+import 'protocol/thermal_view_config.dart';
 import 'render/render_params.dart';
 import 'serial/serial_service.dart';
 import 'storage/capture_service.dart';
+import 'temperature/temperature_recorder.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 
 enum ConnectionStatus { disconnected, scanning, connecting, connected }
@@ -33,13 +35,17 @@ class AppState extends ChangeNotifier {
   StreamSubscription<Uint8List>? _byteSub;
   Timer? _thermalHeartbeat;
   Timer? _visibleHeartbeat;
+
   /// 掩插检测: 周期查看 native port 是否还开着. libserialport
   /// 在 Windows 上设备拔出后不会立刻在读流上报错, 必须主动轮询.
   Timer? _portWatchdog;
+
   /// 自动重连计时器.
   Timer? _reconnectTimer;
+
   /// 是否为用户主动断开 (点击断开按钮). 为 true 时不启动重连.
   bool _userDisconnect = false;
+
   /// 上次成功连接的端口 / 波特率, 用于重连优先尝试同一个端口.
   String? _lastPort;
   int _lastBaud = 115200;
@@ -50,14 +56,17 @@ class AppState extends ChangeNotifier {
   String? deviceSerial;
   bool isActivated = false;
   Map<String, dynamic>? deviceInfo;
+
   /// 激活时间 (设备 GetSysInfo 返回的 ActivateTime, 字符串原样保留).
   String? activateTime;
+
   /// 保修截止时间 (设备 GetSysInfo 返回的 WarrantyTime).
   String? warrantyTime;
 
   // ---------------- 推流 ----------------
   bool thermalStreamEnabled = false;
   bool visibleStreamEnabled = false;
+  ThermalViewConfig? thermalViewConfig;
 
   // ---------------- 数据 ----------------
   double tMax = 0, tMin = 0, tAvg = 0;
@@ -71,12 +80,6 @@ class AppState extends ChangeNotifier {
   int visibleWidth = 0;
   int visibleHeight = 0;
 
-  // 温度历史 (画曲线)
-  static const int maxHistory = 100;
-  final List<double> historyMax = [];
-  final List<double> historyMin = [];
-  final List<double> historyAvg = [];
-
   // 滤波
   final KalmanFilter1D _kMax = KalmanFilter1D();
   final KalmanFilter1D _kMin = KalmanFilter1D();
@@ -88,6 +91,7 @@ class AppState extends ChangeNotifier {
   // 平均温度异常剔除: 维护最近 7 帧, 若新值偏离中位数 > 阈值则替换为上次合法值.
   final List<double> _avgRecent = [];
   double? _lastValidAvg;
+
   /// 偏离中位数超过此值 (°C) 视为异常.
   double avgOutlierThreshold = 8.0;
 
@@ -257,9 +261,9 @@ class AppState extends ChangeNotifier {
       Future.delayed(const Duration(milliseconds: 300), () {
         sendCommand('GetSysInfo');
       });
-      // Android: 自动开启热成像推流, 省去用户手动点开关.
-      // 桌面端保持原行为 (由用户主动开关) 以免拔插 / 调试时不必要的流量.
-      if (Platform.isAndroid) {
+      // Android / Windows: 连接成功后自动开启热成像推流，进入实时页即可看到
+      // 画面。其它桌面平台继续保持手动开启，避免改变既有调试流程。
+      if (Platform.isAndroid || Platform.isWindows) {
         Future.delayed(const Duration(milliseconds: 600), () {
           if (status == ConnectionStatus.connected && !thermalStreamEnabled) {
             setThermalStream(true);
@@ -287,7 +291,13 @@ class AppState extends ChangeNotifier {
     // 同步关闭推流开关, 避免下次连接后 UI 仍显示打开状态造成困惑.
     thermalStreamEnabled = false;
     visibleStreamEnabled = false;
-    try { await _byteSub?.cancel(); } catch (_) {}
+    thermalViewConfig = null;
+    renderParams = renderParams.copyWith(
+      thermalView: const ThermalViewParams(),
+    );
+    try {
+      await _byteSub?.cancel();
+    } catch (_) {}
     _byteSub = null;
     await _serial.close();
     _parser.reset();
@@ -336,8 +346,7 @@ class AppState extends ChangeNotifier {
   void _startReconnectLoop() {
     if (_reconnectTimer != null) return;
     _log('info', '启动自动重连 (每 3s 重试)');
-    _reconnectTimer =
-        Timer.periodic(const Duration(seconds: 3), (_) async {
+    _reconnectTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       if (_userDisconnect) {
         _stopReconnectLoop();
         return;
@@ -423,7 +432,7 @@ class AppState extends ChangeNotifier {
     _jsonFlushTimer = null;
     final buf = _textBuf.toBytes();
     if (buf.isEmpty) return;
-    if (buf.first != 0x7B /* '{' */) return;
+    if (buf.first != 0x7B /* '{' */ ) return;
     _jsonFlushTimer = Timer(const Duration(milliseconds: 100), () {
       final cur = _textBuf.toBytes();
       if (cur.isEmpty) return;
@@ -436,7 +445,8 @@ class AppState extends ChangeNotifier {
   void _consumeTextLine(Uint8List bytes) {
     // 帧的 magic 是 'BEGIN' / 'VBEG', 不会以独立文本行出现; 但帧里偶尔会
     // 误命中 0x0A — 容忍并显示 ASCII 可打印部分.
-    final asAscii = bytes.where((b) => b == 0x09 || (b >= 0x20 && b < 0x7F))
+    final asAscii = bytes
+        .where((b) => b == 0x09 || (b >= 0x20 && b < 0x7F))
         .toList();
     if (asAscii.isEmpty) return;
     final text = String.fromCharCodes(asAscii).trimRight();
@@ -464,7 +474,26 @@ class AppState extends ChangeNotifier {
     if (text.startsWith('{') && text.endsWith('}')) {
       try {
         final j = jsonDecode(text) as Map<String, dynamic>;
-        if (j.containsKey('Activated') ||
+        final viewConfig = ThermalViewConfig.tryParse(j);
+        if (viewConfig != null) {
+          thermalViewConfig = viewConfig;
+          renderParams = renderParams.copyWith(
+            thermalView: ThermalViewParams(
+              enabled: true,
+              scale: viewConfig.scale,
+              xOffset: viewConfig.xOffset,
+              yOffset: viewConfig.yOffset,
+            ),
+          );
+          _log(
+            'info',
+            '热像视图已同步: X=${viewConfig.xOffset}, '
+                'Y=${viewConfig.yOffset}, 缩放=${viewConfig.scale.toStringAsFixed(1)}x',
+          );
+          notifyListeners();
+        } else if (j['type'] == ThermalViewConfig.responseType) {
+          _log('warn', '设备返回了无效或不兼容的热像视图参数');
+        } else if (j.containsKey('Activated') ||
             j.containsKey('isActivated') ||
             j.containsKey('Serial') ||
             j.containsKey('SerialNum')) {
@@ -479,11 +508,10 @@ class AppState extends ChangeNotifier {
   /// 统一吸收 GetSysInfo 返回的 JSON 字段, 兼容 Python/固件两套 key 命名.
   void _absorbDeviceInfo(Map<String, dynamic> j) {
     deviceInfo = j;
-    deviceSerial =
-        (j['Serial'] ?? j['SerialNum'])?.toString() ?? deviceSerial;
+    deviceSerial = (j['Serial'] ?? j['SerialNum'])?.toString() ?? deviceSerial;
     final actField = j['Activated'] ?? j['isActivated'];
-    isActivated = (actField == true) ||
-        (actField?.toString().toLowerCase() == 'true');
+    isActivated =
+        (actField == true) || (actField?.toString().toLowerCase() == 'true');
     final at = j['ActivateTime']?.toString();
     if (at != null && at.isNotEmpty) activateTime = at;
     final wt = j['WarrantyTime']?.toString();
@@ -529,14 +557,17 @@ class AppState extends ChangeNotifier {
     tMin = mn;
     tAvg = av;
     thermalFrame = mirrored;
-    historyMax.add(mx);
-    historyMin.add(mn);
-    historyAvg.add(av);
-    while (historyMax.length > maxHistory) {
-      historyMax.removeAt(0);
-      historyMin.removeAt(0);
-      historyAvg.removeAt(0);
-    }
+    TemperatureRecorder.instance.recordFrame(
+      timestamp: DateTime.now(),
+      deviceSerial: deviceSerial,
+      maximum: mx,
+      minimum: mn,
+      average: av,
+      thermalFrame: mirrored,
+      srcWidth: tw,
+      srcHeight: th,
+      renderParams: renderParams,
+    );
     // 录制由 30fps 计时器统一驱动 (见 _recordTick), 不再随热成像回调追加,
     // 这样关掉热成像后仍能继续录制纯可见光 / 空帧.
     notifyListeners();
@@ -580,12 +611,18 @@ class AppState extends ChangeNotifier {
   void setThermalStream(bool on) {
     thermalStreamEnabled = on;
     if (on) {
+      // 每次开启都重新查询，避免设备端在上次关闭期间通过菜单修改参数后，
+      // 上位机继续沿用旧值。先查询再启动，固件会在首个 BEGIN 帧前返回 JSON。
+      thermalViewConfig = null;
+      renderParams = renderParams.copyWith(
+        thermalView: const ThermalViewParams(),
+      );
+      sendCommand('thermal view');
       sendCommand('stream');
       _startThermalHeartbeat();
       // 对称于 setVisibleStream: 若可见光此时已在推流且 fusion=off,
       // 自动切换到 blend, 让双光开启顺序无关都能看到混合.
-      if (visibleStreamEnabled &&
-          renderParams.fusion.mode == FusionMode.off) {
+      if (visibleStreamEnabled && renderParams.fusion.mode == FusionMode.off) {
         renderParams = renderParams.copyWith(
           fusion: _fusionWithMode(FusionMode.blend),
         );
@@ -597,8 +634,7 @@ class AppState extends ChangeNotifier {
       thermalFrame = null;
       // 同时若可见光仍在推流, 把融合模式拨回 off — 此时已无法做"热像+可见光"
       // 真融合, 强行保留 blend/edge 反而会导致下次只开热像时残留奇怪叠加.
-      if (visibleStreamEnabled &&
-          renderParams.fusion.mode != FusionMode.off) {
+      if (visibleStreamEnabled && renderParams.fusion.mode != FusionMode.off) {
         renderParams = renderParams.copyWith(
           fusion: _fusionWithMode(FusionMode.off),
         );
@@ -614,8 +650,7 @@ class AppState extends ChangeNotifier {
       _startVisibleHeartbeat();
       // 打开可见光时, 若融合处于关闭 *且* 热像也在推流, 自动切换到 blend
       // 以便用户立刻看到混合效果. 若热像没开, 保持 off — 用户只想看可见光.
-      if (thermalStreamEnabled &&
-          renderParams.fusion.mode == FusionMode.off) {
+      if (thermalStreamEnabled && renderParams.fusion.mode == FusionMode.off) {
         renderParams = renderParams.copyWith(
           fusion: _fusionWithMode(FusionMode.blend),
         );
@@ -629,8 +664,7 @@ class AppState extends ChangeNotifier {
       visibleHeight = 0;
       // 若热像仍在推流, 同样把 fusion 拨回 off, 避免下次再开可见光时
       // 历史 mode 自动启用了用户不期望的混合.
-      if (thermalStreamEnabled &&
-          renderParams.fusion.mode != FusionMode.off) {
+      if (thermalStreamEnabled && renderParams.fusion.mode != FusionMode.off) {
         renderParams = renderParams.copyWith(
           fusion: _fusionWithMode(FusionMode.off),
         );
@@ -656,7 +690,9 @@ class AppState extends ChangeNotifier {
   void _startThermalHeartbeat() {
     _stopThermalHeartbeat();
     _thermalHeartbeat = Timer.periodic(
-        const Duration(milliseconds: 500), (_) => sendCommand('stream'));
+      const Duration(milliseconds: 500),
+      (_) => sendCommand('stream'),
+    );
   }
 
   void _stopThermalHeartbeat() {
@@ -667,7 +703,9 @@ class AppState extends ChangeNotifier {
   void _startVisibleHeartbeat() {
     _stopVisibleHeartbeat();
     _visibleHeartbeat = Timer.periodic(
-        const Duration(milliseconds: 500), (_) => sendCommand('vstream'));
+      const Duration(milliseconds: 500),
+      (_) => sendCommand('vstream'),
+    );
   }
 
   void _stopVisibleHeartbeat() {
@@ -798,6 +836,7 @@ class AppState extends ChangeNotifier {
   bool _photoIsJson = false;
   bool _photoIsHexDump = false;
   bool _hexDumpStarted = false;
+
   /// 下载已被业务侧 abort: 仍要消费设备发来的 hex-dump 行直到 END FILE DATA,
   /// 但不再累积字节 / 不再回调 progress, 等 END 到达再 _finishPhoto 释放 _photoMode.
   bool _photoAborted = false;
@@ -807,10 +846,12 @@ class AppState extends ChangeNotifier {
   int _photoExpected = 0;
   Completer<Uint8List>? _photoCompleter;
   void Function(int received, int total)? _photoProgress;
+
   /// 缓存指纹用: 当 _photoBuf 首次累计到 [_photoEarlyThreshold] 字节时触发一次,
   /// 业务侧据此计算 sha256 并查 cache index. 触发后置 null 防重复.
   void Function(Uint8List headBytes)? _photoEarly;
   static const int _photoEarlyThreshold = 4096;
+
   /// 等待"图片下载/列表请求"全部释放的等待者. 用于业务侧排队下一张:
   /// abort 后设备仍在发送剩余 hex-dump, _photoMode 要等 END FILE DATA 才放,
   /// 直接发新 download 会抛 "图库忙". 业务侧 [waitForPhotoIdle] 即可串行化.
@@ -840,9 +881,9 @@ class AppState extends ChangeNotifier {
       for (final b in data) {
         if (_photoJsonDepth == 0 && b != 0x7B) continue;
         _photoBuf.addByte(b);
-        if (b == 0x7B /* { */) {
+        if (b == 0x7B /* { */ ) {
           _photoJsonDepth++;
-        } else if (b == 0x7D /* } */) {
+        } else if (b == 0x7D /* } */ ) {
           _photoJsonDepth--;
           if (_photoJsonDepth == 0) {
             _finishPhoto();
@@ -870,7 +911,8 @@ class AppState extends ChangeNotifier {
   void _consumeHexDumpLine(Uint8List lineBytes) {
     if (lineBytes.isEmpty) return;
     final text = String.fromCharCodes(
-        lineBytes.where((b) => b >= 0x20 && b < 0x7F));
+      lineBytes.where((b) => b >= 0x20 && b < 0x7F),
+    );
     if (text.isEmpty) return;
     if (text.contains('BEGIN FILE DATA')) {
       _hexDumpStarted = true;
@@ -956,15 +998,15 @@ class AppState extends ChangeNotifier {
     _photoProgress = null;
     _photoEarly = null;
     if (!_photoCompleter!.isCompleted) {
-      _photoCompleter!
-          .completeError(const PhotoDownloadAbortedException());
+      _photoCompleter!.completeError(const PhotoDownloadAbortedException());
     }
     _log('info', '下载已取消 (缓存命中, 等待设备发完 END)');
   }
 
   /// 拉取片上图片列表. 发送 `check\n`, 等待 JSON 响应, 解析为 [PhotoMeta] 列表.
-  Future<List<PhotoMeta>> fetchPhotoList(
-      {Duration timeout = const Duration(seconds: 4)}) async {
+  Future<List<PhotoMeta>> fetchPhotoList({
+    Duration timeout = const Duration(seconds: 4),
+  }) async {
     if (!_serial.isOpen) throw StateError('串口未连接');
     if (_photoMode) throw StateError('图库忙, 请稍候');
     // 暂停推流以减少干扰.
@@ -981,10 +1023,13 @@ class AppState extends ChangeNotifier {
     _log('tx', '> check');
     Uint8List bytes;
     try {
-      bytes = await _photoCompleter!.future.timeout(timeout, onTimeout: () {
-        _abortPhoto(TimeoutException('check 超时'));
-        throw TimeoutException('check 超时');
-      });
+      bytes = await _photoCompleter!.future.timeout(
+        timeout,
+        onTimeout: () {
+          _abortPhoto(TimeoutException('check 超时'));
+          throw TimeoutException('check 超时');
+        },
+      );
     } catch (e) {
       if (hadTherm) setThermalStream(true);
       if (hadVis) setVisibleStream(true);
@@ -1051,10 +1096,13 @@ class AppState extends ChangeNotifier {
     _serial.writeString('download $filename\n');
     _log('tx', '> download $filename');
     try {
-      final bytes = await _photoCompleter!.future.timeout(timeout, onTimeout: () {
-        _abortPhoto(TimeoutException('download 超时'));
-        throw TimeoutException('download 超时');
-      });
+      final bytes = await _photoCompleter!.future.timeout(
+        timeout,
+        onTimeout: () {
+          _abortPhoto(TimeoutException('download 超时'));
+          throw TimeoutException('download 超时');
+        },
+      );
       _log('info', '下载完成: $filename (${bytes.length} B)');
       if (hadTherm) setThermalStream(true);
       if (hadVis) setVisibleStream(true);
@@ -1111,10 +1159,7 @@ class AppState extends ChangeNotifier {
       note: note,
       renderParams: renderParams.toJson(),
     );
-    final slotsLabel = [
-      if (hasThermal) '热',
-      if (hasVisible) '可见',
-    ].join('+');
+    final slotsLabel = [if (hasThermal) '热', if (hasVisible) '可见'].join('+');
     _log('info', '拍摄成功 [${slotsLabel.isEmpty ? "空帧" : slotsLabel}]: $path');
     notifyListeners();
     return path;
@@ -1213,12 +1258,14 @@ class AppState extends ChangeNotifier {
         '?lat=$lat&lon=$lng&format=json&zoom=14&addressdetails=1'
         '&accept-language=zh-CN',
       );
-      final req = await client.getUrl(uri)
+      final req = await client
+          .getUrl(uri)
           .timeout(const Duration(milliseconds: 2500));
       // Nominatim 政策要求 User-Agent.
       req.headers.set('User-Agent', 'BananaThermalStudio/1.0');
-      final resp = await req.close()
-          .timeout(const Duration(milliseconds: 3500));
+      final resp = await req.close().timeout(
+        const Duration(milliseconds: 3500),
+      );
       if (resp.statusCode != 200) return null;
       final body = await resp
           .transform(const Utf8Decoder())
@@ -1269,8 +1316,8 @@ class PhotoMeta {
   final int index;
   final String filename;
   final int size;
-  final String? mode;          // 'thermal' / 'dual' 等
-  final String? dataFormat;    // 'HTPH-V2' / 'raw' 等
+  final String? mode; // 'thermal' / 'dual' 等
+  final String? dataFormat; // 'HTPH-V2' / 'raw' 等
   final double? tempMax;
   final double? tempMin;
 
@@ -1285,13 +1332,14 @@ class PhotoMeta {
   });
 
   factory PhotoMeta.fromJson(Map<String, dynamic> j) => PhotoMeta(
-        index: (j['index'] as num?)?.toInt() ?? -1,
-        filename: j['filename']?.toString() ??
-            'photo_${(j['index'] as num?)?.toInt() ?? 0}.dat',
-        size: (j['size'] as num?)?.toInt() ?? 0,
-        mode: j['mode']?.toString(),
-        dataFormat: j['dataFormat']?.toString(),
-        tempMax: (j['temperatureMax'] as num?)?.toDouble(),
-        tempMin: (j['temperatureMin'] as num?)?.toDouble(),
-      );
+    index: (j['index'] as num?)?.toInt() ?? -1,
+    filename:
+        j['filename']?.toString() ??
+        'photo_${(j['index'] as num?)?.toInt() ?? 0}.dat',
+    size: (j['size'] as num?)?.toInt() ?? 0,
+    mode: j['mode']?.toString(),
+    dataFormat: j['dataFormat']?.toString(),
+    tempMax: (j['temperatureMax'] as num?)?.toDouble(),
+    tempMin: (j['temperatureMin'] as num?)?.toDouble(),
+  );
 }

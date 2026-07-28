@@ -1,5 +1,6 @@
 #include "win32_window.h"
 
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <flutter_windows.h>
 #include <windowsx.h>
@@ -373,6 +374,79 @@ LRESULT CALLBACK Win32Window::WndProc(HWND const window,
   return DefWindowProc(window, message, wparam, lparam);
 }
 
+LRESULT Win32Window::ResizeHitTest(LPARAM lparam) const noexcept {
+  if (!window_handle_) return HTCLIENT;
+
+  WINDOWPLACEMENT wp{sizeof(wp)};
+  const bool maximized = GetWindowPlacement(window_handle_, &wp) &&
+                         wp.showCmd == SW_SHOWMAXIMIZED;
+  if (maximized) return HTCLIENT;
+
+  POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+  ScreenToClient(window_handle_, &point);
+  RECT rect;
+  GetClientRect(window_handle_, &rect);
+  constexpr int border = 6;
+  const bool left = point.x < border;
+  const bool right = point.x >= rect.right - border;
+  const bool top = point.y < border;
+  const bool bottom = point.y >= rect.bottom - border;
+  if (top && left) return HTTOPLEFT;
+  if (top && right) return HTTOPRIGHT;
+  if (bottom && left) return HTBOTTOMLEFT;
+  if (bottom && right) return HTBOTTOMRIGHT;
+  if (left) return HTLEFT;
+  if (right) return HTRIGHT;
+  if (top) return HTTOP;
+  if (bottom) return HTBOTTOM;
+  return HTCLIENT;
+}
+
+LRESULT CALLBACK Win32Window::ChildWndProc(HWND window,
+                                           UINT message,
+                                           WPARAM wparam,
+                                           LPARAM lparam,
+                                           UINT_PTR subclass_id,
+                                           DWORD_PTR reference_data) {
+  auto* self = reinterpret_cast<Win32Window*>(reference_data);
+  if (self) {
+    if (message == WM_NCHITTEST) {
+      const LRESULT hit = self->ResizeHitTest(lparam);
+      if (hit != HTCLIENT) return hit;
+    } else if (message == WM_SETCURSOR) {
+      const int hit = LOWORD(lparam);
+      LPCWSTR cursor_id = nullptr;
+      if (hit == HTLEFT || hit == HTRIGHT) {
+        cursor_id = IDC_SIZEWE;
+      } else if (hit == HTTOP || hit == HTBOTTOM) {
+        cursor_id = IDC_SIZENS;
+      } else if (hit == HTTOPLEFT || hit == HTBOTTOMRIGHT) {
+        cursor_id = IDC_SIZENWSE;
+      } else if (hit == HTTOPRIGHT || hit == HTBOTTOMLEFT) {
+        cursor_id = IDC_SIZENESW;
+      }
+      if (cursor_id) {
+        SetCursor(LoadCursor(nullptr, cursor_id));
+        return TRUE;
+      }
+    } else if (message == WM_NCLBUTTONDOWN) {
+      const int hit = static_cast<int>(wparam);
+      const bool resize_hit =
+          hit == HTLEFT || hit == HTRIGHT || hit == HTTOP ||
+          hit == HTTOPLEFT || hit == HTTOPRIGHT || hit == HTBOTTOM ||
+          hit == HTBOTTOMLEFT || hit == HTBOTTOMRIGHT;
+      if (resize_hit && self->window_handle_) {
+        ReleaseCapture();
+        SendMessage(self->window_handle_, message, wparam, lparam);
+        return 0;
+      }
+    } else if (message == WM_NCDESTROY) {
+      RemoveWindowSubclass(window, ChildWndProc, subclass_id);
+    }
+  }
+  return DefSubclassProc(window, message, wparam, lparam);
+}
+
 LRESULT
 Win32Window::MessageHandler(HWND hwnd,
                             UINT const message,
@@ -403,29 +477,7 @@ Win32Window::MessageHandler(HWND hwnd,
     case WM_NCHITTEST: {
       // Custom border resize detection; caption drag is triggered from Dart side via
       // ReleaseCapture + SendMessage(WM_NCLBUTTONDOWN, HTCAPTION).
-      POINT cpt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      ScreenToClient(hwnd, &cpt);
-      RECT rc;
-      GetClientRect(hwnd, &rc);
-      const int b = 6;  // resize edge thickness in client px
-      WINDOWPLACEMENT wp{sizeof(wp)};
-      bool maximized = GetWindowPlacement(hwnd, &wp) &&
-                       wp.showCmd == SW_SHOWMAXIMIZED;
-      if (!maximized) {
-        bool L = cpt.x < b;
-        bool R = cpt.x >= rc.right - b;
-        bool T = cpt.y < b;
-        bool B = cpt.y >= rc.bottom - b;
-        if (T && L) return HTTOPLEFT;
-        if (T && R) return HTTOPRIGHT;
-        if (B && L) return HTBOTTOMLEFT;
-        if (B && R) return HTBOTTOMRIGHT;
-        if (L) return HTLEFT;
-        if (R) return HTRIGHT;
-        if (T) return HTTOP;
-        if (B) return HTBOTTOM;
-      }
-      return HTCLIENT;
+      return ResizeHitTest(lparam);
     }
 
     case WM_DESTROY:
@@ -449,18 +501,8 @@ Win32Window::MessageHandler(HWND hwnd,
     case WM_SIZE: {
       RECT rect = GetClientArea();
       if (child_content_ != nullptr) {
-        // Inset the Flutter child so the outermost edges fall back to the
-        // top-level WM_NCHITTEST, which lets users resize from the borders.
-        // Skip inset when maximized (no resize possible, and inset would
-        // otherwise produce a visible 6px gutter).
-        WINDOWPLACEMENT wp{sizeof(wp)};
-        const bool maximized = GetWindowPlacement(hwnd, &wp) &&
-                               wp.showCmd == SW_SHOWMAXIMIZED;
-        const int inset = maximized ? 0 : 6;
-        MoveWindow(child_content_,
-                   rect.left + inset, rect.top + inset,
-                   rect.right - rect.left - inset * 2,
-                   rect.bottom - rect.top - inset * 2, TRUE);
+        MoveWindow(child_content_, rect.left, rect.top,
+                   rect.right - rect.left, rect.bottom - rect.top, TRUE);
       }
       return 0;
     }
@@ -486,6 +528,10 @@ Win32Window::MessageHandler(HWND hwnd,
 }
 
 void Win32Window::Destroy() {
+  if (child_content_ && IsWindow(child_content_)) {
+    RemoveWindowSubclass(child_content_, ChildWndProc, 1);
+  }
+  child_content_ = nullptr;
   OnDestroy();
 
   if (window_handle_) {
@@ -503,18 +549,16 @@ Win32Window* Win32Window::GetThisFromHandle(HWND const window) noexcept {
 }
 
 void Win32Window::SetChildContent(HWND content) {
+  if (child_content_ && IsWindow(child_content_)) {
+    RemoveWindowSubclass(child_content_, ChildWndProc, 1);
+  }
   child_content_ = content;
   SetParent(content, window_handle_);
+  SetWindowSubclass(content, ChildWndProc, 1,
+                    reinterpret_cast<DWORD_PTR>(this));
   RECT frame = GetClientArea();
-
-  // Same inset as WM_SIZE path so resize edges are reachable at startup.
-  WINDOWPLACEMENT wp{sizeof(wp)};
-  const bool maximized = GetWindowPlacement(window_handle_, &wp) &&
-                         wp.showCmd == SW_SHOWMAXIMIZED;
-  const int inset = maximized ? 0 : 6;
-  MoveWindow(content, frame.left + inset, frame.top + inset,
-             frame.right - frame.left - inset * 2,
-             frame.bottom - frame.top - inset * 2, true);
+  MoveWindow(content, frame.left, frame.top, frame.right - frame.left,
+             frame.bottom - frame.top, true);
 
   // NOTE: do NOT hide the child window here. The Flutter engine ties the
   // production of the first frame (and thus SetNextFrameCallback) to the
