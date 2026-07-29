@@ -253,6 +253,9 @@ assets/
 | `stopstream` | 停止推流 |
 | `GetSysInfo` | 查询设备信息（SN / 激活状态 / 保修截止）|
 | `activate <key>` | 激活设备 |
+| `calibration get` | 查询温度线性校准系数（JSON） |
+| `calibration set <gain> <offset>` | 原子写入并保存温度线性校准系数 |
+| `calibration reset` | 恢复并保存默认校准系数 `1.0 / 0.0` |
 | `GetPhotoList` | 获取片上图库列表 |
 | `GetPhoto <index>` | 下载指定索引的图片 |
 

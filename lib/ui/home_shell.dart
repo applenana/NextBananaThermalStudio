@@ -28,6 +28,7 @@ import 'connection_bar.dart';
 import 'gallery_shell.dart';
 import 'photo_download_tab.dart' show photoTabRefreshTrigger;
 import 'realtime_tab.dart';
+import 'temperature_calibration_page.dart';
 import 'temperature_history_tab.dart';
 import 'widgets/window_title_bar.dart';
 import 'window_size_ffi.dart';
@@ -87,11 +88,7 @@ class _HomeShellState extends State<HomeShell> {
     }
     _lastBackAt = now;
     if (!mounted) return;
-    BananaToast.show(
-      context,
-      '再按一次返回键退出 App',
-      icon: Icons.exit_to_app_rounded,
-    );
+    BananaToast.show(context, '再按一次返回键退出 App', icon: Icons.exit_to_app_rounded);
   }
 
   @override
@@ -111,29 +108,29 @@ class _HomeShellState extends State<HomeShell> {
           left: false,
           right: false,
           child: Column(
-          children: [
-            // 自绘标题栏只在 Windows 上启用 (配合 win32_window WM_NCCALCSIZE),
-            // 移动端 / 其它桌面平台用系统装饰.
-            if (Platform.isWindows) const WindowTitleBar(),
-            Expanded(
-              child: ValueListenableBuilder<double>(
-                valueListenable: appWideBreakpoint,
-                builder: (context, breakpoint, _) {
-                  return LayoutBuilder(
-                    builder: (context, constraints) {
-                      // 主区可用宽度低于断点 → 切到底部导航的“手机模式”.
-                      final narrow = constraints.maxWidth < breakpoint;
-                      return narrow
-                          ? _buildNarrow(scheme)
-                          : _buildWide(scheme);
-                    },
-                  );
-                },
+            children: [
+              // 自绘标题栏只在 Windows 上启用 (配合 win32_window WM_NCCALCSIZE),
+              // 移动端 / 其它桌面平台用系统装饰.
+              if (Platform.isWindows) const WindowTitleBar(),
+              Expanded(
+                child: ValueListenableBuilder<double>(
+                  valueListenable: appWideBreakpoint,
+                  builder: (context, breakpoint, _) {
+                    return LayoutBuilder(
+                      builder: (context, constraints) {
+                        // 主区可用宽度低于断点 → 切到底部导航的“手机模式”.
+                        final narrow = constraints.maxWidth < breakpoint;
+                        return narrow
+                            ? _buildNarrow(scheme)
+                            : _buildWide(scheme);
+                      },
+                    );
+                  },
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
-      ),
       ),
     );
     // Android 拦截系统返回键, 按层级关闭子视图 / 切 tab / 双击退出.
@@ -205,11 +202,7 @@ class _HomeShellState extends State<HomeShell> {
     return Column(
       children: [
         Expanded(child: _mainColumn(compact: true)),
-        _BottomNav(
-          index: _index,
-          onSelect: _select,
-          scheme: scheme,
-        ),
+        _BottomNav(index: _index, onSelect: _select, scheme: scheme),
       ],
     );
   }
@@ -308,12 +301,7 @@ class _BrandLogo extends StatelessWidget {
       // Android 上用 emoji 香蕉 (与桌面 launcher 图标同源), 默认字体能正确渲染
       // 彩色 emoji; 桌面保留 PNG 香蕉 logo 以获得更锐利的质感.
       child: Platform.isAndroid
-          ? const Center(
-              child: Text(
-                '🍌',
-                style: TextStyle(fontSize: 26),
-              ),
-            )
+          ? const Center(child: Text('🍌', style: TextStyle(fontSize: 26)))
           : Padding(
               padding: const EdgeInsets.all(4),
               child: ClipRRect(
@@ -455,10 +443,7 @@ class _Header extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        if (compact) ...[
-          _BrandLogo(scheme: scheme),
-          const SizedBox(width: 10),
-        ],
+        if (compact) ...[_BrandLogo(scheme: scheme), const SizedBox(width: 10)],
         Text(
           'BananaThermal',
           style: TextStyle(
@@ -488,10 +473,7 @@ class _Header extends StatelessWidget {
         if (!compact) ...[
           Text(
             '红外热成像上位机',
-            style: TextStyle(
-              color: scheme.onSurfaceVariant,
-              fontSize: 13,
-            ),
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
           ),
           const SizedBox(width: 12),
         ],
@@ -541,16 +523,18 @@ class _ThemeToggle extends StatelessWidget {
                       Text(_modeMeta(m).$2),
                       if (m == mode) ...[
                         const SizedBox(width: 8),
-                        Icon(Icons.check_rounded,
-                            size: 14, color: scheme.primary),
+                        Icon(
+                          Icons.check_rounded,
+                          size: 14,
+                          color: scheme.primary,
+                        ),
                       ],
                     ],
                   ),
                 ),
             ],
             child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -565,8 +549,11 @@ class _ThemeToggle extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 4),
-                  Icon(Icons.arrow_drop_down_rounded,
-                      size: 16, color: scheme.onSurfaceVariant),
+                  Icon(
+                    Icons.arrow_drop_down_rounded,
+                    size: 16,
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ],
               ),
             ),
@@ -621,10 +608,8 @@ class _NavItem extends StatelessWidget {
                     label,
                     style: TextStyle(
                       fontSize: 11,
-                      color:
-                          active ? scheme.primary : scheme.onSurfaceVariant,
-                      fontWeight:
-                          active ? FontWeight.w600 : FontWeight.w400,
+                      color: active ? scheme.primary : scheme.onSurfaceVariant,
+                      fontWeight: active ? FontWeight.w600 : FontWeight.w400,
                     ),
                   ),
                 ],
@@ -714,7 +699,9 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
                           value: scale.clamp(0.8, 1.6),
                           label: scale.toStringAsFixed(2) + '×',
                           onChanged: (v) {
-                            appUiScale.value = double.parse(v.toStringAsFixed(2));
+                            appUiScale.value = double.parse(
+                              v.toStringAsFixed(2),
+                            );
                           },
                         ),
                       ),
@@ -724,7 +711,9 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
                           scale.toStringAsFixed(2) + '×',
                           textAlign: TextAlign.right,
                           style: const TextStyle(
-                              fontWeight: FontWeight.w600, fontSize: 14),
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                          ),
                         ),
                       ),
                     ],
@@ -764,8 +753,8 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
                         m == ThemeMode.system
                             ? Icons.brightness_auto_rounded
                             : m == ThemeMode.light
-                                ? Icons.light_mode_rounded
-                                : Icons.dark_mode_rounded,
+                            ? Icons.light_mode_rounded
+                            : Icons.dark_mode_rounded,
                         size: 16,
                         color: mode == m ? cs.primary : cs.onSurfaceVariant,
                       ),
@@ -773,8 +762,8 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
                         m == ThemeMode.system
                             ? '跟随系统'
                             : m == ThemeMode.light
-                                ? '白天'
-                                : '夜间',
+                            ? '白天'
+                            : '夜间',
                       ),
                       selected: mode == m,
                       onSelected: (_) => appThemeMode.value = m,
@@ -783,157 +772,181 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
               ),
             ),
           ),
+          const SizedBox(height: 12),
+          const _SettingsSection(
+            icon: Icons.science_outlined,
+            title: '温度线性校准',
+            subtitle: '通过两个或更多参考温点自动拟合增益与偏移，并保存到热成像设备',
+            child: _TemperatureCalibrationControl(),
+          ),
           // 响应式断点 / 窗口尺寸 仅桌面可见 (Android 无窗口概念, NavigationRail 也并不适用).
           if (!Platform.isAndroid) ...[
-          const SizedBox(height: 12),
-          _SettingsSection(
-            icon: Icons.view_column_rounded,
-            title: '响应式断点',
-            subtitle: '主区宽度大于此阈值时切换宽屏布局 (默认 1100)',
-            child: ValueListenableBuilder<double>(
-              valueListenable: appWideBreakpoint,
-              builder: (_, bp, __) => Column(
+            const SizedBox(height: 12),
+            _SettingsSection(
+              icon: Icons.view_column_rounded,
+              title: '响应式断点',
+              subtitle: '主区宽度大于此阈值时切换宽屏布局 (默认 1100)',
+              child: ValueListenableBuilder<double>(
+                valueListenable: appWideBreakpoint,
+                builder: (_, bp, __) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Slider(
+                            min: 600,
+                            max: 2000,
+                            divisions: 28,
+                            value: bp.clamp(600, 2000),
+                            label: '${bp.round()} px',
+                            onChanged: (v) {
+                              appWideBreakpoint.value = v.roundToDouble();
+                            },
+                          ),
+                        ),
+                        SizedBox(
+                          width: 72,
+                          child: Text(
+                            '${bp.round()} px',
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final v in const [
+                          800.0,
+                          1000.0,
+                          1100.0,
+                          1300.0,
+                          1500.0,
+                        ])
+                          ChoiceChip(
+                            label: Text('${v.round()}'),
+                            selected: (bp - v).abs() < 0.5,
+                            onSelected: (_) => appWideBreakpoint.value = v,
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            _SettingsSection(
+              icon: Icons.aspect_ratio_rounded,
+              title: '窗口尺寸',
+              subtitle: '调整应用窗口大小, 立即生效',
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Row(
                     children: [
                       Expanded(
-                        child: Slider(
-                          min: 600,
-                          max: 2000,
-                          divisions: 28,
-                          value: bp.clamp(600, 2000),
-                          label: '${bp.round()} px',
-                          onChanged: (v) {
-                            appWideBreakpoint.value = v.roundToDouble();
-                          },
+                        child: TextField(
+                          controller: _wCtl,
+                          decoration: const InputDecoration(
+                            labelText: '宽 (px)',
+                            prefixIcon: Icon(
+                              Icons.swap_horiz_rounded,
+                              size: 18,
+                            ),
+                          ),
+                          keyboardType: TextInputType.number,
                         ),
                       ),
-                      SizedBox(
-                        width: 72,
-                        child: Text(
-                          '${bp.round()} px',
-                          textAlign: TextAlign.right,
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w600, fontSize: 14),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextField(
+                          controller: _hCtl,
+                          decoration: const InputDecoration(
+                            labelText: '高 (px)',
+                            prefixIcon: Icon(Icons.swap_vert_rounded, size: 18),
+                          ),
+                          keyboardType: TextInputType.number,
                         ),
+                      ),
+                      const SizedBox(width: 10),
+                      FilledButton.icon(
+                        icon: const Icon(Icons.check_rounded, size: 18),
+                        label: const Text('应用'),
+                        onPressed: () {
+                          final w = double.tryParse(_wCtl.text.trim());
+                          final h = double.tryParse(_hCtl.text.trim());
+                          if (w == null || h == null || w < 600 || h < 400) {
+                            BananaToast.show(
+                              context,
+                              '宽高不合法 (最小 600 × 400)',
+                              icon: Icons.error_outline_rounded,
+                            );
+                            return;
+                          }
+                          _applySize(w, h);
+                        },
+                      ),
+                      const SizedBox(width: 6),
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.refresh_rounded, size: 18),
+                        label: const Text('读取当前'),
+                        onPressed: _syncSizeFromWindow,
                       ),
                     ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    '预设',
+                    style: TextStyle(
+                      color: cs.onSurfaceVariant,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   const SizedBox(height: 6),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      for (final v in const [800.0, 1000.0, 1100.0, 1300.0, 1500.0])
-                        ChoiceChip(
-                          label: Text('${v.round()}'),
-                          selected: (bp - v).abs() < 0.5,
-                          onSelected: (_) => appWideBreakpoint.value = v,
+                      for (final p in _presets)
+                        ActionChip(
+                          avatar: const Icon(
+                            Icons.crop_landscape_rounded,
+                            size: 16,
+                          ),
+                          label: Text(p.$1),
+                          onPressed: () => _applySize(p.$2, p.$3),
                         ),
+                      ActionChip(
+                        avatar: const Icon(Icons.fullscreen_rounded, size: 16),
+                        label: const Text('最大化'),
+                        onPressed: () {
+                          WindowSizeFfi.instance.maximize();
+                        },
+                      ),
+                      ActionChip(
+                        avatar: const Icon(
+                          Icons.fullscreen_exit_rounded,
+                          size: 16,
+                        ),
+                        label: const Text('恢复'),
+                        onPressed: () async {
+                          WindowSizeFfi.instance.restore();
+                          await _syncSizeFromWindow();
+                        },
+                      ),
                     ],
                   ),
                 ],
               ),
             ),
-          ),
-          const SizedBox(height: 12),
-          _SettingsSection(
-            icon: Icons.aspect_ratio_rounded,
-            title: '窗口尺寸',
-            subtitle: '调整应用窗口大小, 立即生效',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _wCtl,
-                        decoration: const InputDecoration(
-                          labelText: '宽 (px)',
-                          prefixIcon: Icon(Icons.swap_horiz_rounded, size: 18),
-                        ),
-                        keyboardType: TextInputType.number,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextField(
-                        controller: _hCtl,
-                        decoration: const InputDecoration(
-                          labelText: '高 (px)',
-                          prefixIcon: Icon(Icons.swap_vert_rounded, size: 18),
-                        ),
-                        keyboardType: TextInputType.number,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    FilledButton.icon(
-                      icon: const Icon(Icons.check_rounded, size: 18),
-                      label: const Text('应用'),
-                      onPressed: () {
-                        final w = double.tryParse(_wCtl.text.trim());
-                        final h = double.tryParse(_hCtl.text.trim());
-                        if (w == null || h == null || w < 600 || h < 400) {
-                          BananaToast.show(
-                            context,
-                            '宽高不合法 (最小 600 × 400)',
-                            icon: Icons.error_outline_rounded,
-                          );
-                          return;
-                        }
-                        _applySize(w, h);
-                      },
-                    ),
-                    const SizedBox(width: 6),
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.refresh_rounded, size: 18),
-                      label: const Text('读取当前'),
-                      onPressed: _syncSizeFromWindow,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Text('预设',
-                    style: TextStyle(
-                      color: cs.onSurfaceVariant,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    )),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final p in _presets)
-                      ActionChip(
-                        avatar: const Icon(Icons.crop_landscape_rounded,
-                            size: 16),
-                        label: Text(p.$1),
-                        onPressed: () => _applySize(p.$2, p.$3),
-                      ),
-                    ActionChip(
-                      avatar: const Icon(Icons.fullscreen_rounded, size: 16),
-                      label: const Text('最大化'),
-                      onPressed: () {
-                        WindowSizeFfi.instance.maximize();
-                      },
-                    ),
-                    ActionChip(
-                      avatar:
-                          const Icon(Icons.fullscreen_exit_rounded, size: 16),
-                      label: const Text('恢复'),
-                      onPressed: () async {
-                        WindowSizeFfi.instance.restore();
-                        await _syncSizeFromWindow();
-                      },
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
           ], // end if !Platform.isAndroid (响应式断点 + 窗口尺寸)
           const SizedBox(height: 12),
           _SettingsSection(
@@ -1026,12 +1039,16 @@ class _DownloadDirControlState extends State<_DownloadDirControl> {
               decoration: BoxDecoration(
                 color: cs.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.5)),
+                border: Border.all(
+                  color: cs.outlineVariant.withValues(alpha: 0.5),
+                ),
               ),
               child: Row(
                 children: [
                   Icon(
-                    isCustom ? Icons.folder_special_rounded : Icons.folder_rounded,
+                    isCustom
+                        ? Icons.folder_special_rounded
+                        : Icons.folder_rounded,
                     size: 18,
                     color: isCustom ? cs.primary : cs.onSurfaceVariant,
                   ),
@@ -1049,7 +1066,9 @@ class _DownloadDirControlState extends State<_DownloadDirControl> {
                     Container(
                       margin: const EdgeInsets.only(left: 8),
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 2),
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
                       decoration: BoxDecoration(
                         color: cs.primary.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(10),
@@ -1143,6 +1162,40 @@ class _ResetSettingsControl extends StatelessWidget {
   }
 }
 
+class _TemperatureCalibrationControl extends StatelessWidget {
+  const _TemperatureCalibrationControl();
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppState>(
+      builder: (context, app, _) {
+        final connected = app.status == ConnectionStatus.connected;
+        return Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 12,
+          runSpacing: 8,
+          children: [
+            FilledButton.tonalIcon(
+              onPressed: connected
+                  ? () => openTemperatureCalibrationPage(context)
+                  : null,
+              icon: const Icon(Icons.tune_rounded, size: 18),
+              label: const Text('打开校准向导'),
+            ),
+            Text(
+              connected ? '设备已连接，可以开始校准' : '连接设备后可用',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
 class _SettingsSection extends StatelessWidget {
   const _SettingsSection({
     required this.icon,
@@ -1180,17 +1233,23 @@ class _SettingsSection extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title,
-                          style: const TextStyle(
-                              fontSize: 15, fontWeight: FontWeight.w600)),
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                       if (subtitle != null)
                         Padding(
                           padding: const EdgeInsets.only(top: 2),
-                          child: Text(subtitle!,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: cs.onSurfaceVariant,
-                              )),
+                          child: Text(
+                            subtitle!,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: cs.onSurfaceVariant,
+                            ),
+                          ),
                         ),
                     ],
                   ),

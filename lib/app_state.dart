@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 import 'filters/kalman.dart';
 import 'fusion/fusion.dart';
 import 'protocol/frame_parser.dart';
+import 'protocol/temperature_calibration.dart';
 import 'protocol/thermal_view_config.dart';
 import 'render/render_params.dart';
 import 'serial/serial_service.dart';
@@ -68,6 +69,9 @@ class AppState extends ChangeNotifier {
   bool thermalStreamEnabled = false;
   bool visibleStreamEnabled = false;
   ThermalViewConfig? thermalViewConfig;
+  TemperatureCalibration? deviceCalibration;
+  Completer<TemperatureCalibration>? _calibrationCompleter;
+  bool _awaitingLegacyCalibration = false;
 
   // ---------------- 数据 ----------------
   double tMax = 0, tMin = 0, tAvg = 0;
@@ -293,6 +297,13 @@ class AppState extends ChangeNotifier {
     thermalStreamEnabled = false;
     visibleStreamEnabled = false;
     thermalViewConfig = null;
+    deviceCalibration = null;
+    _awaitingLegacyCalibration = false;
+    final calibrationCompleter = _calibrationCompleter;
+    _calibrationCompleter = null;
+    if (calibrationCompleter != null && !calibrationCompleter.isCompleted) {
+      calibrationCompleter.completeError(StateError('设备已断开，温度校准操作已取消'));
+    }
     renderParams = renderParams.copyWith(
       thermalView: const ThermalViewParams(),
     );
@@ -389,6 +400,145 @@ class AppState extends ChangeNotifier {
     _log('tx', '> $trimmed');
   }
 
+  Future<TemperatureCalibration> fetchTemperatureCalibration() async {
+    try {
+      return await _sendCalibrationCommand(
+        'calibration get',
+        timeout: const Duration(milliseconds: 1200),
+      );
+    } on TimeoutException {
+      _log('info', '设备未响应校准协议 v1，正在探测旧版 cali 协议');
+      return _fetchLegacyTemperatureCalibration();
+    }
+  }
+
+  Future<TemperatureCalibration> applyTemperatureCalibration({
+    required double gain,
+    required double offset,
+  }) async {
+    if (!gain.isFinite ||
+        !offset.isFinite ||
+        gain < TemperatureCalibration.minimumGain ||
+        gain > TemperatureCalibration.maximumGain ||
+        offset < TemperatureCalibration.minimumOffset ||
+        offset > TemperatureCalibration.maximumOffset) {
+      throw RangeError('温度校准系数超出设备安全范围');
+    }
+    var current = deviceCalibration;
+    current ??= await fetchTemperatureCalibration();
+    if (current.protocol == TemperatureCalibrationProtocol.legacy) {
+      return _applyLegacyTemperatureCalibration(gain: gain, offset: offset);
+    }
+
+    try {
+      return await _sendCalibrationCommand(
+        'calibration set ${gain.toStringAsFixed(8)} '
+        '${offset.toStringAsFixed(8)}',
+      );
+    } on TimeoutException {
+      // A device may have rebooted into older firmware after the initial
+      // probe. Re-probe before giving up.
+      final legacy = await _fetchLegacyTemperatureCalibration();
+      if (legacy.protocol != TemperatureCalibrationProtocol.legacy) rethrow;
+      return _applyLegacyTemperatureCalibration(gain: gain, offset: offset);
+    }
+  }
+
+  Future<TemperatureCalibration> resetTemperatureCalibration() async {
+    var current = deviceCalibration;
+    current ??= await fetchTemperatureCalibration();
+    if (current.protocol == TemperatureCalibrationProtocol.legacy) {
+      return _applyLegacyTemperatureCalibration(gain: 1, offset: 0);
+    }
+    try {
+      return await _sendCalibrationCommand('calibration reset');
+    } on TimeoutException {
+      await _fetchLegacyTemperatureCalibration();
+      return _applyLegacyTemperatureCalibration(gain: 1, offset: 0);
+    }
+  }
+
+  Future<TemperatureCalibration> _sendCalibrationCommand(
+    String command, {
+    Duration timeout = const Duration(milliseconds: 2500),
+    bool legacy = false,
+  }) async {
+    if (status != ConnectionStatus.connected || !_serial.isOpen) {
+      throw StateError('请先连接热成像设备');
+    }
+    if (_photoMode) {
+      throw StateError('设备图库正在传输，请稍后再试');
+    }
+    if (_calibrationCompleter != null) {
+      throw StateError('已有温度校准操作正在进行');
+    }
+
+    final completer = Completer<TemperatureCalibration>();
+    _calibrationCompleter = completer;
+    _awaitingLegacyCalibration = legacy;
+    sendCommand(command);
+    try {
+      return await completer.future.timeout(
+        timeout,
+        onTimeout: () =>
+            throw TimeoutException(legacy ? '设备未响应旧版温度校准命令' : '设备未响应温度校准命令'),
+      );
+    } finally {
+      if (identical(_calibrationCompleter, completer)) {
+        _calibrationCompleter = null;
+        _awaitingLegacyCalibration = false;
+      }
+    }
+  }
+
+  Future<TemperatureCalibration> _fetchLegacyTemperatureCalibration() =>
+      _sendCalibrationCommand(
+        'cali -show',
+        timeout: const Duration(milliseconds: 1800),
+        legacy: true,
+      );
+
+  Future<TemperatureCalibration> _applyLegacyTemperatureCalibration({
+    required double gain,
+    required double offset,
+  }) async {
+    // The legacy firmware has no atomic set command and acknowledges neither
+    // coefficient update in a machine-readable form. Keep the two writes close
+    // together, then allow its blocking save routine to finish before readback.
+    sendCommand('cali -w0 ${gain.toStringAsFixed(8)}');
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    sendCommand('cali -b0 ${offset.toStringAsFixed(8)}');
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    sendCommand('save');
+    await Future<void>.delayed(const Duration(milliseconds: 1250));
+
+    final readback = await _fetchLegacyTemperatureCalibration();
+    // Old firmware prints only two decimal places, so verification cannot use
+    // the precision of the values sent above.
+    if ((readback.gain - gain).abs() > 0.011 ||
+        (readback.offset - offset).abs() > 0.011) {
+      throw StateError(
+        '旧版固件回读校验失败：期望 ${gain.toStringAsFixed(4)}, '
+        '${offset.toStringAsFixed(4)}，实际 '
+        '${readback.gain.toStringAsFixed(2)}, '
+        '${readback.offset.toStringAsFixed(2)}',
+      );
+    }
+    final result = TemperatureCalibration(
+      // We know the exact values sent in this session. Preserve them for a
+      // subsequent calibration instead of degrading the composition to the
+      // legacy response's two-decimal display precision.
+      gain: gain,
+      offset: offset,
+      persisted: true,
+      operation: gain == 1 && offset == 0 ? 'legacy_reset' : 'legacy_set',
+      protocol: TemperatureCalibrationProtocol.legacy,
+    );
+    deviceCalibration = result;
+    notifyListeners();
+    return result;
+  }
+
   // ============================================================
   // 字节流处理
   // ============================================================
@@ -444,6 +594,33 @@ class AppState extends ChangeNotifier {
   }
 
   void _consumeTextLine(Uint8List bytes) {
+    if (_awaitingLegacyCalibration) {
+      final utf8Text = utf8.decode(bytes, allowMalformed: true).trim();
+      final asciiText = String.fromCharCodes(
+        bytes.where((b) => b == 0x09 || (b >= 0x20 && b < 0x7F)),
+      ).trim();
+      final legacy =
+          TemperatureCalibration.tryParseLegacy(utf8Text) ??
+          TemperatureCalibration.tryParseLegacy(
+            asciiText,
+            allowAsciiOnly: true,
+          );
+      if (legacy != null) {
+        deviceCalibration = legacy;
+        final pending = _calibrationCompleter;
+        if (pending != null && !pending.isCompleted) {
+          pending.complete(legacy);
+        }
+        _log(
+          'info',
+          '已启用旧版校准协议兼容模式: 增益=${legacy.gain.toStringAsFixed(2)}, '
+              '偏移=${legacy.offset.toStringAsFixed(2)}℃',
+        );
+        notifyListeners();
+        return;
+      }
+    }
+
     // 帧的 magic 是 'BEGIN' / 'VBEG', 不会以独立文本行出现; 但帧里偶尔会
     // 误命中 0x0A — 容忍并显示 ASCII 可打印部分.
     final asAscii = bytes
@@ -475,32 +652,56 @@ class AppState extends ChangeNotifier {
     if (text.startsWith('{') && text.endsWith('}')) {
       try {
         final j = jsonDecode(text) as Map<String, dynamic>;
-        final viewConfig = ThermalViewConfig.tryParse(j);
-        if (viewConfig != null) {
-          thermalViewConfig = viewConfig;
-          renderParams = renderParams.copyWith(
-            thermalView: ThermalViewParams(
-              enabled: true,
-              scale: viewConfig.scale,
-              xOffset: viewConfig.xOffset,
-              yOffset: viewConfig.yOffset,
-            ),
-          );
-          _log(
-            'info',
-            '热像视图已同步: X=${viewConfig.xOffset}, '
-                'Y=${viewConfig.yOffset}, 缩放=${viewConfig.scale.toStringAsFixed(1)}x',
-          );
-          notifyListeners();
-        } else if (j['type'] == ThermalViewConfig.responseType) {
-          _log('warn', '设备返回了无效或不兼容的热像视图参数');
-        } else if (j.containsKey('Activated') ||
-            j.containsKey('isActivated') ||
-            j.containsKey('Serial') ||
-            j.containsKey('SerialNum')) {
-          _absorbDeviceInfo(j);
-          _log('info', '设备信息更新, 激活=$isActivated, SN=$deviceSerial');
-          notifyListeners();
+        if (j['type'] == TemperatureCalibration.responseType) {
+          final calibration = TemperatureCalibration.tryParse(j);
+          if (calibration != null) {
+            deviceCalibration = calibration;
+            final pending = _calibrationCompleter;
+            if (pending != null && !pending.isCompleted) {
+              pending.complete(calibration);
+            }
+            _log(
+              'info',
+              '温度校准参数已同步: 增益=${calibration.gain.toStringAsFixed(6)}, '
+                  '偏移=${calibration.offset.toStringAsFixed(3)}℃',
+            );
+            notifyListeners();
+          } else {
+            final message = j['error']?.toString() ?? '设备返回了无效的温度校准参数';
+            final pending = _calibrationCompleter;
+            if (pending != null && !pending.isCompleted) {
+              pending.completeError(FormatException(message));
+            }
+            _log('warn', message);
+          }
+        } else {
+          final viewConfig = ThermalViewConfig.tryParse(j);
+          if (viewConfig != null) {
+            thermalViewConfig = viewConfig;
+            renderParams = renderParams.copyWith(
+              thermalView: ThermalViewParams(
+                enabled: true,
+                scale: viewConfig.scale,
+                xOffset: viewConfig.xOffset,
+                yOffset: viewConfig.yOffset,
+              ),
+            );
+            _log(
+              'info',
+              '热像视图已同步: X=${viewConfig.xOffset}, '
+                  'Y=${viewConfig.yOffset}, 缩放=${viewConfig.scale.toStringAsFixed(1)}x',
+            );
+            notifyListeners();
+          } else if (j['type'] == ThermalViewConfig.responseType) {
+            _log('warn', '设备返回了无效或不兼容的热像视图参数');
+          } else if (j.containsKey('Activated') ||
+              j.containsKey('isActivated') ||
+              j.containsKey('Serial') ||
+              j.containsKey('SerialNum')) {
+            _absorbDeviceInfo(j);
+            _log('info', '设备信息更新, 激活=$isActivated, SN=$deviceSerial');
+            notifyListeners();
+          }
         }
       } catch (_) {}
     }
@@ -1138,6 +1339,12 @@ class AppState extends ChangeNotifier {
 
   @override
   Future<void> dispose() async {
+    _awaitingLegacyCalibration = false;
+    final calibrationCompleter = _calibrationCompleter;
+    _calibrationCompleter = null;
+    if (calibrationCompleter != null && !calibrationCompleter.isCompleted) {
+      calibrationCompleter.completeError(StateError('应用已关闭'));
+    }
     await _byteSub?.cancel();
     _stopThermalHeartbeat();
     _stopVisibleHeartbeat();

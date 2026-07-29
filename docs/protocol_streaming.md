@@ -108,10 +108,89 @@ UTF-8/ASCII JSON，随后才启动热帧推流：
 
 ---
 
+## 温度线性校准协议
+
+设备最终输出温度使用下式校正：
+
+```
+T输出 = T传感器 × gain + offset
+```
+
+`gain` 与 `offset` 同时更新，`set` / `reset` 成功后立即写入 LittleFS。所有
+响应都是单行 ASCII JSON，可以与热成像/可见光二进制帧交织。
+
+| 命令 | 说明 |
+|---|---|
+| `calibration get` | 查询当前系数 |
+| `calibration set <gain> <offset>` | 校验、原子更新并保存两个系数 |
+| `calibration reset` | 恢复并保存 `gain=1.0, offset=0.0` |
+
+成功响应：
+
+```json
+{"type":"temperature_calibration","version":1,"operation":"set","gain":1.01250000,"offset":-0.42000000,"persisted":true}
+```
+
+失败响应：
+
+```json
+{"type":"temperature_calibration","version":1,"operation":"set","error":"out_of_range"}
+```
+
+- `gain` 允许范围：`0.5..1.5`
+- `offset` 允许范围：`-100..100` ℃
+- `operation` 为 `get` / `set` / `reset`
+- `persisted=true` 表示设备已完成配置文件写入
+- 新上位机优先探测并使用本协议，以避免分两次更新和中文文本响应解析不稳定
+
+### 新旧固件兼容策略
+
+| 固件能力 | 上位机行为 | 写入保障 |
+|---|---|---|
+| 支持 `calibration ...` JSON v1 | 直接使用 v1 | 参数校验、双系数原子更新、保存结果确认 |
+| 仅支持旧版 `cali ...` | v1 查询超时后自动降级 | 分别写入 `w0` / `b0`，执行 `save`，等待并回读校验 |
+| 未知或无响应 | v1 与旧协议均探测失败后提示用户 | 不写入 |
+
+旧协议查询响应为 `曲线信息: 权重1.00, 偏移0.00`。上位机会同时兼容完整
+UTF-8 文本以及串口链路仅保留 ASCII 标点和数字的形式。为避免误把热像二进制
+片段识别成参数，宽松解析只会在已发送 `cali -show` 且等待响应时启用。
+
+旧协议有两项固有限制：
+
+1. `gain` 与 `offset` 分两条命令更新，设备端无法保证原子性。
+2. `cali -show` 只输出两位小数，因此回读校验精度约为 0.01。
+
+校准向导会显示当前使用“v1 原子协议”还是“旧版兼容模式”。旧模式仍会做
+范围校验、保存等待和回读比对，但建议在条件允许时升级到支持 v1 的固件。
+同一连接会话中，上位机会保留自己刚写入的高精度系数，供再次校准时做系数组合；
+应用重启后，旧固件只能重新提供两位小数，此精度限制无法由上位机可靠恢复。
+
+### 重复校准的系数组合
+
+设备已经校准过时，实时输出不再是传感器原始温度：
+
+```
+T当前 = T原始 × gain旧 + offset旧
+```
+
+向导采集的是 `T当前`，并根据参考温点拟合 `T参考 = a × T当前 + c`。写回设备前
+会将两层线性关系组合，而不是直接用 `a`、`c` 覆盖已有系数：
+
+```
+gain新   = a × gain旧
+offset新 = a × offset旧 + c
+```
+
+因此在 v1 协议可精确读取现有系数时，可以连续进行多次校准。旧协议在应用重启后
+受两位小数回显限制，仍可重复校准，但累计精度不如 v1。
+
+---
+
 ## 参考实现
 
 | 端 | 文件 |
 |---|---|
 | Dart 解析器 | `lib/protocol/frame_parser.dart` |
+| Dart 校准模型 | `lib/protocol/temperature_calibration.dart` |
 | Python 解析器 | BananaThermal Studio `frame_parser.py` |
-| 固件 | `src/streaming.h`（RP2040 端）|
+| 固件 | `src/streaming.h`、`src/temperature_calibration.h`（RP2040 端）|
