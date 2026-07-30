@@ -1,5 +1,7 @@
 param(
-    [string]$BackupDirectory = ""
+    [string]$BackupDirectory = "",
+    [ValidateRange(3650, 365000)]
+    [int]$ValidityDays = 100000
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,7 +52,7 @@ New-Item -ItemType Directory -Path $BackupDirectory -Force | Out-Null
     -alias $alias `
     -keyalg RSA `
     -keysize 4096 `
-    -validity 10000 `
+    -validity $ValidityDays `
     -dname "CN=BananaThermal Studio, OU=Software, O=applenana, L=Unknown, ST=Unknown, C=CN"
 if ($LASTEXITCODE -ne 0) {
     throw "keytool failed to generate the signing key (exit code $LASTEXITCODE)."
@@ -93,7 +95,7 @@ Store type: PKCS12
 Key alias: $alias
 Store password: $password
 Key password: $password
-Validity: 10000 days
+Validity: $ValidityDays days
 $fingerprintLine
 
 IMPORTANT:
