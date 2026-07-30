@@ -156,9 +156,11 @@ class RenderParams {
   /// 温度色标停靠在画面左侧或右侧。
   final TemperatureLegendSide temperatureLegendSide;
 
-  /// 温度色标卡片背景透明度，取值 0/25/50/75/100。
-  /// 100 时只显示温度彩条。
+  /// 温度色标卡片背景透明度，取值 0–100。
   final int temperatureLegendTransparency;
+
+  /// 是否显示温度色标的数字与刻度。
+  final bool showTemperatureLegendDetails;
 
   const RenderParams({
     this.upsampleScale = 8,
@@ -182,6 +184,7 @@ class RenderParams {
     this.temperatureLegendOrientation = TemperatureLegendOrientation.horizontal,
     this.temperatureLegendSide = TemperatureLegendSide.left,
     this.temperatureLegendTransparency = 75,
+    this.showTemperatureLegendDetails = true,
   });
 
   RenderParams copyWith({
@@ -206,6 +209,7 @@ class RenderParams {
     TemperatureLegendOrientation? temperatureLegendOrientation,
     TemperatureLegendSide? temperatureLegendSide,
     int? temperatureLegendTransparency,
+    bool? showTemperatureLegendDetails,
   }) {
     return RenderParams(
       upsampleScale: upsampleScale ?? this.upsampleScale,
@@ -235,6 +239,8 @@ class RenderParams {
           temperatureLegendSide ?? this.temperatureLegendSide,
       temperatureLegendTransparency:
           temperatureLegendTransparency ?? this.temperatureLegendTransparency,
+      showTemperatureLegendDetails:
+          showTemperatureLegendDetails ?? this.showTemperatureLegendDetails,
     );
   }
 
@@ -261,6 +267,7 @@ class RenderParams {
     'temperatureLegendOrientation': temperatureLegendOrientation.name,
     'temperatureLegendSide': temperatureLegendSide.name,
     'temperatureLegendTransparency': temperatureLegendTransparency,
+    'showTemperatureLegendDetails': showTemperatureLegendDetails,
   };
 
   factory RenderParams.fromJson(Map<String, dynamic> j) {
@@ -319,14 +326,12 @@ class RenderParams {
         j['temperatureLegendSide'] as String?,
       ),
       temperatureLegendTransparency:
-          switch ((j['temperatureLegendTransparency'] as num?)?.toInt()) {
-            0 => 0,
-            25 => 25,
-            50 => 50,
-            75 => 75,
-            100 => 100,
-            _ => 75,
-          },
+          ((j['temperatureLegendTransparency'] as num?)?.toInt() ?? 75).clamp(
+            0,
+            100,
+          ),
+      showTemperatureLegendDetails:
+          j['showTemperatureLegendDetails'] as bool? ?? true,
     );
   }
 }

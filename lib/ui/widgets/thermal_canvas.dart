@@ -66,8 +66,11 @@ class ThermalCanvas extends StatefulWidget {
   /// 温度色标停靠在画面左侧或右侧。
   final TemperatureLegendSide temperatureLegendSide;
 
-  /// 图例卡片背景透明度；100 时视觉上仅保留温度彩条。
+  /// 图例卡片背景透明度，取值 0–100，不影响图例内容显隐。
   final int temperatureLegendTransparency;
+
+  /// 是否显示图例的温度数字与刻度。
+  final bool showTemperatureLegendDetails;
 
   /// 色标相对真实图像边缘的安全间距。
   final EdgeInsets temperatureLegendInsets;
@@ -92,6 +95,7 @@ class ThermalCanvas extends StatefulWidget {
     this.temperatureLegendOrientation = TemperatureLegendOrientation.horizontal,
     this.temperatureLegendSide = TemperatureLegendSide.left,
     this.temperatureLegendTransparency = 75,
+    this.showTemperatureLegendDetails = true,
     this.temperatureLegendInsets = const EdgeInsets.all(12),
     this.onCloseTemperatureLegend,
   });
@@ -421,7 +425,7 @@ class _ThermalCanvasState extends State<ThermalCanvas>
     final horizontal =
         widget.temperatureLegendOrientation ==
         TemperatureLegendOrientation.horizontal;
-    final bareGradient = widget.temperatureLegendTransparency >= 100;
+    final compactLegend = !widget.showTemperatureLegendDetails;
 
     late final double legendWidth;
     late final double legendHeight;
@@ -433,7 +437,7 @@ class _ThermalCanvasState extends State<ThermalCanvas>
         return const SizedBox.shrink();
       }
       legendWidth = math.min(availableWidth, imgSize.width < 420 ? 160 : 190);
-      legendHeight = bareGradient ? 24 : 30;
+      legendHeight = compactLegend ? 24 : 30;
       left = widget.temperatureLegendSide == TemperatureLegendSide.left
           ? origin.dx + insets.left
           : origin.dx + imgSize.width - insets.right - legendWidth;
@@ -442,8 +446,8 @@ class _ThermalCanvasState extends State<ThermalCanvas>
       if (availableWidth < 24 || availableHeight < 96) {
         return const SizedBox.shrink();
       }
-      legendWidth = math.min(bareGradient ? 24 : 48, availableWidth);
-      legendHeight = math.min(bareGradient ? 180 : 210, availableHeight);
+      legendWidth = math.min(compactLegend ? 24 : 48, availableWidth);
+      legendHeight = math.min(compactLegend ? 180 : 210, availableHeight);
       left = widget.temperatureLegendSide == TemperatureLegendSide.left
           ? origin.dx + insets.left
           : origin.dx + imgSize.width - insets.right - legendWidth;
@@ -493,12 +497,13 @@ class _ThermalCanvasState extends State<ThermalCanvas>
                   frame: frame,
                   orientation: widget.temperatureLegendOrientation,
                   transparencyPercent: widget.temperatureLegendTransparency,
+                  showDetails: widget.showTemperatureLegendDetails,
                   reserveCloseSpace: widget.onCloseTemperatureLegend != null,
                 ),
               ),
             ),
           ),
-          if (!bareGradient && widget.onCloseTemperatureLegend != null)
+          if (widget.onCloseTemperatureLegend != null)
             Positioned(
               top: horizontal ? 3 : 22,
               right: horizontal ? 3 : 2,

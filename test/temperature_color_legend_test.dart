@@ -234,7 +234,7 @@ void main() {
     expect(find.text('温度色标 · °C'), findsNothing);
   });
 
-  testWidgets('100% 透明度只保留彩条', (tester) async {
+  testWidgets('100% 透明度仍保留数字与关闭按钮', (tester) async {
     final frame = buildFrame();
 
     await tester.pumpWidget(
@@ -254,12 +254,36 @@ void main() {
     await tester.pump();
 
     expect(find.byType(TemperatureColorLegend), findsOneWidget);
-    expect(find.text('10.0°'), findsNothing);
-    expect(find.text('65.0°'), findsNothing);
-    expect(find.byTooltip('关闭温度图例'), findsNothing);
+    expect(find.text('10.0°'), findsOneWidget);
+    expect(find.text('65.0°'), findsOneWidget);
+    expect(find.byTooltip('关闭温度图例'), findsOneWidget);
     expect(
       tester.getSize(find.byType(TemperatureColorLegend)).height,
-      lessThanOrEqualTo(24),
+      lessThanOrEqualTo(30),
     );
+  });
+
+  testWidgets('可独立隐藏图例数字与刻度', (tester) async {
+    final frame = buildFrame();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 400,
+          height: 300,
+          child: ThermalCanvas(
+            frame: frame,
+            showTemperatureLegend: true,
+            showTemperatureLegendDetails: false,
+            onCloseTemperatureLegend: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('10.0°'), findsNothing);
+    expect(find.text('65.0°'), findsNothing);
+    expect(find.byTooltip('关闭温度图例'), findsOneWidget);
   });
 }

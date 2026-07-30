@@ -158,6 +158,7 @@ void main() {
       temperatureLegendOrientation: TemperatureLegendOrientation.vertical,
       temperatureLegendSide: TemperatureLegendSide.right,
       temperatureLegendTransparency: 100,
+      showTemperatureLegendDetails: false,
     );
     final restored = RenderParams.fromJson(original.toJson());
 
@@ -168,6 +169,7 @@ void main() {
     );
     expect(restored.temperatureLegendSide, TemperatureLegendSide.right);
     expect(restored.temperatureLegendTransparency, 100);
+    expect(restored.showTemperatureLegendDetails, isFalse);
   });
 
   test('旧版 RenderParams JSON 使用温度图例兼容默认值', () {
@@ -180,6 +182,22 @@ void main() {
     );
     expect(restored.temperatureLegendSide, TemperatureLegendSide.left);
     expect(restored.temperatureLegendTransparency, 75);
+    expect(restored.showTemperatureLegendDetails, isTrue);
+  });
+
+  test('RenderParams 接受任意 0–100 图例透明度并钳制越界值', () {
+    expect(
+      RenderParams.fromJson(const {
+        'temperatureLegendTransparency': 37,
+      }).temperatureLegendTransparency,
+      37,
+    );
+    expect(
+      RenderParams.fromJson(const {
+        'temperatureLegendTransparency': 120,
+      }).temperatureLegendTransparency,
+      100,
+    );
   });
 
   group('设备热像视图坐标映射', () {

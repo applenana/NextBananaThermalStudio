@@ -15,12 +15,14 @@ class TemperatureColorLegend extends StatelessWidget {
     required this.frame,
     required this.orientation,
     this.transparencyPercent = 75,
+    this.showDetails = true,
     this.reserveCloseSpace = false,
   });
 
   final RenderedFrame frame;
   final TemperatureLegendOrientation orientation;
   final int transparencyPercent;
+  final bool showDetails;
 
   /// 为画布叠加的关闭按钮预留右上角空间。
   final bool reserveCloseSpace;
@@ -34,7 +36,6 @@ class TemperatureColorLegend extends StatelessWidget {
 
     final span = frame.tMax - frame.tMin;
     final transparency = transparencyPercent.clamp(0, 100);
-    final bareGradient = transparency == 100;
     final backgroundOpacity = (100 - transparency) / 100;
     return Semantics(
       container: true,
@@ -43,60 +44,52 @@ class TemperatureColorLegend extends StatelessWidget {
           : '温度色标，最低 ${_formatTemperature(frame.tMin)} 摄氏度，'
                 '最高 ${_formatTemperature(frame.tMax)} 摄氏度',
       child: RepaintBoundary(
-        child: bareGradient
-            ? Padding(
-                padding: orientation == TemperatureLegendOrientation.horizontal
-                    ? const EdgeInsets.symmetric(horizontal: 3, vertical: 7)
-                    : const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                child: _GradientBar(colors: colors, orientation: orientation),
-              )
-            : DecoratedBox(
-                decoration: BoxDecoration(
-                  color: const Color(
-                    0xFF131519,
-                  ).withValues(alpha: backgroundOpacity),
-                  borderRadius: BorderRadius.circular(9),
-                  border: Border.all(
-                    color: Colors.white.withValues(
-                      alpha: 0.10 * backgroundOpacity,
-                    ),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(
-                        alpha: 0.14 * backgroundOpacity,
-                      ),
-                      blurRadius: 5,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Padding(
-                  padding:
-                      orientation == TemperatureLegendOrientation.horizontal
-                      ? const EdgeInsets.fromLTRB(7, 5, 6, 5)
-                      : const EdgeInsets.fromLTRB(4, 6, 4, 6),
-                  child: span.abs() < 1e-6
-                      ? _SingleTemperature(
-                          value: frame.tMin,
-                          color: colors.first,
-                          reserveCloseSpace: reserveCloseSpace,
-                          orientation: orientation,
-                        )
-                      : orientation == TemperatureLegendOrientation.horizontal
-                      ? _HorizontalLegend(
-                          colors: colors,
-                          tMin: frame.tMin,
-                          tMax: frame.tMax,
-                          reserveCloseSpace: reserveCloseSpace,
-                        )
-                      : _VerticalLegend(
-                          colors: colors,
-                          tMin: frame.tMin,
-                          tMax: frame.tMax,
-                        ),
-                ),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0xFF131519).withValues(alpha: backgroundOpacity),
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.10 * backgroundOpacity),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.14 * backgroundOpacity),
+                blurRadius: 5,
+                offset: const Offset(0, 2),
               ),
+            ],
+          ),
+          child: Padding(
+            padding: showDetails
+                ? orientation == TemperatureLegendOrientation.horizontal
+                      ? const EdgeInsets.fromLTRB(7, 5, 6, 5)
+                      : const EdgeInsets.fromLTRB(4, 6, 4, 6)
+                : orientation == TemperatureLegendOrientation.horizontal
+                ? EdgeInsets.fromLTRB(3, 7, reserveCloseSpace ? 23 : 3, 7)
+                : const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            child: !showDetails
+                ? _GradientBar(colors: colors, orientation: orientation)
+                : span.abs() < 1e-6
+                ? _SingleTemperature(
+                    value: frame.tMin,
+                    color: colors.first,
+                    reserveCloseSpace: reserveCloseSpace,
+                    orientation: orientation,
+                  )
+                : orientation == TemperatureLegendOrientation.horizontal
+                ? _HorizontalLegend(
+                    colors: colors,
+                    tMin: frame.tMin,
+                    tMax: frame.tMax,
+                    reserveCloseSpace: reserveCloseSpace,
+                  )
+                : _VerticalLegend(
+                    colors: colors,
+                    tMin: frame.tMin,
+                    tMax: frame.tMax,
+                  ),
+          ),
+        ),
       ),
     );
   }

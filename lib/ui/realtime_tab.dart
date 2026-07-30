@@ -527,6 +527,8 @@ class _ThermalCardState extends State<_ThermalCard> {
             temperatureLegendSide: app.renderParams.temperatureLegendSide,
             temperatureLegendTransparency:
                 app.renderParams.temperatureLegendTransparency,
+            showTemperatureLegendDetails:
+                app.renderParams.showTemperatureLegendDetails,
             temperatureLegendInsets:
                 app.renderParams.temperatureLegendSide ==
                     TemperatureLegendSide.right
@@ -875,6 +877,8 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                                 app.renderParams.temperatureLegendSide,
                             temperatureLegendTransparency:
                                 app.renderParams.temperatureLegendTransparency,
+                            showTemperatureLegendDetails:
+                                app.renderParams.showTemperatureLegendDetails,
                             // 全屏左右各有 200px 可拖动面板。默认把色标停靠
                             // 在对应面板内侧，避免初始位置互相遮挡。
                             temperatureLegendInsets:
@@ -2463,19 +2467,33 @@ class _DisplaySection extends StatelessWidget {
           ignoring: !p.showTemperatureLegend,
           child: Opacity(
             opacity: p.showTemperatureLegend ? 1 : 0.45,
-            child: _LabeledDropdown<int>(
-              label: '图例透明度（100% 仅彩条）',
-              value: p.temperatureLegendTransparency,
-              items: const [
-                DropdownMenuItem(value: 0, child: Text('0%')),
-                DropdownMenuItem(value: 25, child: Text('25%')),
-                DropdownMenuItem(value: 50, child: Text('50%')),
-                DropdownMenuItem(value: 75, child: Text('75%')),
-                DropdownMenuItem(value: 100, child: Text('100%')),
+            child: Row(
+              children: [
+                Expanded(
+                  flex: 2,
+                  child: _SliderRow(
+                    label: '透明度',
+                    value: p.temperatureLegendTransparency.toDouble(),
+                    min: 0,
+                    max: 100,
+                    divisions: 100,
+                    valueLabel: '${p.temperatureLegendTransparency}%',
+                    onChanged: (v) => app.updateRenderParams(
+                      p.copyWith(temperatureLegendTransparency: v.round()),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: _SwitchTile(
+                    label: '数字与刻度',
+                    value: p.showTemperatureLegendDetails,
+                    onChanged: (v) => app.updateRenderParams(
+                      p.copyWith(showTemperatureLegendDetails: v),
+                    ),
+                  ),
+                ),
               ],
-              onChanged: (v) => app.updateRenderParams(
-                p.copyWith(temperatureLegendTransparency: v),
-              ),
             ),
           ),
         ),
