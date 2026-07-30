@@ -17,7 +17,7 @@
 | 命令 | 方向 | 含义 |
 |---|---|---|
 | `stream\n` | 上位机 → 设备 | **启动**热成像帧推流（同时作为保活心跳，每 500 ms 重发一次） |
-| `thermal view\n` | 上位机 → 设备 | 查询热成像画面的 X/Y 偏移与缩放参数 |
+| `thermal view\n` | 上位机 → 设备 | 查询传感器、屏幕模式、热流尺寸和视图参数 |
 | `streaming stoped\n` | 上位机 → 设备 | **停止**热成像帧推流 |
 | `vstream\n` | 上位机 → 设备 | **启动**可见光帧推流（同时作为保活心跳，每 500 ms 重发一次） |
 | `vstream stoped\n` | 上位机 → 设备 | **停止**可见光帧推流 |
@@ -30,17 +30,23 @@
 UTF-8/ASCII JSON，随后才启动热帧推流：
 
 ```json
-{"type":"thermal_view","version":1,"x_offset":0,"y_offset":0,"scale":1.0}
+{"type":"thermal_view","version":2,"sensor":"mlx90640","screen_mode":"square","visible_width":120,"visible_height":120,"thermal_width":32,"thermal_height":24,"thermal_count":768,"display_width":240,"display_height":240,"x_offset":0,"y_offset":0,"scale":1.3,"sensor_rotate180":true}
 ```
 
+- `sensor`：`heimann_htpa32x32` / `mlx90640` / `mlx90641`
+- `screen_mode`：`fullscreen` / `square`
+- `visible_width/height`：可见光线上尺寸，仅用于预告和校验；每个 VBEG 帧头仍是权威尺寸
+- `thermal_width/height/count`：后续 BEGIN 帧的温度矩阵尺寸和 float 数量
+- `display_width/height`：设备当前热像目标画布
 - `x_offset`：热成像 X 偏移，单位为设备屏幕像素，范围 `-100..100`
 - `y_offset`：热成像 Y 偏移，单位为设备屏幕像素，范围 `-100..100`
 - `scale`：热成像缩放，范围 `1.0..2.0`
 - 每 `10` 个偏移单位对应 `1` 个热传感器源像素
-- 响应参数对应热流固定使用的 `32×24` 全屏热像配置
+- `sensor_rotate180`：复原 MLX 方屏逻辑容器所需的设备方向
 
-上位机应复用设备端的源窗口和边缘钳制规则进行缩放/平移；未收到合法
-`version=1` 响应时保持旧版未变换行为。
+热流尺寸规则：全屏始终 `32×24`；方屏 MLX 仍为 `32×24`；方屏 Heimann
+为真实 `32×32`。上位机负责用传感器、屏幕模式、旋转、缩放和偏移复原
+设备显示链。未收到合法响应时按旧协议 `32×24 / 768 floats` 解析。
 
 ### 典型时序
 
@@ -62,20 +68,21 @@ UTF-8/ASCII JSON，随后才启动热帧推流：
 
 ## 热成像帧
 
-**固定长度 3092 字节**
+**帧外壳固定，像素数量由最近一次有效 `thermal view` 决定**
 
 ```
 [0..4]   "BEGIN"      (5 bytes, ASCII magic)
 [5..8]   T_max        (f32 LE, 摄氏度)
 [9..12]  T_min        (f32 LE, 摄氏度)
 [13..16] T_avg        (f32 LE, 摄氏度)
-[17..3088] pixels     (768 × f32 LE, 24×32 行优先, 摄氏度)
-[3089..3091] "END"    (3 bytes, ASCII magic)
+[17..]      pixels     (768 或 1024 × f32 LE, 行优先, 摄氏度)
+[17+N*4..]  "END"      (3 bytes, ASCII magic)
 ```
 
-- 像素矩阵：行优先，24 行 × 32 列（默认方向）
+- 像素矩阵：行优先，宽度恒为 32，高度为 24 或 32
 - 字节序：小端（Little-Endian）
 - 不含时间戳；帧率由串口波特率与设备发送节奏决定
+- v2 上位机从 payload 重算 min/max/avg；头部三个字段保留旧协议结构
 
 ---
 

@@ -2,9 +2,10 @@
 ///
 /// 与设备固件 src/streaming.h 约定:
 ///
-/// 热帧 (3092 B):
+/// 热帧 (长度由最近一次有效 thermal view 响应决定):
 ///   "BEGIN" + T_max(4B f32 LE) + T_min(4B f32 LE) + T_avg(4B f32 LE)
-///         + 768 * f32 LE (24x32 行优先) + "END"
+///         + width*height * f32 LE + "END"
+/// 未协商或旧固件不响应时固定按 32x24 / 768 解析。
 ///
 /// 可见光帧 (变长):
 ///   "VBEG" + width(4B u32 LE) + height(4B u32 LE) + len(4B u32 LE)
@@ -13,7 +14,7 @@
 /// 使用:
 /// ```dart
 /// final p = FrameParser(
-///   onThermal: (max, min, avg, frame) { ... },
+///   onThermal: (max, min, avg, width, height, frame) { ... },
 ///   onVisible: (w, h, rgb565) { ... },
 /// );
 /// p.feed(bytesFromSerial);
@@ -22,12 +23,20 @@ library;
 
 import 'dart:typed_data';
 
-/// 热帧回调: (tMax, tMin, tAvg, 24x32 Float32List 摄氏度)
-typedef ThermalCallback = void Function(
-    double tMax, double tMin, double tAvg, Float32List frame);
+/// 热帧回调: (tMax, tMin, tAvg, width, height, Float32List 摄氏度)
+typedef ThermalCallback =
+    void Function(
+      double tMax,
+      double tMin,
+      double tAvg,
+      int width,
+      int height,
+      Float32List frame,
+    );
 
 /// 可见光回调: (width, height, height*width Uint16List RGB565)
-typedef VisibleCallback = void Function(int width, int height, Uint16List frame);
+typedef VisibleCallback =
+    void Function(int width, int height, Uint16List frame);
 
 /// 非帧字节回调: 收到的字节中确认不是帧的部分(被丢弃的前导/无效区段),
 /// 通常是设备的 ASCII 响应文本. 上层可用于命令行回显.
@@ -41,8 +50,8 @@ class FrameParser {
   static final Uint8List _visibleEnd = Uint8List.fromList('VEND'.codeUnits);
 
   static const int thermalHeaderSize = 12; // 3 * f32
-  static const int thermalPixelCount = 768; // 24 * 32
-  static const int thermalPixelBytes = thermalPixelCount * 4;
+  static const int thermalPixelCount = 768; // legacy 24 * 32
+  static const int thermalPixelBytes = thermalPixelCount * 4; // legacy
   static const int thermalFrameTotal =
       5 + thermalHeaderSize + thermalPixelBytes + 3; // = 3092
 
@@ -60,6 +69,17 @@ class FrameParser {
   int thermalFrames = 0;
   int visibleFrames = 0;
   int droppedBytes = 0;
+  int _thermalWidth = 32;
+  int _thermalHeight = 24;
+
+  int get thermalWidth => _thermalWidth;
+  int get thermalHeight => _thermalHeight;
+  int get currentThermalPixelCount => _thermalWidth * _thermalHeight;
+  int get currentThermalFrameTotal =>
+      _thermalBegin.length +
+      thermalHeaderSize +
+      currentThermalPixelCount * 4 +
+      _thermalEnd.length;
 
   FrameParser({
     this.onThermal,
@@ -67,6 +87,20 @@ class FrameParser {
     this.onPassthrough,
     this.maxBuffer = 512 * 1024,
   });
+
+  /// 更新后续 BEGIN 帧的温度矩阵尺寸。协议当前仅允许 32x24 和 32x32。
+  void configureThermalFrame({required int width, required int height}) {
+    if (width != 32 || (height != 24 && height != 32)) {
+      throw ArgumentError.value('$width x $height', 'thermal frame size');
+    }
+    _thermalWidth = width;
+    _thermalHeight = height;
+  }
+
+  void useLegacyThermalFrame() {
+    _thermalWidth = 32;
+    _thermalHeight = 24;
+  }
 
   /// 追加字节流并尝试提取所有完整帧.
   void feed(List<int> data) {
@@ -88,6 +122,7 @@ class FrameParser {
   void reset() {
     _buf.clear();
     _bytes = Uint8List(0);
+    useLegacyThermalFrame();
     thermalFrames = 0;
     visibleFrames = 0;
     droppedBytes = 0;
@@ -194,9 +229,12 @@ class FrameParser {
   }
 
   bool _tryExtractThermal() {
-    if (_bytes.length < thermalFrameTotal) return false;
+    final pixelCount = currentThermalPixelCount;
+    final pixelBytes = pixelCount * 4;
+    final frameTotal = currentThermalFrameTotal;
+    if (_bytes.length < frameTotal) return false;
 
-    final endOff = _thermalBegin.length + thermalHeaderSize + thermalPixelBytes;
+    final endOff = _thermalBegin.length + thermalHeaderSize + pixelBytes;
     if (!_equalsAt(_bytes, endOff, _thermalEnd)) {
       droppedBytes += 1;
       _consume(1);
@@ -204,22 +242,24 @@ class FrameParser {
     }
 
     final bd = ByteData.sublistView(
-        _bytes, _thermalBegin.length, _thermalBegin.length + thermalHeaderSize);
+      _bytes,
+      _thermalBegin.length,
+      _thermalBegin.length + thermalHeaderSize,
+    );
     final tMax = bd.getFloat32(0, Endian.little);
     final tMin = bd.getFloat32(4, Endian.little);
     final tAvg = bd.getFloat32(8, Endian.little);
 
     final pixOff = _thermalBegin.length + thermalHeaderSize;
-    final pixView = ByteData.sublistView(
-        _bytes, pixOff, pixOff + thermalPixelBytes);
-    final pixels = Float32List(thermalPixelCount);
-    for (int i = 0; i < thermalPixelCount; i++) {
+    final pixView = ByteData.sublistView(_bytes, pixOff, pixOff + pixelBytes);
+    final pixels = Float32List(pixelCount);
+    for (int i = 0; i < pixelCount; i++) {
       pixels[i] = pixView.getFloat32(i * 4, Endian.little);
     }
 
-    _consume(thermalFrameTotal);
+    _consume(frameTotal);
     thermalFrames++;
-    onThermal?.call(tMax, tMin, tAvg, pixels);
+    onThermal?.call(tMax, tMin, tAvg, _thermalWidth, _thermalHeight, pixels);
     return true;
   }
 
@@ -228,7 +268,10 @@ class FrameParser {
     if (_bytes.length < magicLen + visibleHeaderSize) return false;
 
     final bd = ByteData.sublistView(
-        _bytes, magicLen, magicLen + visibleHeaderSize);
+      _bytes,
+      magicLen,
+      magicLen + visibleHeaderSize,
+    );
     final width = bd.getUint32(0, Endian.little);
     final height = bd.getUint32(4, Endian.little);
     final payloadLen = bd.getUint32(8, Endian.little);
@@ -253,8 +296,11 @@ class FrameParser {
     }
 
     final payloadOff = magicLen + visibleHeaderSize;
-    final payloadView =
-        ByteData.sublistView(_bytes, payloadOff, payloadOff + payloadLen);
+    final payloadView = ByteData.sublistView(
+      _bytes,
+      payloadOff,
+      payloadOff + payloadLen,
+    );
     final pixCount = width * height;
     final pixels = Uint16List(pixCount);
     for (int i = 0; i < pixCount; i++) {

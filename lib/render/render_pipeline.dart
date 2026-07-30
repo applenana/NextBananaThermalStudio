@@ -32,6 +32,15 @@ class RenderedFrame {
   final double tMin;
   final double tMax;
 
+  /// 与本帧热像着色完全同源的低温→高温 RGB 色标采样。
+  ///
+  /// 每 3 个字节为一个 RGB888 颜色。它在可见光融合前生成，因此即使最终
+  /// [rgb] 是融合图，也仍然准确描述热像层的温度颜色映射。
+  final Uint8List thermalColorScaleRgb;
+
+  /// 原始热像场是否至少包含一个有限温度值。
+  final bool hasFiniteTemperatureData;
+
   const RenderedFrame({
     required this.rgb,
     required this.width,
@@ -40,6 +49,8 @@ class RenderedFrame {
     required this.temperatureField,
     required this.tMin,
     required this.tMax,
+    required this.thermalColorScaleRgb,
+    required this.hasFiniteTemperatureData,
   });
 }
 
@@ -66,16 +77,32 @@ RenderedFrame renderPipeline({
     );
   }
 
+  // MLX 方屏在线上仍传输真实 32x24。设备本机将它放入逻辑 32x32
+  // 坐标空间后再应用方屏缩放/偏移；这一步在上位机复原同一条链路，
+  // 避免弱算力固件发送 8 行重复温度。
+  var workingW = srcW;
+  var workingH = srcH;
+  final thermalView = params.thermalView;
+  if (thermalView.enabled &&
+      thermalView.restoresMlxSquareChain &&
+      srcW == 32 &&
+      srcH == 24) {
+    field = restoreMlxSquareContainer(
+      field,
+      sensorRotate180: thermalView.sensorRotate180,
+    );
+    workingH = 32;
+  }
+
   // -- 步骤 2: 上采样 (在温度空间, 数值更平滑) --
   final scale = params.upsampleScale.clamp(1, 32);
-  final dstW = srcW * scale;
-  final dstH = srcH * scale;
-  final thermalView = params.thermalView;
+  final dstW = workingW * scale;
+  final dstH = workingH * scale;
   final upField = thermalView.enabled
       ? upsampleThermalView(
           src: field,
-          srcW: srcW,
-          srcH: srcH,
+          srcW: workingW,
+          srcH: workingH,
           dstW: dstW,
           dstH: dstH,
           scale: thermalView.scale,
@@ -87,8 +114,8 @@ RenderedFrame renderPipeline({
       ? Float32List.fromList(field)
       : upsample(
           src: field,
-          srcW: srcW,
-          srcH: srcH,
+          srcW: workingW,
+          srcH: workingH,
           dstW: dstW,
           dstH: dstH,
           method: params.upsampleMethod,
@@ -96,8 +123,10 @@ RenderedFrame renderPipeline({
 
   // -- 步骤 3: 归一化 (上采样后再算 min/max, 避免插值后超出原 range) --
   double mn = double.infinity, mx = -double.infinity;
+  bool hasFiniteTemperatureData = false;
   for (final v in upField) {
-    if (v.isNaN) continue;
+    if (!v.isFinite) continue;
+    hasFiniteTemperatureData = true;
     if (v < mn) mn = v;
     if (v > mx) mx = v;
   }
@@ -130,6 +159,7 @@ RenderedFrame renderPipeline({
     midColor: params.midColor,
     hotColor: params.hotColor,
   );
+  final thermalColorScaleRgb = _buildThermalColorScale(params);
 
   // -- 步骤 5: 融合 --
   Uint8List outRgb = thermalRgb;
@@ -156,5 +186,88 @@ RenderedFrame renderPipeline({
     temperatureField: upField,
     tMin: lo,
     tMax: hi,
+    thermalColorScaleRgb: thermalColorScaleRgb,
+    hasFiniteTemperatureData: hasFiniteTemperatureData,
   );
+}
+
+/// Rebuilds the device's logical 32x32 MLX square-view container from the
+/// transmitted, screen-oriented 32x24 temperature matrix.
+Float32List restoreMlxSquareContainer(
+  Float32List source, {
+  required bool sensorRotate180,
+}) {
+  assert(source.length == 32 * 24);
+  final output = Float32List(32 * 32);
+
+  // AppState 已将线上帧垂直翻转到屏幕方向。对应设备 getValue() 的最终
+  // 显示方向，旋转开启时上补 7/下补 1，关闭时上补 1/下补 7。
+  final topPadding = sensorRotate180 ? 7 : 1;
+  final bottomPadding = 8 - topPadding;
+  for (var row = 0; row < topPadding; row++) {
+    output.setRange(row * 32, (row + 1) * 32, source, 0);
+  }
+  for (var row = 0; row < 24; row++) {
+    final sourceStart = row * 32;
+    final destinationStart = (row + topPadding) * 32;
+    output.setRange(
+      destinationStart,
+      destinationStart + 32,
+      source,
+      sourceStart,
+    );
+  }
+  final lastRowStart = 23 * 32;
+  for (var row = 0; row < bottomPadding; row++) {
+    final destinationStart = (topPadding + 24 + row) * 32;
+    output.setRange(
+      destinationStart,
+      destinationStart + 32,
+      source,
+      lastRowStart,
+    );
+  }
+  return output;
+}
+
+const int _thermalColorScaleSteps = 64;
+final Map<(String, String, bool, int, int, int), Uint8List>
+_thermalColorScaleCache = {};
+
+/// 通过正式的 [colorize] 路径生成色标，确保 S 曲线、内置色盘的
+/// 0.05~0.95 端点裁剪和自定义三色插值都与画面完全一致。
+Uint8List _buildThermalColorScale(RenderParams params) {
+  final key = (
+    params.colormapName,
+    params.mappingCurve,
+    params.useCustomColors,
+    params.coldColor,
+    params.midColor,
+    params.hotColor,
+  );
+  final cached = _thermalColorScaleCache[key];
+  if (cached != null) return cached;
+
+  final normalized = Float32List(_thermalColorScaleSteps);
+  for (int i = 0; i < normalized.length; i++) {
+    normalized[i] = i / (normalized.length - 1);
+  }
+  final rgb = colorize(
+    normalized: normalized,
+    width: normalized.length,
+    height: 1,
+    colormapName: params.colormapName,
+    mappingCurve: params.mappingCurve,
+    useCustomColors: params.useCustomColors,
+    coldColor: params.coldColor,
+    midColor: params.midColor,
+    hotColor: params.hotColor,
+  );
+
+  // 自定义色很多时限制缓存增长；内置色盘通常只会占用少量条目。
+  if (_thermalColorScaleCache.length >= 32) {
+    _thermalColorScaleCache.clear();
+  }
+  _thermalColorScaleCache[key] = rgb;
+  return rgb;
 }

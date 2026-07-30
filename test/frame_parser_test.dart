@@ -28,10 +28,10 @@ Uint8List _concat(List<List<int>> parts) {
 void main() {
   group('FrameParser', () {
     // 构造一帧合法热数据
-    Uint8List buildThermal() {
-      final pix = Uint8List(24 * 32 * 4);
+    Uint8List buildThermal({int height = 24}) {
+      final pix = Uint8List(height * 32 * 4);
       final view = ByteData.sublistView(pix);
-      for (int i = 0; i < 24 * 32; i++) {
+      for (int i = 0; i < height * 32; i++) {
         view.setFloat32(i * 4, 20.0 + (i % 20) * 1.0, Endian.little);
       }
       return _concat([
@@ -68,8 +68,10 @@ void main() {
     test('拼接送入解出 2+2 帧', () {
       int tCount = 0, vCount = 0;
       final p = FrameParser(
-        onThermal: (mx, mn, av, frame) {
+        onThermal: (mx, mn, av, width, height, frame) {
           expect(frame.length, 24 * 32);
+          expect(width, 32);
+          expect(height, 24);
           expect(mx, 40.0);
           expect(mn, 20.0);
           expect(av, 30.0);
@@ -94,8 +96,8 @@ void main() {
     test('头部噪声 + 跨边界切片送入', () {
       int tCount = 0, vCount = 0;
       final p = FrameParser(
-        onThermal: (_, __, ___, ____) => tCount++,
-        onVisible: (_, __, ___) => vCount++,
+        onThermal: (_, _, _, _, _, _) => tCount++,
+        onVisible: (_, _, _) => vCount++,
       );
       final big = _concat([
         [0x00, 0x01, 0xFF],
@@ -109,6 +111,56 @@ void main() {
       }
       expect(tCount, 1);
       expect(vCount, 1);
+    });
+
+    test('thermal view 可把后续热帧切换为 32x32', () {
+      int? width;
+      int? height;
+      Float32List? decoded;
+      final p = FrameParser(
+        onThermal: (_, _, _, w, h, frame) {
+          width = w;
+          height = h;
+          decoded = frame;
+        },
+      );
+
+      p.configureThermalFrame(width: 32, height: 32);
+      p.feed(buildThermal(height: 32));
+
+      expect(width, 32);
+      expect(height, 32);
+      expect(decoded, hasLength(1024));
+      expect(p.currentThermalFrameTotal, 4116);
+    });
+
+    test('未协商和 reset 后继续使用旧版 32x24', () {
+      final p = FrameParser();
+      p.configureThermalFrame(width: 32, height: 32);
+      p.reset();
+      expect(p.thermalWidth, 32);
+      expect(p.thermalHeight, 24);
+      expect(p.currentThermalFrameTotal, FrameParser.thermalFrameTotal);
+    });
+
+    test('同一串口块中的元数据先于变长热帧生效', () {
+      int decodedLength = 0;
+      late final FrameParser p;
+      p = FrameParser(
+        onPassthrough: (_) => p.configureThermalFrame(width: 32, height: 32),
+        onThermal: (_, _, _, _, _, frame) {
+          decodedLength = frame.length;
+        },
+      );
+
+      p.feed(
+        _concat([
+          '{"type":"thermal_view"}\n'.codeUnits,
+          buildThermal(height: 32),
+        ]),
+      );
+
+      expect(decodedLength, 1024);
     });
 
     test('RGB565 → RGB888 红/绿/蓝色彩近似', () {

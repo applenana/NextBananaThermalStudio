@@ -75,7 +75,9 @@ class AppState extends ChangeNotifier {
 
   // ---------------- 数据 ----------------
   double tMax = 0, tMin = 0, tAvg = 0;
-  Float32List? thermalFrame; // 24x32 (已中心镜像后的温度场)
+  Float32List? thermalFrame; // 已垂直翻转到屏幕方向的原始温度矩阵
+  int thermalWidth = 32;
+  int thermalHeight = 24;
   Uint16List? visibleFrame; // 原始 RGB565 (未旋转, 仅供调试/导出使用)
 
   /// 可见光 RGB888 (顺时针旋转 90° 后), 长度 = visibleWidth * visibleHeight * 3.
@@ -297,6 +299,8 @@ class AppState extends ChangeNotifier {
     thermalStreamEnabled = false;
     visibleStreamEnabled = false;
     thermalViewConfig = null;
+    thermalWidth = 32;
+    thermalHeight = 24;
     deviceCalibration = null;
     _awaitingLegacyCalibration = false;
     final calibrationCompleter = _calibrationCompleter;
@@ -677,19 +681,48 @@ class AppState extends ChangeNotifier {
         } else {
           final viewConfig = ThermalViewConfig.tryParse(j);
           if (viewConfig != null) {
+            final previousView = thermalViewConfig;
+            final geometryChanged =
+                thermalWidth != viewConfig.thermalWidth ||
+                thermalHeight != viewConfig.thermalHeight ||
+                previousView?.sensor != viewConfig.sensor ||
+                previousView?.screenMode != viewConfig.screenMode ||
+                previousView?.sensorRotate180 != viewConfig.sensorRotate180;
             thermalViewConfig = viewConfig;
+            thermalWidth = viewConfig.thermalWidth;
+            thermalHeight = viewConfig.thermalHeight;
+            _parser.configureThermalFrame(
+              width: thermalWidth,
+              height: thermalHeight,
+            );
+            if (geometryChanged) {
+              thermalFrame = null;
+              _kMax.reset();
+              _kMin.reset();
+              _kAvg.reset();
+              _kPix.reset();
+              _avgRecent.clear();
+              _lastValidAvg = null;
+            }
             renderParams = renderParams.copyWith(
               thermalView: ThermalViewParams(
                 enabled: true,
                 scale: viewConfig.scale,
                 xOffset: viewConfig.xOffset,
                 yOffset: viewConfig.yOffset,
+                sensor: viewConfig.sensor,
+                screenMode: viewConfig.screenMode,
+                sensorRotate180: viewConfig.sensorRotate180,
+                displayWidth: viewConfig.displayWidth,
+                displayHeight: viewConfig.displayHeight,
               ),
             );
             _log(
               'info',
               '热像视图已同步: X=${viewConfig.xOffset}, '
-                  'Y=${viewConfig.yOffset}, 缩放=${viewConfig.scale.toStringAsFixed(1)}x',
+                  'Y=${viewConfig.yOffset}, 缩放=${viewConfig.scale.toStringAsFixed(1)}x, '
+                  '源=${viewConfig.thermalWidth}×${viewConfig.thermalHeight}, '
+                  '模式=${viewConfig.screenMode.name}, 传感器=${viewConfig.sensor.name}',
             );
             notifyListeners();
           } else if (j['type'] == ThermalViewConfig.responseType) {
@@ -724,10 +757,37 @@ class AppState extends ChangeNotifier {
   // 帧回调
   // ============================================================
 
-  void _onThermalFrame(double mx, double mn, double av, Float32List frame) {
+  void _onThermalFrame(
+    double mx,
+    double mn,
+    double av,
+    int width,
+    int height,
+    Float32List frame,
+  ) {
     // 推流已关闭: 固件心跳超时存在惯性, 仍可能发数据过来.
     // 直接丢弃, 避免画面残留与状态污染.
     if (!thermalStreamEnabled) return;
+    // 新固件只负责传输真实温度；上位机从同一份 payload 重算统计值，避免
+    // MLX 方屏的设备显示容器统计与线上 32x24 原始矩阵不一致。
+    if ((thermalViewConfig?.version ?? 1) >= 2) {
+      var payloadMin = double.infinity;
+      var payloadMax = -double.infinity;
+      var payloadSum = 0.0;
+      var payloadCount = 0;
+      for (final value in frame) {
+        if (!value.isFinite || value <= -41 || value >= 301) continue;
+        if (value < payloadMin) payloadMin = value;
+        if (value > payloadMax) payloadMax = value;
+        payloadSum += value;
+        payloadCount++;
+      }
+      if (payloadCount > 0) {
+        mn = payloadMin;
+        mx = payloadMax;
+        av = payloadSum / payloadCount;
+      }
+    }
     // 异常剔除: 平均温度偶发大跳变, 用滚动中位数过滤.
     if (_avgRecent.length >= 3) {
       final sorted = List<double>.from(_avgRecent)..sort();
@@ -746,12 +806,11 @@ class AppState extends ChangeNotifier {
     }
     final pix = kalmanPixelEnabled ? _kPix.filter(frame) : frame;
     // 垂直翻转 (上下镜像): 设备热像与显示方向上下相反.
-    const int tw = 32, th = 24;
-    final mirrored = Float32List(tw * th);
-    for (int y = 0; y < th; y++) {
-      final srcOff = (th - 1 - y) * tw;
-      final dstOff = y * tw;
-      for (int x = 0; x < tw; x++) {
+    final mirrored = Float32List(width * height);
+    for (int y = 0; y < height; y++) {
+      final srcOff = (height - 1 - y) * width;
+      final dstOff = y * width;
+      for (int x = 0; x < width; x++) {
         mirrored[dstOff + x] = pix[srcOff + x];
       }
     }
@@ -759,6 +818,8 @@ class AppState extends ChangeNotifier {
     tMin = mn;
     tAvg = av;
     thermalFrame = mirrored;
+    thermalWidth = width;
+    thermalHeight = height;
     final recordedAt = DateTime.now();
     final recorder = TemperatureRecorder.instance;
     final history = TemperatureHistoryStore.instance;
@@ -778,8 +839,8 @@ class AppState extends ChangeNotifier {
       minimum: mn,
       average: av,
       thermalFrame: mirrored,
-      srcWidth: tw,
-      srcHeight: th,
+      srcWidth: width,
+      srcHeight: height,
       renderParams: renderParams,
     );
     final sample = recorder.latestRecord;
@@ -835,6 +896,9 @@ class AppState extends ChangeNotifier {
       // 每次开启都重新查询，避免设备端在上次关闭期间通过菜单修改参数后，
       // 上位机继续沿用旧值。先查询再启动，固件会在首个 BEGIN 帧前返回 JSON。
       thermalViewConfig = null;
+      thermalWidth = 32;
+      thermalHeight = 24;
+      _parser.useLegacyThermalFrame();
       renderParams = renderParams.copyWith(
         thermalView: const ThermalViewParams(),
       );
@@ -1373,8 +1437,8 @@ class AppState extends ChangeNotifier {
     unawaited(_refreshLocationCache());
     final path = await CaptureService.instance.takePhoto(
       thermal: hasThermal ? tf : null,
-      thermalW: 32,
-      thermalH: 24,
+      thermalW: thermalWidth,
+      thermalH: thermalHeight,
       visibleRgb888: hasVisible ? visibleRgb888 : null,
       visibleW: hasVisible ? visibleWidth : 0,
       visibleH: hasVisible ? visibleHeight : 0,
@@ -1397,8 +1461,8 @@ class AppState extends ChangeNotifier {
     if (isRecording) throw StateError('已经在录制中');
     unawaited(_refreshLocationCache());
     final path = await CaptureService.instance.startRecording(
-      thermalW: 32,
-      thermalH: 24,
+      thermalW: thermalWidth,
+      thermalH: thermalHeight,
       visibleW: visibleWidth,
       visibleH: visibleHeight,
       lat: _cachedLat,

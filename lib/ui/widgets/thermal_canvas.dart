@@ -4,10 +4,14 @@
 /// 调用方传入已经渲染好的 [frame] (由 render_pipeline 产出), Canvas 只负责显示和交互.
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
+import '../../render/render_params.dart';
 import '../../render/render_pipeline.dart';
 import 'rgb_image_view.dart';
+import 'temperature_color_legend.dart';
 
 /// 固定温度标记 (像素坐标使用渲染后帧像素).
 @immutable
@@ -53,6 +57,21 @@ class ThermalCanvas extends StatefulWidget {
   /// 是否叠加最低温像素角标 (冰青 ▲ + L 标签).
   final bool showColdSpot;
 
+  /// 是否在真实热像画面范围内叠加温度色标。
+  final bool showTemperatureLegend;
+
+  /// 温度色标的排布方向。
+  final TemperatureLegendOrientation temperatureLegendOrientation;
+
+  /// 温度色标停靠在画面左侧或右侧。
+  final TemperatureLegendSide temperatureLegendSide;
+
+  /// 色标相对真实图像边缘的安全间距。
+  final EdgeInsets temperatureLegendInsets;
+
+  /// 点击色标右上角关闭按钮时回调。为 null 时不显示关闭按钮。
+  final VoidCallback? onCloseTemperatureLegend;
+
   const ThermalCanvas({
     super.key,
     required this.frame,
@@ -66,6 +85,11 @@ class ThermalCanvas extends StatefulWidget {
     this.onSetFixedCursor,
     this.showHotSpot = false,
     this.showColdSpot = false,
+    this.showTemperatureLegend = false,
+    this.temperatureLegendOrientation = TemperatureLegendOrientation.horizontal,
+    this.temperatureLegendSide = TemperatureLegendSide.left,
+    this.temperatureLegendInsets = const EdgeInsets.all(12),
+    this.onCloseTemperatureLegend,
   });
 
   @override
@@ -80,6 +104,7 @@ class _ThermalCanvasState extends State<ThermalCanvas>
   _ExtremeSpot? _hotTo;
   _ExtremeSpot? _coldFrom;
   _ExtremeSpot? _coldTo;
+  Offset? _temperatureLegendOffset;
 
   @override
   void initState() {
@@ -97,6 +122,11 @@ class _ThermalCanvasState extends State<ThermalCanvas>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.fixedCursor != null && widget.fixedCursor == null) {
       _hoverLocal = null;
+    }
+    if (oldWidget.temperatureLegendOrientation !=
+            widget.temperatureLegendOrientation ||
+        oldWidget.temperatureLegendSide != widget.temperatureLegendSide) {
+      _temperatureLegendOffset = null;
     }
     if (oldWidget.frame != widget.frame) {
       _updateExtremeTargets(widget.frame, animate: true);
@@ -303,6 +333,8 @@ class _ThermalCanvasState extends State<ThermalCanvas>
             if (widget.showCursorTemp &&
                 (widget.fixedCursor != null || _hoverLocal != null))
               _buildCursorOverlay(frame, origin, Size(w, h)),
+            if (widget.showTemperatureLegend && frame.hasFiniteTemperatureData)
+              _buildTemperatureLegend(frame, origin, Size(w, h)),
             if (widget.infoBar != null)
               Positioned(
                 left: 12,
@@ -362,6 +394,149 @@ class _ThermalCanvasState extends State<ThermalCanvas>
             y: relY,
             temp: temp,
             color: Colors.white.withValues(alpha: 0.85),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTemperatureLegend(
+    RenderedFrame frame,
+    Offset origin,
+    Size imgSize,
+  ) {
+    final insets = widget.temperatureLegendInsets;
+    final availableWidth = math.max(
+      0.0,
+      imgSize.width - insets.left - insets.right,
+    );
+    final availableHeight = math.max(
+      0.0,
+      imgSize.height - insets.top - insets.bottom,
+    );
+    final horizontal =
+        widget.temperatureLegendOrientation ==
+        TemperatureLegendOrientation.horizontal;
+
+    late final double legendWidth;
+    late final double legendHeight;
+    late double left;
+    late double top;
+
+    if (horizontal) {
+      if (availableWidth < 128 || availableHeight < 48) {
+        return const SizedBox.shrink();
+      }
+      legendWidth = math.min(availableWidth, imgSize.width < 420 ? 210 : 260);
+      legendHeight = legendWidth < 180 ? 48 : 55;
+      left = widget.temperatureLegendSide == TemperatureLegendSide.left
+          ? origin.dx + insets.left
+          : origin.dx + imgSize.width - insets.right - legendWidth;
+      top = origin.dy + imgSize.height - insets.bottom - legendHeight;
+    } else {
+      if (availableWidth < 44 || availableHeight < 96) {
+        return const SizedBox.shrink();
+      }
+      legendWidth = math.min(48, availableWidth);
+      legendHeight = math.min(210, availableHeight);
+      left = widget.temperatureLegendSide == TemperatureLegendSide.left
+          ? origin.dx + insets.left
+          : origin.dx + imgSize.width - insets.right - legendWidth;
+      top = origin.dy + insets.top + (availableHeight - legendHeight) / 2;
+    }
+
+    final minLeft = origin.dx + 4;
+    final maxLeft = origin.dx + imgSize.width - legendWidth - 4;
+    final minTop = origin.dy + 4;
+    final maxTop = origin.dy + imgSize.height - legendHeight - 4;
+
+    Offset clampOffset(Offset value) {
+      return Offset(
+        math.max(minLeft, math.min(maxLeft, value.dx)),
+        math.max(minTop, math.min(maxTop, value.dy)),
+      );
+    }
+
+    final storedOffset = _temperatureLegendOffset;
+    if (storedOffset != null) {
+      final clamped = clampOffset(storedOffset);
+      left = clamped.dx;
+      top = clamped.dy;
+    }
+
+    void dragLegend(DragUpdateDetails details) {
+      final current = Offset(left, top);
+      setState(() {
+        _temperatureLegendOffset = clampOffset(current + details.delta);
+      });
+    }
+
+    return Positioned(
+      left: left,
+      top: top,
+      width: legendWidth,
+      height: legendHeight,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: MouseRegion(
+              cursor: SystemMouseCursors.move,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanUpdate: dragLegend,
+                child: TemperatureColorLegend(
+                  frame: frame,
+                  orientation: widget.temperatureLegendOrientation,
+                  reserveCloseSpace: widget.onCloseTemperatureLegend != null,
+                ),
+              ),
+            ),
+          ),
+          if (widget.onCloseTemperatureLegend != null)
+            Positioned(
+              top: horizontal ? 3 : 22,
+              right: horizontal ? 3 : 2,
+              child: _LegendCloseButton(
+                onTap: widget.onCloseTemperatureLegend!,
+                compact: !horizontal,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LegendCloseButton extends StatelessWidget {
+  const _LegendCloseButton({required this.onTap, required this.compact});
+
+  final VoidCallback onTap;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '关闭温度图例',
+      child: Material(
+        color: Colors.transparent,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Container(
+            width: compact ? 16 : 20,
+            height: compact ? 16 : 20,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.16),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.close_rounded,
+              size: compact ? 11 : 13,
+              color: Colors.white.withValues(alpha: 0.78),
+            ),
           ),
         ),
       ),

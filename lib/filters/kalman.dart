@@ -43,19 +43,14 @@ class KalmanFilter2D {
   Float32List? _x;
   late Float32List _p;
 
-  KalmanFilter2D({
-    this.h = 24,
-    this.w = 32,
-    this.q = 1e-4,
-    this.r = 1e-2,
-  }) {
+  KalmanFilter2D({this.h = 24, this.w = 32, this.q = 1e-4, this.r = 1e-2}) {
     _p = Float32List(h * w)..fillRange(0, h * w, 1.0);
   }
 
   Float32List filter(Float32List frame) {
-    assert(frame.length == h * w, 'frame size mismatch');
-    if (_x == null) {
+    if (_x == null || _x!.length != frame.length) {
       _x = Float32List.fromList(frame);
+      _p = Float32List(frame.length)..fillRange(0, frame.length, 1.0);
       return Float32List.fromList(_x!);
     }
     final x = _x!;

@@ -14,8 +14,17 @@ library;
 import 'package:flutter/foundation.dart';
 
 import '../fusion/fusion.dart';
+import '../protocol/thermal_view_config.dart';
 
 enum UpsampleMethod { nearest, bilinear, bicubic }
+
+/// 温度色标的排布方向。
+enum TemperatureLegendOrientation { horizontal, vertical }
+
+/// 温度色标在热像画面内的停靠侧。
+///
+/// 横向色标会停靠在左下/右下；纵向色标会停靠在左侧/右侧并垂直居中。
+enum TemperatureLegendSide { left, right }
 
 /// 设备端热像视图变换参数。
 ///
@@ -28,27 +37,66 @@ class ThermalViewParams {
   final double scale;
   final int xOffset;
   final int yOffset;
+  final ThermalSensorKind sensor;
+  final ThermalScreenMode screenMode;
+  final bool sensorRotate180;
+  final int displayWidth;
+  final int displayHeight;
 
   const ThermalViewParams({
     this.enabled = false,
     this.scale = 1.0,
     this.xOffset = 0,
     this.yOffset = 0,
+    this.sensor = ThermalSensorKind.unknown,
+    this.screenMode = ThermalScreenMode.fullscreen,
+    this.sensorRotate180 = true,
+    this.displayWidth = 320,
+    this.displayHeight = 240,
   });
+
+  bool get restoresMlxSquareChain =>
+      screenMode == ThermalScreenMode.square &&
+      (sensor == ThermalSensorKind.mlx90640 ||
+          sensor == ThermalSensorKind.mlx90641);
 
   Map<String, dynamic> toJson() => {
     'enabled': enabled,
     'scale': scale,
     'xOffset': xOffset,
     'yOffset': yOffset,
+    'sensor': sensor.name,
+    'screenMode': screenMode.name,
+    'sensorRotate180': sensorRotate180,
+    'displayWidth': displayWidth,
+    'displayHeight': displayHeight,
   };
 
   factory ThermalViewParams.fromJson(Map<String, dynamic> j) {
+    ThermalSensorKind parseSensor(String? name) {
+      for (final value in ThermalSensorKind.values) {
+        if (value.name == name) return value;
+      }
+      return ThermalSensorKind.unknown;
+    }
+
+    ThermalScreenMode parseScreenMode(String? name) {
+      for (final value in ThermalScreenMode.values) {
+        if (value.name == name) return value;
+      }
+      return ThermalScreenMode.fullscreen;
+    }
+
     return ThermalViewParams(
       enabled: j['enabled'] as bool? ?? false,
       scale: (j['scale'] as num?)?.toDouble() ?? 1.0,
       xOffset: (j['xOffset'] as num?)?.toInt() ?? 0,
       yOffset: (j['yOffset'] as num?)?.toInt() ?? 0,
+      sensor: parseSensor(j['sensor'] as String?),
+      screenMode: parseScreenMode(j['screenMode'] as String?),
+      sensorRotate180: j['sensorRotate180'] as bool? ?? true,
+      displayWidth: (j['displayWidth'] as num?)?.toInt() ?? 320,
+      displayHeight: (j['displayHeight'] as num?)?.toInt() ?? 240,
     );
   }
 }
@@ -99,6 +147,15 @@ class RenderParams {
   /// 主画面叠加最低温跟踪 (冰青▲角标 + L 标签).
   final bool showColdSpot;
 
+  /// 主画面叠加温度色标。
+  final bool showTemperatureLegend;
+
+  /// 温度色标横向或纵向排布。
+  final TemperatureLegendOrientation temperatureLegendOrientation;
+
+  /// 温度色标停靠在画面左侧或右侧。
+  final TemperatureLegendSide temperatureLegendSide;
+
   const RenderParams({
     this.upsampleScale = 8,
     this.upsampleMethod = UpsampleMethod.bicubic,
@@ -117,6 +174,9 @@ class RenderParams {
     this.showCursorTemp = true,
     this.showHotSpot = true,
     this.showColdSpot = false,
+    this.showTemperatureLegend = true,
+    this.temperatureLegendOrientation = TemperatureLegendOrientation.horizontal,
+    this.temperatureLegendSide = TemperatureLegendSide.left,
   });
 
   RenderParams copyWith({
@@ -137,6 +197,9 @@ class RenderParams {
     bool? showCursorTemp,
     bool? showHotSpot,
     bool? showColdSpot,
+    bool? showTemperatureLegend,
+    TemperatureLegendOrientation? temperatureLegendOrientation,
+    TemperatureLegendSide? temperatureLegendSide,
   }) {
     return RenderParams(
       upsampleScale: upsampleScale ?? this.upsampleScale,
@@ -158,6 +221,12 @@ class RenderParams {
       showCursorTemp: showCursorTemp ?? this.showCursorTemp,
       showHotSpot: showHotSpot ?? this.showHotSpot,
       showColdSpot: showColdSpot ?? this.showColdSpot,
+      showTemperatureLegend:
+          showTemperatureLegend ?? this.showTemperatureLegend,
+      temperatureLegendOrientation:
+          temperatureLegendOrientation ?? this.temperatureLegendOrientation,
+      temperatureLegendSide:
+          temperatureLegendSide ?? this.temperatureLegendSide,
     );
   }
 
@@ -180,6 +249,9 @@ class RenderParams {
     'showCursorTemp': showCursorTemp,
     'showHotSpot': showHotSpot,
     'showColdSpot': showColdSpot,
+    'showTemperatureLegend': showTemperatureLegend,
+    'temperatureLegendOrientation': temperatureLegendOrientation.name,
+    'temperatureLegendSide': temperatureLegendSide.name,
   };
 
   factory RenderParams.fromJson(Map<String, dynamic> j) {
@@ -188,6 +260,20 @@ class RenderParams {
         if (m.name == s) return m;
       }
       return UpsampleMethod.bicubic;
+    }
+
+    TemperatureLegendOrientation parseLegendOrientation(String? s) {
+      for (final value in TemperatureLegendOrientation.values) {
+        if (value.name == s) return value;
+      }
+      return TemperatureLegendOrientation.horizontal;
+    }
+
+    TemperatureLegendSide parseLegendSide(String? s) {
+      for (final value in TemperatureLegendSide.values) {
+        if (value.name == s) return value;
+      }
+      return TemperatureLegendSide.left;
     }
 
     final fusionJson = j['fusion'];
@@ -216,6 +302,13 @@ class RenderParams {
       showCursorTemp: j['showCursorTemp'] as bool? ?? true,
       showHotSpot: j['showHotSpot'] as bool? ?? true,
       showColdSpot: j['showColdSpot'] as bool? ?? false,
+      showTemperatureLegend: j['showTemperatureLegend'] as bool? ?? true,
+      temperatureLegendOrientation: parseLegendOrientation(
+        j['temperatureLegendOrientation'] as String?,
+      ),
+      temperatureLegendSide: parseLegendSide(
+        j['temperatureLegendSide'] as String?,
+      ),
     );
   }
 }

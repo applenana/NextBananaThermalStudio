@@ -126,7 +126,11 @@ class _TemperatureCalibrationPageState
       final frame = app.thermalFrame;
       if (frame == null || identical(frame, lastFrame)) return;
       lastFrame = frame;
-      final value = centerRoiTrimmedMean(frame);
+      final value = centerRoiTrimmedMean(
+        frame,
+        width: app.thermalWidth,
+        height: app.thermalHeight,
+      );
       if (value == null) return;
       values.add(value);
       if (mounted) {
@@ -387,14 +391,18 @@ class _TemperatureCalibrationPageState
     if (app.thermalFrame != null) {
       rendered = renderPipeline(
         thermalFrame: app.thermalFrame!,
-        srcW: 32,
-        srcH: 24,
+        srcW: app.thermalWidth,
+        srcH: app.thermalHeight,
         params: app.renderParams,
       );
     }
     final liveRoi = app.thermalFrame == null
         ? null
-        : centerRoiTrimmedMean(app.thermalFrame!);
+        : centerRoiTrimmedMean(
+            app.thermalFrame!,
+            width: app.thermalWidth,
+            height: app.thermalHeight,
+          );
 
     return Column(
       children: [
@@ -778,11 +786,14 @@ class _TemperatureCalibrationPageState
 /// Returns a 10%-trimmed mean from the center 8×8 pixels of a 32×24 frame.
 /// The center region avoids most background leakage when the user aims a
 /// uniform reference target at the crosshair.
-double? centerRoiTrimmedMean(Float32List frame) {
-  if (frame.length < 32 * 24) return null;
-  const width = 32;
-  const startX = 12;
-  const startY = 8;
+double? centerRoiTrimmedMean(
+  Float32List frame, {
+  int width = 32,
+  int height = 24,
+}) {
+  if (width < 8 || height < 8 || frame.length < width * height) return null;
+  final startX = (width - 8) ~/ 2;
+  final startY = (height - 8) ~/ 2;
   const roiWidth = 8;
   const roiHeight = 8;
   final values = <double>[];

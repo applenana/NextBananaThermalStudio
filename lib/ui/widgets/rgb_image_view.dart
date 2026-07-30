@@ -43,7 +43,11 @@ class _RgbImageViewState extends State<RgbImageView> {
   @override
   void didUpdateWidget(covariant RgbImageView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _enqueue(widget.rgb, widget.width, widget.height);
+    if (!identical(oldWidget.rgb, widget.rgb) ||
+        oldWidget.width != widget.width ||
+        oldWidget.height != widget.height) {
+      _enqueue(widget.rgb, widget.width, widget.height);
+    }
   }
 
   @override
@@ -84,7 +88,10 @@ class _RgbImageViewState extends State<RgbImageView> {
       }
       final completer = Completer<ui.Image>();
       ui.decodeImageFromPixels(
-        rgba, w, h, ui.PixelFormat.rgba8888,
+        rgba,
+        w,
+        h,
+        ui.PixelFormat.rgba8888,
         completer.complete,
       );
       final newImg = await completer.future;
@@ -132,7 +139,12 @@ class _ImagePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final src = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
+    final src = Rect.fromLTWH(
+      0,
+      0,
+      image.width.toDouble(),
+      image.height.toDouble(),
+    );
     final imgAspect = image.width / image.height;
     final boxAspect = size.width / size.height;
     Rect dst;
@@ -160,5 +172,7 @@ class _ImagePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ImagePainter old) =>
-      old.image != image || old.fit != fit || old.filterQuality != filterQuality;
+      old.image != image ||
+      old.fit != fit ||
+      old.filterQuality != filterQuality;
 }

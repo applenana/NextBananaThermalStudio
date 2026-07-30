@@ -435,8 +435,8 @@ class _ThermalCardState extends State<_ThermalCard> {
     if (app.thermalFrame != null) {
       frame = renderPipeline(
         thermalFrame: app.thermalFrame!,
-        srcW: 32,
-        srcH: 24,
+        srcW: app.thermalWidth,
+        srcH: app.thermalHeight,
         params: app.renderParams,
         visibleRgb: app.visibleRgb888,
         visibleW: app.visibleWidth,
@@ -521,6 +521,26 @@ class _ThermalCardState extends State<_ThermalCard> {
                 : (cursorMode && app.renderParams.showCursorTemp),
             showHotSpot: app.renderParams.showHotSpot,
             showColdSpot: app.renderParams.showColdSpot,
+            showTemperatureLegend: app.renderParams.showTemperatureLegend,
+            temperatureLegendOrientation:
+                app.renderParams.temperatureLegendOrientation,
+            temperatureLegendSide: app.renderParams.temperatureLegendSide,
+            temperatureLegendInsets:
+                app.renderParams.temperatureLegendSide ==
+                    TemperatureLegendSide.right
+                ? EdgeInsets.fromLTRB(
+                    12,
+                    app.renderParams.temperatureLegendOrientation ==
+                            TemperatureLegendOrientation.vertical
+                        ? 132
+                        : 12,
+                    12,
+                    66,
+                  )
+                : const EdgeInsets.all(12),
+            onCloseTemperatureLegend: () => app.updateRenderParams(
+              app.renderParams.copyWith(showTemperatureLegend: false),
+            ),
             placeholder: '等待推流数据…',
           );
 
@@ -761,8 +781,8 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
     if (app.thermalFrame != null) {
       frame = renderPipeline(
         thermalFrame: app.thermalFrame!,
-        srcW: 32,
-        srcH: 24,
+        srcW: app.thermalWidth,
+        srcH: app.thermalHeight,
         params: app.renderParams,
         visibleRgb: app.visibleRgb888,
         visibleW: app.visibleWidth,
@@ -845,6 +865,25 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                             showCursorTemp: cursorMode,
                             showHotSpot: app.renderParams.showHotSpot,
                             showColdSpot: app.renderParams.showColdSpot,
+                            showTemperatureLegend:
+                                app.renderParams.showTemperatureLegend,
+                            temperatureLegendOrientation:
+                                app.renderParams.temperatureLegendOrientation,
+                            temperatureLegendSide:
+                                app.renderParams.temperatureLegendSide,
+                            // 全屏左右各有 200px 可拖动面板。默认把色标停靠
+                            // 在对应面板内侧，避免初始位置互相遮挡。
+                            temperatureLegendInsets:
+                                app.renderParams.temperatureLegendSide ==
+                                    TemperatureLegendSide.left
+                                ? const EdgeInsets.fromLTRB(212, 12, 12, 12)
+                                : const EdgeInsets.fromLTRB(12, 12, 212, 12),
+                            onCloseTemperatureLegend: () =>
+                                app.updateRenderParams(
+                                  app.renderParams.copyWith(
+                                    showTemperatureLegend: false,
+                                  ),
+                                ),
                             placeholder: '等待推流数据…',
                           ),
                   ),
@@ -2316,7 +2355,7 @@ class _ControlsCard extends StatelessWidget {
   }
 }
 
-/// "显示" 折叠区: 控制画面上叠加的额外标记 (最高/最低温追踪角标).
+/// "显示" 折叠区: 控制温度追踪角标和悬浮温度色标。
 class _DisplaySection extends StatelessWidget {
   const _DisplaySection();
 
@@ -2324,24 +2363,96 @@ class _DisplaySection extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final p = app.renderParams;
-    return Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(
-          child: _SwitchTile(
-            label: '最高温追踪',
-            value: p.showHotSpot,
-            onChanged: (v) =>
-                app.updateRenderParams(p.copyWith(showHotSpot: v)),
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: _SwitchTile(
+                label: '最高温追踪',
+                value: p.showHotSpot,
+                onChanged: (v) =>
+                    app.updateRenderParams(p.copyWith(showHotSpot: v)),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: _SwitchTile(
+                label: '最低温追踪',
+                value: p.showColdSpot,
+                onChanged: (v) =>
+                    app.updateRenderParams(p.copyWith(showColdSpot: v)),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 6),
-        Expanded(
-          child: _SwitchTile(
-            label: '最低温追踪',
-            value: p.showColdSpot,
-            onChanged: (v) =>
-                app.updateRenderParams(p.copyWith(showColdSpot: v)),
-          ),
+        const SizedBox(height: 6),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              child: _SwitchTile(
+                label: '温度图例',
+                value: p.showTemperatureLegend,
+                onChanged: (v) => app.updateRenderParams(
+                  p.copyWith(showTemperatureLegend: v),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: IgnorePointer(
+                ignoring: !p.showTemperatureLegend,
+                child: Opacity(
+                  opacity: p.showTemperatureLegend ? 1 : 0.45,
+                  child: _LabeledDropdown<TemperatureLegendOrientation>(
+                    label: '图例方向',
+                    value: p.temperatureLegendOrientation,
+                    items: const [
+                      DropdownMenuItem(
+                        value: TemperatureLegendOrientation.horizontal,
+                        child: Text('横向'),
+                      ),
+                      DropdownMenuItem(
+                        value: TemperatureLegendOrientation.vertical,
+                        child: Text('纵向'),
+                      ),
+                    ],
+                    onChanged: (v) => app.updateRenderParams(
+                      p.copyWith(temperatureLegendOrientation: v),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: IgnorePointer(
+                ignoring: !p.showTemperatureLegend,
+                child: Opacity(
+                  opacity: p.showTemperatureLegend ? 1 : 0.45,
+                  child: _LabeledDropdown<TemperatureLegendSide>(
+                    label: '停靠位置',
+                    value: p.temperatureLegendSide,
+                    items: const [
+                      DropdownMenuItem(
+                        value: TemperatureLegendSide.left,
+                        child: Text('左侧'),
+                      ),
+                      DropdownMenuItem(
+                        value: TemperatureLegendSide.right,
+                        child: Text('右侧'),
+                      ),
+                    ],
+                    onChanged: (v) => app.updateRenderParams(
+                      p.copyWith(temperatureLegendSide: v),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );
