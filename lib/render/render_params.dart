@@ -156,6 +156,10 @@ class RenderParams {
   /// 温度色标停靠在画面左侧或右侧。
   final TemperatureLegendSide temperatureLegendSide;
 
+  /// 温度色标卡片背景透明度，取值 0/25/50/75/100。
+  /// 100 时只显示温度彩条。
+  final int temperatureLegendTransparency;
+
   const RenderParams({
     this.upsampleScale = 8,
     this.upsampleMethod = UpsampleMethod.bicubic,
@@ -177,6 +181,7 @@ class RenderParams {
     this.showTemperatureLegend = true,
     this.temperatureLegendOrientation = TemperatureLegendOrientation.horizontal,
     this.temperatureLegendSide = TemperatureLegendSide.left,
+    this.temperatureLegendTransparency = 75,
   });
 
   RenderParams copyWith({
@@ -200,6 +205,7 @@ class RenderParams {
     bool? showTemperatureLegend,
     TemperatureLegendOrientation? temperatureLegendOrientation,
     TemperatureLegendSide? temperatureLegendSide,
+    int? temperatureLegendTransparency,
   }) {
     return RenderParams(
       upsampleScale: upsampleScale ?? this.upsampleScale,
@@ -227,6 +233,8 @@ class RenderParams {
           temperatureLegendOrientation ?? this.temperatureLegendOrientation,
       temperatureLegendSide:
           temperatureLegendSide ?? this.temperatureLegendSide,
+      temperatureLegendTransparency:
+          temperatureLegendTransparency ?? this.temperatureLegendTransparency,
     );
   }
 
@@ -252,6 +260,7 @@ class RenderParams {
     'showTemperatureLegend': showTemperatureLegend,
     'temperatureLegendOrientation': temperatureLegendOrientation.name,
     'temperatureLegendSide': temperatureLegendSide.name,
+    'temperatureLegendTransparency': temperatureLegendTransparency,
   };
 
   factory RenderParams.fromJson(Map<String, dynamic> j) {
@@ -309,6 +318,15 @@ class RenderParams {
       temperatureLegendSide: parseLegendSide(
         j['temperatureLegendSide'] as String?,
       ),
+      temperatureLegendTransparency:
+          switch ((j['temperatureLegendTransparency'] as num?)?.toInt()) {
+            0 => 0,
+            25 => 25,
+            50 => 50,
+            75 => 75,
+            100 => 100,
+            _ => 75,
+          },
     );
   }
 }

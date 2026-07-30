@@ -157,6 +157,7 @@ void main() {
       showTemperatureLegend: false,
       temperatureLegendOrientation: TemperatureLegendOrientation.vertical,
       temperatureLegendSide: TemperatureLegendSide.right,
+      temperatureLegendTransparency: 100,
     );
     final restored = RenderParams.fromJson(original.toJson());
 
@@ -166,6 +167,7 @@ void main() {
       TemperatureLegendOrientation.vertical,
     );
     expect(restored.temperatureLegendSide, TemperatureLegendSide.right);
+    expect(restored.temperatureLegendTransparency, 100);
   });
 
   test('旧版 RenderParams JSON 使用温度图例兼容默认值', () {
@@ -177,6 +179,7 @@ void main() {
       TemperatureLegendOrientation.horizontal,
     );
     expect(restored.temperatureLegendSide, TemperatureLegendSide.left);
+    expect(restored.temperatureLegendTransparency, 75);
   });
 
   group('设备热像视图坐标映射', () {

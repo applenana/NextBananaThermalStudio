@@ -211,4 +211,55 @@ void main() {
     final minTop = tester.getTopLeft(find.text('10.0°')).dy;
     expect(maxTop, lessThan(minTop));
   });
+
+  testWidgets('横向图例使用紧凑单行布局', (tester) async {
+    final frame = buildFrame();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 400,
+          height: 300,
+          child: ThermalCanvas(frame: frame, showTemperatureLegend: true),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final size = tester.getSize(find.byType(TemperatureColorLegend));
+    expect(size.width, lessThanOrEqualTo(190));
+    expect(size.height, lessThanOrEqualTo(30));
+    expect(find.text('10.0°'), findsOneWidget);
+    expect(find.text('65.0°'), findsOneWidget);
+    expect(find.text('温度色标 · °C'), findsNothing);
+  });
+
+  testWidgets('100% 透明度只保留彩条', (tester) async {
+    final frame = buildFrame();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 400,
+          height: 300,
+          child: ThermalCanvas(
+            frame: frame,
+            showTemperatureLegend: true,
+            temperatureLegendTransparency: 100,
+            onCloseTemperatureLegend: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(TemperatureColorLegend), findsOneWidget);
+    expect(find.text('10.0°'), findsNothing);
+    expect(find.text('65.0°'), findsNothing);
+    expect(find.byTooltip('关闭温度图例'), findsNothing);
+    expect(
+      tester.getSize(find.byType(TemperatureColorLegend)).height,
+      lessThanOrEqualTo(24),
+    );
+  });
 }
