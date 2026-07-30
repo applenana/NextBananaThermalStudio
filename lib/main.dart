@@ -7,6 +7,7 @@ import 'dart:io' show Platform;
 import 'app_state.dart';
 import 'temperature/temperature_history_store.dart';
 import 'temperature/temperature_recorder.dart';
+import 'update/update_service.dart';
 import 'ui/activation_overlay.dart';
 import 'ui/home_shell.dart';
 import 'ui/window_size_ffi.dart';
@@ -204,6 +205,11 @@ Future<void> resetAllSettings() async {
   TemperatureRecorder.instance.setSampleInterval(
     const Duration(milliseconds: _defaultTemperatureRecordIntervalMs),
   );
+  try {
+    await AppUpdateService.instance.resetPreferences();
+  } catch (_) {
+    // 更新组件不可用不应阻止其他设置恢复默认。
+  }
 
   if (Platform.isWindows) {
     try {
@@ -215,6 +221,11 @@ Future<void> resetAllSettings() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _loadPersistedSettings();
+  try {
+    await AppUpdateService.instance.initialize();
+  } catch (_) {
+    // 版本信息插件不可用时不阻止主程序启动，设置页仍可提示检查失败。
+  }
   try {
     await TemperatureHistoryStore.instance.initialize();
   } catch (_) {

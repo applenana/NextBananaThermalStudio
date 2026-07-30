@@ -2,6 +2,9 @@
     <!-- USB Host: 通过 OTG 连接 RP2040 / FTDI / CH34x / CP210x 等 CDC 设备. -->
     <uses-feature android:name="android.hardware.usb.host" android:required="true"/>
 
+    <!-- GitHub Releases 更新检测/下载，以及既有的在线地理编码。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- 相册导出 (gal 包). Android 13+ 通过 MediaStore 写入不需要权限,
          但若访问图库需 READ_MEDIA_IMAGES; Android 10-12 需 WRITE_EXTERNAL_STORAGE,
          Android 9 及以下也走旧权限. accessMediaLocation 让相册保留 EXIF GPS (可选). -->
@@ -13,6 +16,9 @@
          无授权时静默回退 (位置字段为 null). -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- GitHub Releases APK 更新：只请求打开系统安装器，最终安装必须由用户确认。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="BananaThermal Studio"
@@ -52,6 +58,15 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.update_files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_file_paths" />
+        </provider>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

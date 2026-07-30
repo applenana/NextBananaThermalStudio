@@ -158,11 +158,13 @@
 - **UI 缩放** + **窗口尺寸持久化** + **一键恢复出厂**
 - **BananaToast** — 全局轻提示，替代 SnackBar，不遮挡主内容
 - **内置命令行控制台** — 直发原始命令，分级彩色日志
+- **跨端自动更新** — GitHub Releases 启动检测、手动检查、发布说明、忽略版本、下载进度与 SHA-256 校验；Android 调用系统安装器，Windows 使用开源 NSIS Setup 覆盖升级
 
 ### 🤖 CI / CD
 
-- 每次推送自动构建 Windows x64 exe + Android arm/arm64 APK
+- 每次推送自动构建 Windows x64 + Android arm/arm64 APK
 - Tag 推送自动生成分类 Changelog 并发布 GitHub Release（feat/fix/perf/refactor 分节，ci/chore 折叠）
+- Tag Release 同时提供 Windows Setup / 便携 ZIP 与 Android universal APK
 
 ---
 
@@ -174,7 +176,8 @@
 
 | 平台 | 文件 | 说明 |
 |------|------|------|
-| Windows x64 | `BananaThermal-windows-x64.zip` | 解压后运行 `banana_thermal.exe`，含迷你 ffmpeg |
+| Windows x64（推荐） | `BananaThermal-windows-x64-setup.exe` | 安装版，支持应用内下载后覆盖升级 |
+| Windows x64（便携） | `BananaThermal-windows-x64.zip` | 解压后运行 `banana_thermal.exe`，含迷你 ffmpeg |
 | Android | `BananaThermal-android.apk` | universal APK，覆盖 arm / arm64 |
 
 ### 从源码运行
@@ -194,6 +197,21 @@ flutter run -d <device-id>
 ```
 
 Windows 还需 **Visual Studio 2022 with "Desktop development with C++"**。
+
+### Android Release 签名（维护者必读）
+
+Android 只有在新旧 APK 使用同一证书签名时才能覆盖升级。Tag 构建会强制读取以下 GitHub Actions Secrets；任何一项缺失都会终止发布，避免生成无法升级的临时签名 APK：
+
+- `ANDROID_KEYSTORE_BASE64`：release keystore 文件的 Base64 内容
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+
+可用 JDK 的 `keytool` 创建一次长期密钥，将其离线备份后配置到仓库 Secrets。不要提交真实的 `key.properties` 或 keystore；本地格式可参考 [`android/key.properties.example`](android/key.properties.example)。
+
+仓库同时提供安全辅助脚本：运行 `tools/generate_android_signing_key.ps1` 生成本地签名和独立恢复备份；完成 `gh auth login` 后，运行 `tools/configure_android_signing_secrets.ps1` 可把四项 Secret 写入 GitHub，脚本不会在终端打印密码。
+
+> 历史 CI 使用 Runner 临时 debug keystore，不同构建之间无法保证签名一致。因此切换到首个持久签名版本时，已安装旧 APK 的用户可能需要先备份数据、卸载旧版再安装一次；此后的应用内升级即可保持连续。
 
 ### 构建发布版
 

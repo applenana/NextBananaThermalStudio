@@ -80,6 +80,8 @@ secrets.json
 *.pfx
 local.properties
 key.properties
+*.jks
+*.keystore
 
 # ---- 用户本地配置 / 测试输出 ----
 /photos/

@@ -1,7 +1,7 @@
 name: banana_thermal
 description: "BananaThermal Studio - 跨平台热成像 + 可见光双光上位机 (Flutter 桌面版)"
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.3.50+1
 
 environment:
   sdk: ^3.11.5
@@ -41,6 +41,7 @@ dependencies:
   # 避免引入 window_manager 等会与串口插件冲突的 native plugin.
   ffi: ^2.1.0
   shared_preferences: ^2.5.5
+  package_info_plus: ^9.0.1
 
   # 相册导出 (Android MediaStore / iOS Photos). 桌面端不会调用此 API,
   # 仅 Android 分支使用, 桌面构建忽略.

@@ -38,11 +38,18 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             NAME="${GITHUB_REF_NAME#v}"
+            if [[ ! "$NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Windows installer requires a numeric vMAJOR.MINOR.PATCH tag" >&2
+              exit 1
+            fi
             NUM="$GITHUB_RUN_NUMBER"
             echo "args=--build-name=$NAME --build-number=$NUM" >> "$GITHUB_OUTPUT"
+            echo "name=$NAME" >> "$GITHUB_OUTPUT"
             echo "Tag build: $NAME ($NUM)"
           else
+            NAME="$(sed -nE 's/^version:[[:space:]]*([^+]+).*/\1/p' pubspec.yaml)"
             echo "args=" >> "$GITHUB_OUTPUT"
+            echo "name=$NAME" >> "$GITHUB_OUTPUT"
             echo "Non-tag build: using pubspec default."
           fi
 
@@ -56,15 +63,26 @@ jobs:
           $src = "build\windows\x64\runner\Release"
           if (-not (Test-Path $src)) { throw "Release folder not found: $src" }
           # Release 资产名不带时间戳 / sha; artifact 名中可附加以区分不同 run.
-          $zip = "BananaThermal-windows-x64.zip"
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+          $zip = "dist\BananaThermal-windows-x64.zip"
           Compress-Archive -Path "$src\*" -DestinationPath $zip -Force
           "zip_name=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build Windows installer
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress --yes
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) { throw "NSIS compiler not found: $makensis" }
+          & $makensis "/INPUTCHARSET" "UTF8" "/DAPP_VERSION=${{ steps.ver.outputs.name }}" "installer\windows_installer.nsi"
+          if ($LASTEXITCODE -ne 0) { throw "NSIS failed with exit code $LASTEXITCODE" }
 
       - name: Upload windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-zip
-          path: ${{ steps.pack.outputs.zip_name }}
+          name: windows-assets
+          path: dist/*
           if-no-files-found: error
           retention-days: 30
 
@@ -92,6 +110,29 @@ jobs:
 
       - name: Pub get
         run: flutter pub get
+
+      - name: Configure Android release signing
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for value in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!value:-}" ]; then
+              echo "Required Android signing secret is missing: $value" >&2
+              exit 1
+            fi
+          done
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/release-keystore.jks
+          printf '%s\n' \
+            "storePassword=$STORE_PASSWORD" \
+            "keyPassword=$KEY_PASSWORD" \
+            "keyAlias=$KEY_ALIAS" \
+            "storeFile=release-keystore.jks" > android/key.properties
 
       - name: Resolve version
         id: ver
@@ -136,7 +177,7 @@ jobs:
 
   # ----------------- Android universal APK (release only) -----------------
   # 普通 push 仍保留 split-per-abi 三件套作为 artifacts; 仅在打 tag 发布
-  # release 时构建一个 universal APK, 让 release 只挂一个全能 apk + windows zip.
+  # release 时构建一个 universal APK；Windows 同时发布安装版与便携 ZIP。
   build-android-universal:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -161,6 +202,28 @@ jobs:
 
       - name: Pub get
         run: flutter pub get
+
+      - name: Configure Android release signing
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for value in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!value:-}" ]; then
+              echo "Required Android signing secret is missing: $value" >&2
+              exit 1
+            fi
+          done
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/release-keystore.jks
+          printf '%s\n' \
+            "storePassword=$STORE_PASSWORD" \
+            "keyPassword=$KEY_PASSWORD" \
+            "keyAlias=$KEY_ALIAS" \
+            "storeFile=release-keystore.jks" > android/key.properties
 
       - name: Resolve version
         id: ver
@@ -195,7 +258,7 @@ jobs:
           retention-days: 30
 
   # ----------------------------- Release -----------------------------
-  # 仅打 tag 触发. 只挂载: 一个 windows zip + 一个 universal apk.
+  # 仅打 tag 触发：Windows 安装版/便携 ZIP + Android universal APK。
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-windows, build-android-universal]
@@ -214,7 +277,7 @@ jobs:
       - name: Download windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: windows-zip
+          name: windows-assets
           path: release-assets
 
       - name: Download android universal apk
@@ -308,7 +371,8 @@ jobs:
             echo "---"
             echo
             echo "### 📦 下载"
-            echo "- **Windows**: \`BananaThermal-windows-x64.zip\` — 解压后运行 \`banana_thermal.exe\`"
+            echo "- **Windows 安装版**: \`BananaThermal-windows-x64-setup.exe\` — 推荐，支持覆盖升级"
+            echo "- **Windows 便携版**: \`BananaThermal-windows-x64.zip\` — 解压后运行 \`banana_thermal.exe\`"
             echo "- **Android**: \`BananaThermal-android.apk\` — universal apk, 三 ABI 通用"
             if [ -n "$PREV" ]; then
               echo

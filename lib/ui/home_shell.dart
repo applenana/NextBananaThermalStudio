@@ -1,6 +1,7 @@
 /// 主框架: 左侧 NavigationRail + 顶部连接条 + 主区切换.
 library;
 
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:file_picker/file_picker.dart';
@@ -33,6 +34,7 @@ import 'temperature_history_tab.dart';
 import 'widgets/window_title_bar.dart';
 import 'window_size_ffi.dart';
 import 'banana_toast.dart';
+import 'app_update_ui.dart';
 import '../app_state.dart';
 import 'package:provider/provider.dart';
 
@@ -52,6 +54,14 @@ class _HomeShellState extends State<HomeShell> {
 
   /// Android 双击返回退出: 记录上次返回键时间, 2 秒内再按一次才真正退出.
   DateTime? _lastBackAt;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(checkForUpdatesOnStartup(context));
+    });
+  }
 
   /// Android 系统返回键处理. 优先级:
   /// 1) 图库详情打开 \u2192 关闭详情
@@ -956,10 +966,17 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
             child: const _DownloadDirControl(),
           ),
           const SizedBox(height: 12),
+          const _SettingsSection(
+            icon: Icons.system_update_alt_rounded,
+            title: '软件更新',
+            subtitle: '从 GitHub Releases 检查、下载并校验 Windows / Android 正式版本',
+            child: AppUpdateSettingsControl(),
+          ),
+          const SizedBox(height: 12),
           _SettingsSection(
             icon: Icons.restore_rounded,
             title: '恢复出厂设置',
-            subtitle: '一键重置所有设置 (主题 / 缩放 / 断点 / 控制台 / 下载路径 / 窗口尺寸)',
+            subtitle: '一键重置所有设置 (主题 / 缩放 / 断点 / 控制台 / 下载路径 / 更新 / 窗口尺寸)',
             child: const _ResetSettingsControl(),
           ),
           const SizedBox(height: 12),

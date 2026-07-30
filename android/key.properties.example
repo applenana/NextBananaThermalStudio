@@ -1,0 +1,5 @@
+# 复制为 android/key.properties 后填写；真实文件与 keystore 已被 .gitignore 忽略。
+storePassword=CHANGE_ME
+keyPassword=CHANGE_ME
+keyAlias=banana_thermal
+storeFile=release-keystore.jks
