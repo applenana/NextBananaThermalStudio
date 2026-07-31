@@ -35,7 +35,10 @@ import 'widgets/window_title_bar.dart';
 import 'window_size_ffi.dart';
 import 'banana_toast.dart';
 import 'app_update_ui.dart';
+import 'firmware_update_ui.dart';
 import '../app_state.dart';
+import '../firmware/firmware_update.dart';
+import '../firmware/firmware_update_service.dart';
 import 'package:provider/provider.dart';
 
 class HomeShell extends StatefulWidget {
@@ -47,6 +50,11 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+
+  AppState? _firmwareApp;
+  String? _checkedFirmwareIdentity;
+  bool _firmwareCheckRunning = false;
+  Timer? _firmwareRetryTimer;
 
   /// 进入图库 tab 前的推流开关快照, 用于离开图库时恢复.
   /// null = 当前不在图库 tab.
@@ -61,6 +69,75 @@ class _HomeShellState extends State<HomeShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(checkForUpdatesOnStartup(context));
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final app = context.read<AppState>();
+    if (!identical(_firmwareApp, app)) {
+      _firmwareApp?.removeListener(_onFirmwareDeviceChanged);
+      _firmwareApp = app;
+      app.addListener(_onFirmwareDeviceChanged);
+      _onFirmwareDeviceChanged();
+    }
+  }
+
+  void _onFirmwareDeviceChanged() {
+    final app = _firmwareApp;
+    if (app == null ||
+        app.status != ConnectionStatus.connected ||
+        app.deviceInfo == null ||
+        _firmwareCheckRunning ||
+        FirmwareUpdateService.instance.snapshot.value.busy ||
+        FirmwareUpdateService.instance.snapshot.value.phase ==
+            FirmwareUpdatePhase.completed) {
+      return;
+    }
+    final identity = FirmwareDeviceIdentity.fromDeviceInfo(app.deviceInfo);
+    if (!identity.canFlash) return;
+    final key = '${identity.deviceKey}:${identity.currentVersion ?? 'unknown'}';
+    if (_checkedFirmwareIdentity == key) return;
+    _checkedFirmwareIdentity = key;
+    _firmwareCheckRunning = true;
+    unawaited(_runFirmwareCheck(app, key));
+  }
+
+  Future<void> _runFirmwareCheck(AppState app, String expectedKey) async {
+    try {
+      // 让连接后的 GetSysInfo / thermal view 和应用更新弹窗先稳定下来。
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (!mounted || app.status != ConnectionStatus.connected) return;
+      final current = FirmwareDeviceIdentity.fromDeviceInfo(app.deviceInfo);
+      final key = '${current.deviceKey}:${current.currentVersion ?? 'unknown'}';
+      if (key != expectedKey) return;
+      await FirmwareUpdateService.instance.initialize();
+      if (!mounted ||
+          !FirmwareUpdateService.instance.automaticCheckEnabled.value) {
+        return;
+      }
+      await checkFirmwareForConnectedDevice(context, app);
+      if (FirmwareUpdateService.instance.snapshot.value.phase ==
+          FirmwareUpdatePhase.error) {
+        _firmwareRetryTimer ??= Timer(const Duration(minutes: 1), () {
+          _firmwareRetryTimer = null;
+          _checkedFirmwareIdentity = null;
+          _onFirmwareDeviceChanged();
+        });
+      } else {
+        _firmwareRetryTimer?.cancel();
+        _firmwareRetryTimer = null;
+      }
+    } finally {
+      _firmwareCheckRunning = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _firmwareApp?.removeListener(_onFirmwareDeviceChanged);
+    _firmwareRetryTimer?.cancel();
+    super.dispose();
   }
 
   /// Android 系统返回键处理. 优先级:
@@ -967,6 +1044,13 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
           ),
           const SizedBox(height: 12),
           const _SettingsSection(
+            icon: Icons.developer_board_rounded,
+            title: '设备固件',
+            subtitle: '自动识别双光型号、检查版本，并在 Windows 上完成校验、烧录、重连与版本回读',
+            child: FirmwareUpdateSettingsControl(),
+          ),
+          const SizedBox(height: 12),
+          const _SettingsSection(
             icon: Icons.system_update_alt_rounded,
             title: '软件更新',
             subtitle: '官方源优先，多镜像故障转移；检测失败后每分钟自动重试',
@@ -976,7 +1060,7 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
           _SettingsSection(
             icon: Icons.restore_rounded,
             title: '恢复出厂设置',
-            subtitle: '一键重置所有设置 (主题 / 缩放 / 断点 / 控制台 / 下载路径 / 更新 / 窗口尺寸)',
+            subtitle: '一键重置所有设置 (主题 / 缩放 / 断点 / 控制台 / 下载路径 / 软件与固件更新 / 窗口尺寸)',
             child: const _ResetSettingsControl(),
           ),
           const SizedBox(height: 12),
@@ -1140,6 +1224,7 @@ class _ResetSettingsControl extends StatelessWidget {
           '· 主题模式 / 界面缩放 / 响应式断点\n'
           '· 控制台展开状态\n'
           '· 图库下载路径\n'
+          '· 软件 / 固件自动检查与已记忆的固件变体\n'
           '· 窗口尺寸\n\n'
           '已下载的文件不会被删除.',
         ),

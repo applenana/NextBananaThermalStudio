@@ -8,6 +8,7 @@ import 'app_state.dart';
 import 'temperature/temperature_history_store.dart';
 import 'temperature/temperature_recorder.dart';
 import 'update/update_service.dart';
+import 'firmware/firmware_update_service.dart';
 import 'ui/activation_overlay.dart';
 import 'ui/home_shell.dart';
 import 'ui/window_size_ffi.dart';
@@ -209,6 +210,11 @@ Future<void> resetAllSettings() async {
     await AppUpdateService.instance.resetPreferences();
   } catch (_) {
     // 更新组件不可用不应阻止其他设置恢复默认。
+  }
+  try {
+    await FirmwareUpdateService.instance.resetPreferences();
+  } catch (_) {
+    // 固件组件不可用不应阻止其他设置恢复默认。
   }
 
   if (Platform.isWindows) {

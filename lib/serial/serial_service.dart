@@ -191,6 +191,47 @@ class SerialService {
     await _byteCtrl.close();
   }
 
+  /// 对 RP2040 Arduino USB CDC 执行标准 1200-baud touch。
+  ///
+  /// 支持该机制的固件会在 1200 baud 下 DTR 从 on 变为 off 时重启到 UF2
+  /// Bootloader。失败只返回 false，调用方仍可等待用户通过 BOOTSEL/RESET
+  /// 手动进入，不能把普通串口设备误判为已经进入烧录模式。
+  static Future<bool> touch1200Bootloader(String name) async {
+    if (Platform.isAndroid) return false;
+    SerialPort? port;
+    try {
+      port = SerialPort(name);
+      if (!port.openReadWrite()) return false;
+      final active = SerialPortConfig()
+        ..baudRate = 1200
+        ..bits = 8
+        ..stopBits = 1
+        ..parity = SerialPortParity.none
+        ..setFlowControl(SerialPortFlowControl.none)
+        ..dtr = SerialPortDtr.on
+        ..rts = SerialPortRts.off;
+      port.config = active;
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      final released = SerialPortConfig()
+        ..baudRate = 1200
+        ..bits = 8
+        ..stopBits = 1
+        ..parity = SerialPortParity.none
+        ..setFlowControl(SerialPortFlowControl.none)
+        ..dtr = SerialPortDtr.off
+        ..rts = SerialPortRts.off;
+      port.config = released;
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      try { if (port?.isOpen == true) port?.close(); } catch (_) {}
+      // 与 open/close 主路径一致，不手动 dispose，避免 Windows 上 finalizer
+      // 与原生句柄发生二次释放竞态。
+    }
+  }
+
   // ============================================================
   // 自动探测设备 (参考全能上位机 _probe_device)
   // ============================================================
