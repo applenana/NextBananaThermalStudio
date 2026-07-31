@@ -2,6 +2,54 @@ import 'dart:convert';
 
 enum AppUpdatePlatform { windows, android, unsupported }
 
+const _repositoryOwner = 'applenana';
+const _repositoryName = 'NextBananaThermalStudio';
+final _sha256Pattern = RegExp(r'^sha256:([0-9a-fA-F]{64})$');
+
+/// 将官方 HTTPS 地址拼到 GitHub 代理前缀后。
+///
+/// 代理地址和目标地址都由应用内常量提供，不接受远端 JSON 注入代理主机。
+Uri githubProxyUri(Uri proxyBase, Uri officialUri) {
+  if (proxyBase.scheme.toLowerCase() != 'https' ||
+      proxyBase.host.isEmpty ||
+      proxyBase.hasQuery ||
+      proxyBase.hasFragment ||
+      officialUri.scheme.toLowerCase() != 'https') {
+    throw const FormatException('GitHub 镜像地址必须是 HTTPS');
+  }
+  final prefix = proxyBase.toString().endsWith('/')
+      ? proxyBase.toString()
+      : '${proxyBase.toString()}/';
+  return Uri.parse('$prefix$officialUri');
+}
+
+bool _isExpectedRepositoryPath(Uri uri, String action) {
+  final segments = uri.pathSegments;
+  return uri.scheme.toLowerCase() == 'https' &&
+      uri.host.toLowerCase() == 'github.com' &&
+      uri.userInfo.isEmpty &&
+      segments.length >= 4 &&
+      segments[0].toLowerCase() == _repositoryOwner &&
+      segments[1].toLowerCase() == _repositoryName.toLowerCase() &&
+      segments[2] == 'releases' &&
+      segments[3] == action;
+}
+
+bool isBananaThermalReleasePage(Uri uri) =>
+    _isExpectedRepositoryPath(uri, 'tag') &&
+    uri.pathSegments.length == 5 &&
+    uri.pathSegments.last.isNotEmpty &&
+    !uri.hasQuery &&
+    !uri.hasFragment;
+
+bool isBananaThermalReleaseAssetUrl(Uri uri) =>
+    _isExpectedRepositoryPath(uri, 'download') &&
+    uri.pathSegments.length == 6 &&
+    uri.pathSegments[4].isNotEmpty &&
+    uri.pathSegments.last.isNotEmpty &&
+    !uri.hasQuery &&
+    !uri.hasFragment;
+
 AppUpdatePlatform currentUpdatePlatform({
   required bool isWindows,
   required bool isAndroid,
@@ -92,10 +140,21 @@ class AppReleaseAsset {
   final int size;
   final String? digest;
 
+  /// GitHub API 返回的、格式已严格验证的 SHA-256（不含 `sha256:` 前缀）。
+  String? get sha256 {
+    final match = _sha256Pattern.firstMatch(digest?.trim() ?? '');
+    return match?.group(1)?.toLowerCase();
+  }
+
+  bool get canInstallSafely => size > 0 && sha256 != null;
+
   factory AppReleaseAsset.fromJson(Map<String, dynamic> json) {
     final name = json['name'] as String? ?? '';
     final url = Uri.tryParse(json['browser_download_url'] as String? ?? '');
-    if (name.isEmpty || url == null || url.scheme.toLowerCase() != 'https') {
+    if (name.isEmpty ||
+        url == null ||
+        !isBananaThermalReleaseAssetUrl(url) ||
+        url.pathSegments.last != name) {
       throw const FormatException('Release 资产缺少名称或下载地址');
     }
     return AppReleaseAsset(
@@ -132,7 +191,8 @@ class AppRelease {
     final pageUrl = Uri.tryParse(json['html_url'] as String? ?? '');
     if (AppVersion.tryParse(tagName) == null ||
         pageUrl == null ||
-        pageUrl.scheme.toLowerCase() != 'https') {
+        !isBananaThermalReleasePage(pageUrl) ||
+        pageUrl.pathSegments.last != tagName) {
       throw const FormatException('Release 版本或页面地址无效');
     }
     final rawAssets = json['assets'];
@@ -141,9 +201,12 @@ class AppRelease {
       for (final value in rawAssets) {
         if (value is! Map) continue;
         try {
-          assets.add(
-            AppReleaseAsset.fromJson(Map<String, dynamic>.from(value)),
+          final asset = AppReleaseAsset.fromJson(
+            Map<String, dynamic>.from(value),
           );
+          if (asset.downloadUrl.pathSegments[4] == tagName) {
+            assets.add(asset);
+          }
         } on FormatException {
           // 单个损坏资产不应让整个 Release 无法显示。
         }
@@ -167,9 +230,35 @@ class AppRelease {
     return AppRelease.fromJson(Map<String, dynamic>.from(decoded));
   }
 
+  /// 镜像共识只比较会影响版本选择和安装包真实性的字段。
+  /// Release notes 可以因缓存时间略有差异，不参与安全共识。
+  String get verificationIdentity {
+    final assetIdentities =
+        assets
+            .map(
+              (asset) => jsonEncode([
+                asset.name,
+                asset.downloadUrl.toString(),
+                asset.size,
+                asset.sha256 ?? '',
+              ]),
+            )
+            .toList()
+          ..sort();
+    return jsonEncode({
+      'tag': tagName,
+      'page': pageUrl.toString(),
+      'assets': assetIdentities,
+    });
+  }
+
+  bool hasSameVerificationIdentity(AppRelease other) =>
+      verificationIdentity == other.verificationIdentity;
+
   AppReleaseAsset? assetFor(AppUpdatePlatform platform) {
     if (platform == AppUpdatePlatform.unsupported) return null;
     final candidates = assets.where((asset) {
+      if (!asset.canInstallSafely) return false;
       final lower = asset.name.toLowerCase();
       return platform == AppUpdatePlatform.android
           ? lower.endsWith('.apk') && lower.contains('bananathermal')
@@ -203,16 +292,53 @@ class AppRelease {
   }
 }
 
+class AppReleaseConsensus {
+  const AppReleaseConsensus({
+    required this.release,
+    required this.sourceLabels,
+  });
+
+  final AppRelease release;
+  final List<String> sourceLabels;
+}
+
+/// 从独立镜像响应中选择达到最小票数、且安全字段完全一致的一组结果。
+AppReleaseConsensus? selectAppReleaseConsensus(
+  Map<String, AppRelease> responses, {
+  int minimumMatches = 2,
+}) {
+  if (minimumMatches < 1) {
+    throw ArgumentError.value(minimumMatches, 'minimumMatches');
+  }
+  final groups = <String, List<MapEntry<String, AppRelease>>>{};
+  for (final response in responses.entries) {
+    groups
+        .putIfAbsent(response.value.verificationIdentity, () => [])
+        .add(response);
+  }
+  final agreed =
+      groups.values.where((group) => group.length >= minimumMatches).toList()
+        ..sort((left, right) => right.length.compareTo(left.length));
+  if (agreed.isEmpty) return null;
+  final winner = agreed.first;
+  return AppReleaseConsensus(
+    release: winner.first.value,
+    sourceLabels: List.unmodifiable(winner.map((entry) => entry.key)),
+  );
+}
+
 class AppUpdateInfo {
   const AppUpdateInfo({
     required this.currentVersion,
     required this.release,
     required this.platform,
     required this.asset,
+    required this.metadataSource,
   });
 
   final String currentVersion;
   final AppRelease release;
   final AppUpdatePlatform platform;
   final AppReleaseAsset? asset;
+  final String metadataSource;
 }

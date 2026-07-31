@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -51,6 +52,33 @@ class AppUpdateService {
   static final Uri _latestReleaseApi = Uri.parse(
     'https://api.github.com/repos/applenana/NextBananaThermalStudio/releases/latest',
   );
+  static final List<_UpdateSource> _metadataMirrorSources = [
+    _UpdateSource(
+      label: '镜像 gh-proxy.com',
+      uri: githubProxyUri(
+        Uri.parse('https://gh-proxy.com/'),
+        _latestReleaseApi,
+      ),
+    ),
+    _UpdateSource(
+      label: '镜像 gh-proxy.org',
+      uri: githubProxyUri(
+        Uri.parse('https://gh-proxy.org/'),
+        _latestReleaseApi,
+      ),
+    ),
+    _UpdateSource(
+      label: '镜像 gh-proxy.cn',
+      uri: githubProxyUri(Uri.parse('https://gh-proxy.cn/'), _latestReleaseApi),
+    ),
+  ];
+  static final List<_MirrorPrefix> _downloadMirrorPrefixes = [
+    _MirrorPrefix('镜像 gh-proxy.com', Uri.parse('https://gh-proxy.com/')),
+    _MirrorPrefix('镜像 gh-proxy.org', Uri.parse('https://gh-proxy.org/')),
+    _MirrorPrefix('镜像 gh-proxy.cn', Uri.parse('https://gh-proxy.cn/')),
+    _MirrorPrefix('镜像 ghproxy.net', Uri.parse('https://ghproxy.net/')),
+    _MirrorPrefix('镜像 ghfast.top', Uri.parse('https://ghfast.top/')),
+  ];
   static const _automaticCheckInterval = Duration(hours: 12);
   static const _androidChannel = MethodChannel(
     'com.applenana.banana_thermal/app_update',
@@ -142,7 +170,8 @@ class AppUpdateService {
         phase: AppUpdatePhase.checking,
         message: '正在连接 GitHub…',
       );
-      final release = await _fetchLatestRelease();
+      final fetched = await _fetchLatestRelease();
+      final release = fetched.release;
       await _preferences?.setInt(_lastCheckKey, now.millisecondsSinceEpoch);
 
       final installed = AppVersion.tryParse(currentVersion);
@@ -153,7 +182,7 @@ class AppUpdateService {
       if (latest.compareTo(installed) <= 0) {
         snapshot.value = AppUpdateSnapshot(
           phase: AppUpdatePhase.upToDate,
-          message: '当前已是最新版本（$currentVersion）',
+          message: '当前已是最新版本（$currentVersion）· ${fetched.sourceLabel}',
         );
         return null;
       }
@@ -171,11 +200,12 @@ class AppUpdateService {
         release: release,
         platform: platform,
         asset: release.assetFor(platform),
+        metadataSource: fetched.sourceLabel,
       );
       snapshot.value = AppUpdateSnapshot(
         phase: AppUpdatePhase.updateAvailable,
         info: info,
-        message: '发现新版本 ${release.tagName}',
+        message: '发现新版本 ${release.tagName} · ${fetched.sourceLabel}',
       );
       return info;
     } catch (error) {
@@ -187,25 +217,85 @@ class AppUpdateService {
     }
   }
 
-  Future<AppRelease> _fetchLatestRelease() async {
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 12);
+  Future<_FetchedRelease> _fetchLatestRelease() async {
     try {
-      final request = await client.getUrl(_latestReleaseApi);
+      final release = await _fetchReleaseFrom(
+        _UpdateSource(label: '官方 GitHub', uri: _latestReleaseApi),
+        timeout: const Duration(seconds: 12),
+      );
+      return _FetchedRelease(release, '官方 GitHub');
+    } catch (error) {
+      debugPrint('Official GitHub update check failed: $error');
+    }
+
+    snapshot.value = const AppUpdateSnapshot(
+      phase: AppUpdatePhase.checking,
+      message: '官方 GitHub 不可用，正在交叉验证更新镜像…',
+    );
+    final attempts = await Future.wait(
+      _metadataMirrorSources.map(_tryFetchMirrorRelease),
+    );
+    final responses = <String, AppRelease>{
+      for (final attempt in attempts)
+        if (attempt.release != null) attempt.source.label: attempt.release!,
+    };
+    final consensus = selectAppReleaseConsensus(responses);
+    if (consensus == null) {
+      final details = attempts
+          .map(
+            (attempt) => attempt.release != null
+                ? '${attempt.source.label}=响应不一致'
+                : '${attempt.source.label}=${attempt.error}',
+          )
+          .join('；');
+      throw UpdateSourceException('官方源不可用，更新镜像未形成一致结果：$details');
+    }
+    final labels = consensus.sourceLabels.join(' + ');
+    return _FetchedRelease(consensus.release, '镜像共识（$labels）');
+  }
+
+  Future<_ReleaseAttempt> _tryFetchMirrorRelease(_UpdateSource source) async {
+    try {
+      return _ReleaseAttempt(
+        source: source,
+        release: await _fetchReleaseFrom(
+          source,
+          timeout: const Duration(seconds: 15),
+        ),
+      );
+    } catch (error) {
+      debugPrint('${source.label} update check failed: $error');
+      return _ReleaseAttempt(source: source, error: _friendlyError(error));
+    }
+  }
+
+  Future<AppRelease> _fetchReleaseFrom(
+    _UpdateSource source, {
+    required Duration timeout,
+  }) async {
+    final client = HttpClient()..connectionTimeout = timeout;
+    try {
+      final request = await client.getUrl(source.uri);
       request.headers
         ..set(HttpHeaders.acceptHeader, 'application/vnd.github+json')
         ..set('X-GitHub-Api-Version', '2022-11-28')
         ..set(HttpHeaders.userAgentHeader, 'BananaThermalStudio-Updater');
-      final response = await request.close().timeout(
-        const Duration(seconds: 20),
-      );
-      final body = await response.transform(utf8.decoder).join();
+      final response = await request.close().timeout(timeout);
       if (response.statusCode != HttpStatus.ok) {
         if (response.statusCode == HttpStatus.forbidden) {
-          throw const HttpException('GitHub 请求受限，请稍后再试');
+          throw HttpException('${source.label} 请求受限');
         }
-        throw HttpException('GitHub 返回 HTTP ${response.statusCode}');
+        throw HttpException('${source.label} 返回 HTTP ${response.statusCode}');
       }
+      const maximumResponseBytes = 2 * 1024 * 1024;
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in response.timeout(timeout)) {
+        if (bytes.length + chunk.length > maximumResponseBytes) {
+          throw const FormatException('Release 元数据超过安全大小限制');
+        }
+        bytes.add(chunk);
+      }
+      final body = utf8.decode(bytes.takeBytes());
       return AppRelease.fromJsonString(body);
     } finally {
       client.close(force: true);
@@ -255,48 +345,110 @@ class AppUpdateService {
   }
 
   Future<File> _download(AppUpdateInfo info, AppReleaseAsset asset) async {
+    if (!asset.canInstallSafely) {
+      throw const FormatException('发布资产缺少有效的文件大小或 SHA-256，已拒绝自动安装');
+    }
     final directory = await _downloadDirectory(info.release.tagName);
     await directory.create(recursive: true);
-    final safeName = p.basename(Uri.parse(asset.downloadUrl.toString()).path);
-    if (safeName.isEmpty || safeName == '.' || safeName == '..') {
+    final safeName = p.basename(asset.name);
+    if (safeName.isEmpty ||
+        safeName == '.' ||
+        safeName == '..' ||
+        safeName != asset.name) {
       throw const FormatException('更新包文件名无效');
     }
     final destination = File(p.join(directory.path, safeName));
     final partial = File('${destination.path}.part');
 
-    if (await destination.exists() &&
-        await _digestMatches(destination, asset)) {
-      snapshot.value = AppUpdateSnapshot(
-        phase: AppUpdatePhase.ready,
-        info: info,
-        progress: 1,
-        message: '更新包已下载并通过校验',
-        downloadedFile: destination,
-      );
-      return destination;
+    if (await destination.exists()) {
+      if (await _digestMatches(destination, asset)) {
+        snapshot.value = AppUpdateSnapshot(
+          phase: AppUpdatePhase.ready,
+          info: info,
+          progress: 1,
+          message: '更新包已下载并通过 SHA-256 校验',
+          downloadedFile: destination,
+        );
+        return destination;
+      }
+      await destination.delete();
     }
     if (await partial.exists()) await partial.delete();
 
-    snapshot.value = AppUpdateSnapshot(
-      phase: AppUpdatePhase.downloading,
-      info: info,
-      progress: 0,
-      message: '正在下载 ${asset.name}',
-    );
+    final errors = <String>[];
+    for (final source in _downloadSourcesFor(asset.downloadUrl)) {
+      if (_downloadCancelled) {
+        throw const HttpException('下载已取消');
+      }
+      if (await partial.exists()) await partial.delete();
+      snapshot.value = AppUpdateSnapshot(
+        phase: AppUpdatePhase.downloading,
+        info: info,
+        progress: 0,
+        message: '正在通过 ${source.label} 下载 ${asset.name}',
+      );
+      try {
+        await _downloadFromSource(
+          info: info,
+          asset: asset,
+          source: source,
+          partial: partial,
+        );
+        if (_downloadCancelled) {
+          throw const HttpException('下载已取消');
+        }
+        if (!await _digestMatches(partial, asset)) {
+          throw FormatException('${source.label} 返回的文件校验失败');
+        }
+        await partial.rename(destination.path);
+        snapshot.value = AppUpdateSnapshot(
+          phase: AppUpdatePhase.ready,
+          info: info,
+          progress: 1,
+          message: '已通过 ${source.label} 下载并通过 SHA-256 校验',
+          downloadedFile: destination,
+        );
+        return destination;
+      } catch (error) {
+        if (await partial.exists()) await partial.delete();
+        if (_downloadCancelled) rethrow;
+        errors.add('${source.label}：${_friendlyError(error)}');
+        debugPrint('${source.label} update download failed: $error');
+      }
+    }
+    throw UpdateDownloadException('所有更新下载源均失败：${errors.join('；')}');
+  }
+
+  List<_UpdateSource> _downloadSourcesFor(Uri officialUri) => [
+    _UpdateSource(label: '官方 GitHub', uri: officialUri),
+    ..._downloadMirrorPrefixes.map(
+      (mirror) => _UpdateSource(
+        label: mirror.label,
+        uri: githubProxyUri(mirror.baseUri, officialUri),
+      ),
+    ),
+  ];
+
+  Future<void> _downloadFromSource({
+    required AppUpdateInfo info,
+    required AppReleaseAsset asset,
+    required _UpdateSource source,
+    required File partial,
+  }) async {
     final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 15);
+      ..connectionTimeout = const Duration(seconds: 10);
     _downloadClient = client;
     try {
-      final request = await client.getUrl(asset.downloadUrl);
+      final request = await client.getUrl(source.uri);
       request.headers.set(
         HttpHeaders.userAgentHeader,
         'BananaThermalStudio-Updater',
       );
       final response = await request.close().timeout(
-        const Duration(seconds: 30),
+        const Duration(seconds: 20),
       );
       if (response.statusCode != HttpStatus.ok) {
-        throw HttpException('下载失败：HTTP ${response.statusCode}');
+        throw HttpException('${source.label} 返回 HTTP ${response.statusCode}');
       }
       final expected = response.contentLength > 0
           ? response.contentLength
@@ -318,38 +470,16 @@ class AppUpdateService {
             progress: expected > 0
                 ? (received / expected).clamp(0.0, 1.0)
                 : null,
-            message: '正在下载 ${asset.name}',
+            message: '正在通过 ${source.label} 下载 ${asset.name}',
           );
         }
       } finally {
         await sink.close();
       }
-    } catch (_) {
-      if (await partial.exists()) await partial.delete();
-      rethrow;
     } finally {
       client.close(force: true);
       if (identical(_downloadClient, client)) _downloadClient = null;
     }
-
-    if (_downloadCancelled) {
-      if (await partial.exists()) await partial.delete();
-      throw const HttpException('下载已取消');
-    }
-    if (!await _digestMatches(partial, asset)) {
-      if (await partial.exists()) await partial.delete();
-      throw const FormatException('更新包 SHA-256 校验失败，请重新下载');
-    }
-    if (await destination.exists()) await destination.delete();
-    await partial.rename(destination.path);
-    snapshot.value = AppUpdateSnapshot(
-      phase: AppUpdatePhase.ready,
-      info: info,
-      progress: 1,
-      message: '更新包已下载并通过校验',
-      downloadedFile: destination,
-    );
-    return destination;
   }
 
   Future<Directory> _downloadDirectory(String tagName) async {
@@ -371,12 +501,9 @@ class AppUpdateService {
 
   Future<bool> _digestMatches(File file, AppReleaseAsset asset) async {
     if (!await file.exists()) return false;
-    if (asset.size > 0 && await file.length() != asset.size) return false;
-    final digest = asset.digest;
-    if (digest == null || !digest.toLowerCase().startsWith('sha256:')) {
-      return true;
-    }
-    final expected = digest.substring(digest.indexOf(':') + 1).toLowerCase();
+    final expected = asset.sha256;
+    if (expected == null || asset.size <= 0) return false;
+    if (await file.length() != asset.size) return false;
     final actual = (await sha256.bind(file.openRead()).first).toString();
     return actual == expected;
   }
@@ -436,6 +563,53 @@ class AppUpdateService {
     }
     return error.toString().replaceFirst(RegExp(r'^\w+Exception:\s*'), '');
   }
+}
+
+class UpdateSourceException implements Exception {
+  const UpdateSourceException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'UpdateSourceException: $message';
+}
+
+class UpdateDownloadException implements Exception {
+  const UpdateDownloadException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'UpdateDownloadException: $message';
+}
+
+class _UpdateSource {
+  const _UpdateSource({required this.label, required this.uri});
+
+  final String label;
+  final Uri uri;
+}
+
+class _MirrorPrefix {
+  const _MirrorPrefix(this.label, this.baseUri);
+
+  final String label;
+  final Uri baseUri;
+}
+
+class _FetchedRelease {
+  const _FetchedRelease(this.release, this.sourceLabel);
+
+  final AppRelease release;
+  final String sourceLabel;
+}
+
+class _ReleaseAttempt {
+  const _ReleaseAttempt({required this.source, this.release, this.error});
+
+  final _UpdateSource source;
+  final AppRelease? release;
+  final String? error;
 }
 
 String formatUpdateFileSize(int bytes) {

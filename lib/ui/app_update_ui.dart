@@ -72,6 +72,13 @@ Future<void> showAppUpdateDialog(
               ),
               const SizedBox(height: 14),
               Text(platformHint),
+              const SizedBox(height: 6),
+              Text(
+                '版本信息来源：${info.metadataSource}',
+                style: Theme.of(dialogContext).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(dialogContext).colorScheme.onSurfaceVariant,
+                ),
+              ),
               if (asset != null) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -377,7 +384,7 @@ class _AppUpdateSettingsControlState extends State<AppUpdateSettingsControl> {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    state.message ?? '通过 GitHub Releases 获取正式版本',
+                    state.message ?? '官方 GitHub 优先，失败时自动交叉验证多个镜像',
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontSize: 12,

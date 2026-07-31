@@ -4,6 +4,13 @@ import 'package:banana_thermal/update/app_update.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  const digestA =
+      'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const digestB =
+      'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const digestC =
+      'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+
   group('AppVersion', () {
     test('解析 v 前缀、构建号并比较多位版本', () {
       final current = AppVersion.tryParse('0.3.50+123')!;
@@ -31,49 +38,55 @@ void main() {
   });
 
   group('AppRelease', () {
-    final release = AppRelease.fromJsonString(
-      jsonEncode({
-        'tag_name': 'v0.3.50',
-        'name': 'BananaThermal v0.3.50',
-        'html_url':
-            'https://github.com/applenana/NextBananaThermalStudio/releases/tag/v0.3.50',
-        'body': '更新说明',
-        'published_at': '2026-07-30T12:19:56Z',
-        'assets': [
-          {
-            'name': 'BananaThermal-android-arm64-v8a.apk',
-            'browser_download_url': 'https://example.com/arm64.apk',
-            'content_type': 'application/vnd.android.package-archive',
-            'size': 10,
-          },
-          {
-            'name': 'BananaThermal-android.apk',
-            'browser_download_url': 'https://example.com/universal.apk',
-            'content_type': 'application/vnd.android.package-archive',
-            'size': 20,
-            'digest': 'sha256:abc',
-          },
-          {
-            'name': 'BananaThermal-windows-x64-setup.exe',
-            'browser_download_url': 'https://example.com/windows-setup.exe',
-            'content_type': 'application/vnd.microsoft.portable-executable',
-            'size': 25,
-          },
-          {
-            'name': 'BananaThermal-windows-x64.zip',
-            'browser_download_url': 'https://example.com/windows.zip',
-            'content_type': 'application/zip',
-            'size': 30,
-          },
-        ],
-      }),
-    );
+    final releaseJson = <String, dynamic>{
+      'tag_name': 'v0.3.50',
+      'name': 'BananaThermal v0.3.50',
+      'html_url':
+          'https://github.com/applenana/NextBananaThermalStudio/releases/tag/v0.3.50',
+      'body': '更新说明',
+      'published_at': '2026-07-30T12:19:56Z',
+      'assets': [
+        {
+          'name': 'BananaThermal-android-arm64-v8a.apk',
+          'browser_download_url':
+              'https://github.com/applenana/NextBananaThermalStudio/releases/download/v0.3.50/BananaThermal-android-arm64-v8a.apk',
+          'content_type': 'application/vnd.android.package-archive',
+          'size': 10,
+        },
+        {
+          'name': 'BananaThermal-android.apk',
+          'browser_download_url':
+              'https://github.com/applenana/NextBananaThermalStudio/releases/download/v0.3.50/BananaThermal-android.apk',
+          'content_type': 'application/vnd.android.package-archive',
+          'size': 20,
+          'digest': digestA,
+        },
+        {
+          'name': 'BananaThermal-windows-x64-setup.exe',
+          'browser_download_url':
+              'https://github.com/applenana/NextBananaThermalStudio/releases/download/v0.3.50/BananaThermal-windows-x64-setup.exe',
+          'content_type': 'application/vnd.microsoft.portable-executable',
+          'size': 25,
+          'digest': digestB,
+        },
+        {
+          'name': 'BananaThermal-windows-x64.zip',
+          'browser_download_url':
+              'https://github.com/applenana/NextBananaThermalStudio/releases/download/v0.3.50/BananaThermal-windows-x64.zip',
+          'content_type': 'application/zip',
+          'size': 30,
+          'digest': digestC,
+        },
+      ],
+    };
+    final release = AppRelease.fromJsonString(jsonEncode(releaseJson));
 
     test('解析发布信息与摘要', () {
       expect(release.tagName, 'v0.3.50');
       expect(release.publishedAt, DateTime.utc(2026, 7, 30, 12, 19, 56));
       expect(release.assets, hasLength(4));
-      expect(release.assets[1].digest, 'sha256:abc');
+      expect(release.assets[1].sha256, digestA.substring('sha256:'.length));
+      expect(release.assets.first.canInstallSafely, isFalse);
     });
 
     test('Android 优先选择 universal APK', () {
@@ -97,6 +110,65 @@ void main() {
           'tag_name': 'not-a-version',
           'html_url': 'https://example.com',
         }),
+        throwsFormatException,
+      );
+      expect(
+        () => AppReleaseAsset.fromJson(const {
+          'name': 'BananaThermal-android.apk',
+          'browser_download_url': 'https://example.com/update.apk',
+        }),
+        throwsFormatException,
+      );
+      expect(
+        () => AppRelease.fromJson(const {
+          'tag_name': 'v9.9.9',
+          'html_url':
+              'https://github.com/applenana/NextBananaThermalStudio/releases/tag/v0.3.50',
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('镜像共识忽略说明和资产顺序，但拒绝摘要差异', () {
+      final sameJson =
+          jsonDecode(jsonEncode(releaseJson)) as Map<String, dynamic>;
+      sameJson['body'] = '镜像缓存中的旧说明';
+      sameJson['assets'] = (sameJson['assets'] as List).reversed.toList();
+      final same = AppRelease.fromJson(sameJson);
+      expect(release.hasSameVerificationIdentity(same), isTrue);
+
+      final changedJson =
+          jsonDecode(jsonEncode(releaseJson)) as Map<String, dynamic>;
+      final changedAssets = changedJson['assets'] as List<dynamic>;
+      (changedAssets[1] as Map<String, dynamic>)['digest'] = digestB;
+      final changed = AppRelease.fromJson(changedJson);
+      expect(release.hasSameVerificationIdentity(changed), isFalse);
+
+      final consensus = selectAppReleaseConsensus({
+        '镜像 A': release,
+        '镜像 B': same,
+        '被篡改的镜像': changed,
+      });
+      expect(
+        consensus?.release.verificationIdentity,
+        release.verificationIdentity,
+      );
+      expect(consensus?.sourceLabels, ['镜像 A', '镜像 B']);
+      expect(selectAppReleaseConsensus({'唯一镜像': release}), isNull);
+    });
+  });
+
+  group('GitHub mirror URL', () {
+    test('只为 HTTPS 官方地址生成代理 URL', () {
+      final official = Uri.parse(
+        'https://api.github.com/repos/applenana/NextBananaThermalStudio/releases/latest',
+      );
+      expect(
+        githubProxyUri(Uri.parse('https://gh-proxy.com/'), official).toString(),
+        'https://gh-proxy.com/https://api.github.com/repos/applenana/NextBananaThermalStudio/releases/latest',
+      );
+      expect(
+        () => githubProxyUri(Uri.parse('http://mirror.example'), official),
         throwsFormatException,
       );
     });

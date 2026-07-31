@@ -158,7 +158,7 @@
 - **UI 缩放** + **窗口尺寸持久化** + **一键恢复出厂**
 - **BananaToast** — 全局轻提示，替代 SnackBar，不遮挡主内容
 - **内置命令行控制台** — 直发原始命令，分级彩色日志
-- **跨端自动更新** — GitHub Releases 启动检测、手动检查、发布说明、忽略版本、下载进度与 SHA-256 校验；Android 调用系统安装器，Windows 使用开源 NSIS Setup 覆盖升级
+- **跨端自动更新** — 官方 GitHub 优先，受限时由多个镜像交叉验证版本信息并自动切换下载源；所有自动安装资产强制校验官方文件大小与 SHA-256。Android 调用系统安装器，Windows 使用开源 NSIS Setup 覆盖升级
 
 ### 🤖 CI / CD
 
@@ -197,6 +197,16 @@ flutter run -d <device-id>
 ```
 
 Windows 还需 **Visual Studio 2022 with "Desktop development with C++"**。
+
+### 更新镜像与校验
+
+应用始终优先访问 GitHub 官方 API 和 Release 资产。只有官方源失败时才会访问公共镜像，不会向镜像发送账号、Token 或设备数据：
+
+- 版本元数据后备：`gh-proxy.com`、`gh-proxy.org`、`gh-proxy.cn`；至少两个镜像的版本、官方 URL、文件大小和 SHA-256 完全一致才会接受。
+- 安装包下载后备：在上述镜像之外增加 `ghproxy.net`、`ghfast.top`，按顺序故障转移。
+- 自动安装要求 GitHub Release 资产提供有效的文件大小和 SHA-256；任何来源下载的文件都必须同时匹配，否则立即删除并尝试下一源。缺少摘要时只允许手动查看发布页。
+
+公共镜像只承担网络传输，可能随时变更或停服，不是版本和校验值的单一信任来源。
 
 ### Android Release 签名（维护者必读）
 

@@ -969,7 +969,7 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
           const _SettingsSection(
             icon: Icons.system_update_alt_rounded,
             title: '软件更新',
-            subtitle: '从 GitHub Releases 检查、下载并校验 Windows / Android 正式版本',
+            subtitle: '官方 GitHub 优先，失败时自动切换并交叉验证多个更新镜像',
             child: AppUpdateSettingsControl(),
           ),
           const SizedBox(height: 12),
