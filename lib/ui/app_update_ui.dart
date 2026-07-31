@@ -523,7 +523,7 @@ class _AppUpdateSettingsControlState extends State<AppUpdateSettingsControl> {
         SwitchListTile.adaptive(
           contentPadding: EdgeInsets.zero,
           title: const Text('启动时自动检查更新'),
-          subtitle: const Text('成功检查最多每 12 小时一次；失败后每分钟重试直到成功'),
+          subtitle: const Text('每次启动都会检查；失败后每分钟重试直到成功'),
           value: _service.automaticCheckEnabled.value,
           onChanged: _service.setAutomaticCheckEnabled,
         ),

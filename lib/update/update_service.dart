@@ -122,14 +122,12 @@ class AppUpdateService {
       Uri.parse('https://hub.gitmirror.com/'),
     ),
   ];
-  static const _automaticCheckInterval = Duration(hours: 12);
   static const _androidChannel = MethodChannel(
     'com.applenana.banana_thermal/app_update',
   );
 
   static const _autoCheckKey = 'app_update_auto_check';
   static const _ignoredVersionKey = 'app_update_ignored_version';
-  static const _lastCheckKey = 'app_update_last_check_ms';
 
   final ValueNotifier<AppUpdateSnapshot> snapshot = ValueNotifier(
     const AppUpdateSnapshot(),
@@ -159,6 +157,7 @@ class AppUpdateService {
     ]);
     _preferences = values[0] as SharedPreferences;
     _packageInfo = values[1] as PackageInfo;
+    await _preferences?.remove('app_update_last_check_ms');
     automaticCheckEnabled.value = _preferences?.getBool(_autoCheckKey) ?? true;
     _initialized = true;
   }
@@ -182,13 +181,12 @@ class AppUpdateService {
     await initialize();
     await _preferences?.remove(_autoCheckKey);
     await _preferences?.remove(_ignoredVersionKey);
-    await _preferences?.remove(_lastCheckKey);
     automaticCheckEnabled.value = true;
     snapshot.value = const AppUpdateSnapshot();
   }
 
-  /// 检查 GitHub 最新正式 Release。自动检查会限频并尊重“忽略此版本”，
-  /// 手动检查始终访问网络并返回最新结果；失败重试会绕过自动检查限频。
+  /// 检查 GitHub 最新正式 Release。每次冷启动都会实际检查一次；
+  /// 自动检查尊重开关和“忽略此版本”，手动检查始终返回最新结果。
   Future<AppUpdateInfo?> checkForUpdate({
     bool manual = false,
     bool retry = false,
@@ -208,13 +206,6 @@ class AppUpdateService {
       await initialize();
       if (!manual && !retry && !automaticCheckEnabled.value) return null;
 
-      final now = DateTime.now();
-      final lastCheckMs = _preferences?.getInt(_lastCheckKey);
-      if (!manual && !retry && lastCheckMs != null) {
-        final lastCheck = DateTime.fromMillisecondsSinceEpoch(lastCheckMs);
-        if (now.difference(lastCheck) < _automaticCheckInterval) return null;
-      }
-
       snapshot.value = const AppUpdateSnapshot(
         phase: AppUpdatePhase.checking,
         message: '正在连接 GitHub…',
@@ -227,7 +218,6 @@ class AppUpdateService {
       if (installed == null || latest == null) {
         throw FormatException('无法比较版本：$currentVersion / ${release.tagName}');
       }
-      await _preferences?.setInt(_lastCheckKey, now.millisecondsSinceEpoch);
       if (latest.compareTo(installed) <= 0) {
         snapshot.value = AppUpdateSnapshot(
           phase: AppUpdatePhase.upToDate,
