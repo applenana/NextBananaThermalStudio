@@ -300,12 +300,18 @@ class AppReleaseConsensus {
 
   final AppRelease release;
   final List<String> sourceLabels;
+
+  bool get isCrossVerified => sourceLabels.length >= 2;
 }
 
 /// 从独立镜像响应中选择达到最小票数、且安全字段完全一致的一组结果。
+///
+/// 只有恰好一个镜像成功时，才允许启用单源降级。若多个镜像成功但互相
+/// 冲突，仍会拒绝结果，避免把冲突误判为“只有一个镜像可用”。
 AppReleaseConsensus? selectAppReleaseConsensus(
   Map<String, AppRelease> responses, {
   int minimumMatches = 2,
+  bool allowSingleSourceFallback = false,
 }) {
   if (minimumMatches < 1) {
     throw ArgumentError.value(minimumMatches, 'minimumMatches');
@@ -319,7 +325,17 @@ AppReleaseConsensus? selectAppReleaseConsensus(
   final agreed =
       groups.values.where((group) => group.length >= minimumMatches).toList()
         ..sort((left, right) => right.length.compareTo(left.length));
-  if (agreed.isEmpty) return null;
+  if (agreed.isEmpty) {
+    if (!allowSingleSourceFallback || responses.length != 1) return null;
+    final only = responses.entries.single;
+    return AppReleaseConsensus(
+      release: only.value,
+      sourceLabels: List.unmodifiable([only.key]),
+    );
+  }
+  if (agreed.length > 1 && agreed[0].length == agreed[1].length) {
+    return null;
+  }
   final winner = agreed.first;
   return AppReleaseConsensus(
     release: winner.first.value,
@@ -334,6 +350,7 @@ class AppUpdateInfo {
     required this.platform,
     required this.asset,
     required this.metadataSource,
+    required this.isSingleMirrorFallback,
   });
 
   final String currentVersion;
@@ -341,4 +358,5 @@ class AppUpdateInfo {
   final AppUpdatePlatform platform;
   final AppReleaseAsset? asset;
   final String metadataSource;
+  final bool isSingleMirrorFallback;
 }

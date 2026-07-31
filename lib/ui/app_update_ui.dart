@@ -7,24 +7,43 @@ import '../update/app_update.dart';
 import '../update/update_service.dart';
 import 'banana_toast.dart';
 
+const _updateRetryInterval = Duration(minutes: 1);
+Timer? _updateRetryTimer;
+bool _updateRetryInProgress = false;
+BuildContext? _updateDialogContext;
+String? _presentingUpdateTag;
+
 Future<void> checkForUpdatesOnStartup(BuildContext context) async {
+  _rememberUpdateDialogContext(context);
   // 避免启动页、设备初始化和更新弹窗同时抢占首帧。
   await Future<void>.delayed(const Duration(seconds: 2));
   if (!context.mounted) return;
   final info = await AppUpdateService.instance.checkForUpdate();
+  final state = AppUpdateService.instance.snapshot.value;
+  if (state.phase == AppUpdatePhase.error) {
+    _scheduleUpdateRetry();
+  } else {
+    _cancelUpdateRetry();
+  }
   if (info != null && context.mounted) {
-    await showAppUpdateDialog(context, info);
+    await _showAppUpdateDialogOnce(context, info);
   }
 }
 
 Future<void> checkForUpdatesManually(BuildContext context) async {
+  _rememberUpdateDialogContext(context);
   final info = await AppUpdateService.instance.checkForUpdate(manual: true);
+  final state = AppUpdateService.instance.snapshot.value;
+  if (state.phase == AppUpdatePhase.error) {
+    _scheduleUpdateRetry();
+  } else {
+    _cancelUpdateRetry();
+  }
   if (!context.mounted) return;
   if (info != null) {
-    await showAppUpdateDialog(context, info);
+    await _showAppUpdateDialogOnce(context, info);
     return;
   }
-  final state = AppUpdateService.instance.snapshot.value;
   BananaToast.show(
     context,
     state.message ?? '暂时无法检查更新',
@@ -32,6 +51,60 @@ Future<void> checkForUpdatesManually(BuildContext context) async {
         ? Icons.verified_rounded
         : Icons.error_outline_rounded,
   );
+}
+
+void _rememberUpdateDialogContext(BuildContext context) {
+  final current = _updateDialogContext;
+  if (current == null || !current.mounted) {
+    _updateDialogContext = context;
+  }
+}
+
+void _scheduleUpdateRetry() {
+  if (_updateRetryTimer != null || _updateRetryInProgress) return;
+  _updateRetryTimer = Timer(_updateRetryInterval, () {
+    _updateRetryTimer = null;
+    unawaited(_runUpdateRetry());
+  });
+}
+
+void _cancelUpdateRetry() {
+  _updateRetryTimer?.cancel();
+  _updateRetryTimer = null;
+}
+
+Future<void> _runUpdateRetry() async {
+  if (_updateRetryInProgress) return;
+  _updateRetryInProgress = true;
+  final info = await AppUpdateService.instance.checkForUpdate(retry: true);
+  _updateRetryInProgress = false;
+
+  final state = AppUpdateService.instance.snapshot.value;
+  if (state.phase == AppUpdatePhase.error) {
+    _scheduleUpdateRetry();
+    return;
+  }
+
+  _cancelUpdateRetry();
+  final context = _updateDialogContext;
+  if (info != null && context != null && context.mounted) {
+    await _showAppUpdateDialogOnce(context, info);
+  }
+}
+
+Future<void> _showAppUpdateDialogOnce(
+  BuildContext context,
+  AppUpdateInfo info,
+) async {
+  if (_presentingUpdateTag == info.release.tagName) return;
+  _presentingUpdateTag = info.release.tagName;
+  try {
+    await showAppUpdateDialog(context, info);
+  } finally {
+    if (_presentingUpdateTag == info.release.tagName) {
+      _presentingUpdateTag = null;
+    }
+  }
 }
 
 Future<void> showAppUpdateDialog(
@@ -79,6 +152,44 @@ Future<void> showAppUpdateDialog(
                   color: Theme.of(dialogContext).colorScheme.onSurfaceVariant,
                 ),
               ),
+              if (info.isSingleMirrorFallback) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(
+                      dialogContext,
+                    ).colorScheme.errorContainer.withValues(alpha: 0.72),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.warning_amber_rounded,
+                        color: Theme.of(
+                          dialogContext,
+                        ).colorScheme.onErrorContainer,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          '当前只有一个更新镜像返回有效版本信息，尚未经过多源交叉验证。'
+                          '安装包仍会按该来源声明的文件大小和 SHA-256 做完整性校验，'
+                          '但这不能替代多源真实性验证；'
+                          '如有疑虑，请稍后重试或前往 GitHub Releases 核对。',
+                          style: TextStyle(
+                            color: Theme.of(
+                              dialogContext,
+                            ).colorScheme.onErrorContainer,
+                            height: 1.4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               if (asset != null) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -412,7 +523,7 @@ class _AppUpdateSettingsControlState extends State<AppUpdateSettingsControl> {
         SwitchListTile.adaptive(
           contentPadding: EdgeInsets.zero,
           title: const Text('启动时自动检查更新'),
-          subtitle: const Text('最多每 12 小时检查一次；网络失败不会影响设备使用'),
+          subtitle: const Text('成功检查最多每 12 小时一次；失败后每分钟重试直到成功'),
           value: _service.automaticCheckEnabled.value,
           onChanged: _service.setAutomaticCheckEnabled,
         ),

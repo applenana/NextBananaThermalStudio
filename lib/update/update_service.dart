@@ -71,6 +71,35 @@ class AppUpdateService {
       label: '镜像 gh-proxy.cn',
       uri: githubProxyUri(Uri.parse('https://gh-proxy.cn/'), _latestReleaseApi),
     ),
+    _UpdateSource(
+      label: '镜像 gh.llkk.cc',
+      uri: githubProxyUri(Uri.parse('https://gh.llkk.cc/'), _latestReleaseApi),
+    ),
+    _UpdateSource(
+      label: '镜像 ghproxy.homeboyc.cn',
+      uri: githubProxyUri(
+        Uri.parse('https://ghproxy.homeboyc.cn/'),
+        _latestReleaseApi,
+      ),
+    ),
+    _UpdateSource(
+      label: '镜像 ghproxy.cfd',
+      uri: githubProxyUri(Uri.parse('https://ghproxy.cfd/'), _latestReleaseApi),
+    ),
+    _UpdateSource(
+      label: '镜像 github.chenc.dev',
+      uri: githubProxyUri(
+        Uri.parse('https://github.chenc.dev/'),
+        _latestReleaseApi,
+      ),
+    ),
+    _UpdateSource(
+      label: '镜像 hub.gitmirror.com',
+      uri: githubProxyUri(
+        Uri.parse('https://hub.gitmirror.com/'),
+        _latestReleaseApi,
+      ),
+    ),
   ];
   static final List<_MirrorPrefix> _downloadMirrorPrefixes = [
     _MirrorPrefix('镜像 gh-proxy.com', Uri.parse('https://gh-proxy.com/')),
@@ -78,6 +107,20 @@ class AppUpdateService {
     _MirrorPrefix('镜像 gh-proxy.cn', Uri.parse('https://gh-proxy.cn/')),
     _MirrorPrefix('镜像 ghproxy.net', Uri.parse('https://ghproxy.net/')),
     _MirrorPrefix('镜像 ghfast.top', Uri.parse('https://ghfast.top/')),
+    _MirrorPrefix('镜像 gh.llkk.cc', Uri.parse('https://gh.llkk.cc/')),
+    _MirrorPrefix(
+      '镜像 ghproxy.homeboyc.cn',
+      Uri.parse('https://ghproxy.homeboyc.cn/'),
+    ),
+    _MirrorPrefix('镜像 ghproxy.cfd', Uri.parse('https://ghproxy.cfd/')),
+    _MirrorPrefix(
+      '镜像 github.chenc.dev',
+      Uri.parse('https://github.chenc.dev/'),
+    ),
+    _MirrorPrefix(
+      '镜像 hub.gitmirror.com',
+      Uri.parse('https://hub.gitmirror.com/'),
+    ),
   ];
   static const _automaticCheckInterval = Duration(hours: 12);
   static const _androidChannel = MethodChannel(
@@ -145,23 +188,29 @@ class AppUpdateService {
   }
 
   /// 检查 GitHub 最新正式 Release。自动检查会限频并尊重“忽略此版本”，
-  /// 手动检查始终访问网络并返回最新结果。
-  Future<AppUpdateInfo?> checkForUpdate({bool manual = false}) {
+  /// 手动检查始终访问网络并返回最新结果；失败重试会绕过自动检查限频。
+  Future<AppUpdateInfo?> checkForUpdate({
+    bool manual = false,
+    bool retry = false,
+  }) {
     final active = _activeCheck;
     if (active != null) return active;
-    final future = _checkForUpdate(manual: manual);
+    final future = _checkForUpdate(manual: manual, retry: retry);
     _activeCheck = future;
     return future.whenComplete(() => _activeCheck = null);
   }
 
-  Future<AppUpdateInfo?> _checkForUpdate({required bool manual}) async {
+  Future<AppUpdateInfo?> _checkForUpdate({
+    required bool manual,
+    required bool retry,
+  }) async {
     try {
       await initialize();
-      if (!manual && !automaticCheckEnabled.value) return null;
+      if (!manual && !retry && !automaticCheckEnabled.value) return null;
 
       final now = DateTime.now();
       final lastCheckMs = _preferences?.getInt(_lastCheckKey);
-      if (!manual && lastCheckMs != null) {
+      if (!manual && !retry && lastCheckMs != null) {
         final lastCheck = DateTime.fromMillisecondsSinceEpoch(lastCheckMs);
         if (now.difference(lastCheck) < _automaticCheckInterval) return null;
       }
@@ -172,13 +221,13 @@ class AppUpdateService {
       );
       final fetched = await _fetchLatestRelease();
       final release = fetched.release;
-      await _preferences?.setInt(_lastCheckKey, now.millisecondsSinceEpoch);
 
       final installed = AppVersion.tryParse(currentVersion);
       final latest = release.version;
       if (installed == null || latest == null) {
         throw FormatException('无法比较版本：$currentVersion / ${release.tagName}');
       }
+      await _preferences?.setInt(_lastCheckKey, now.millisecondsSinceEpoch);
       if (latest.compareTo(installed) <= 0) {
         snapshot.value = AppUpdateSnapshot(
           phase: AppUpdatePhase.upToDate,
@@ -201,17 +250,20 @@ class AppUpdateService {
         platform: platform,
         asset: release.assetFor(platform),
         metadataSource: fetched.sourceLabel,
+        isSingleMirrorFallback: fetched.isSingleMirrorFallback,
       );
       snapshot.value = AppUpdateSnapshot(
         phase: AppUpdatePhase.updateAvailable,
         info: info,
-        message: '发现新版本 ${release.tagName} · ${fetched.sourceLabel}',
+        message:
+            '发现新版本 ${release.tagName} · ${fetched.sourceLabel}'
+            '${fetched.isSingleMirrorFallback ? '（未交叉验证）' : ''}',
       );
       return info;
     } catch (error) {
       snapshot.value = AppUpdateSnapshot(
         phase: AppUpdatePhase.error,
-        message: _friendlyError(error),
+        message: '${_friendlyError(error)}；将在 1 分钟后自动重试',
       );
       return null;
     }
@@ -223,7 +275,11 @@ class AppUpdateService {
         _UpdateSource(label: '官方 GitHub', uri: _latestReleaseApi),
         timeout: const Duration(seconds: 12),
       );
-      return _FetchedRelease(release, '官方 GitHub');
+      return _FetchedRelease(
+        release,
+        '官方 GitHub',
+        isSingleMirrorFallback: false,
+      );
     } catch (error) {
       debugPrint('Official GitHub update check failed: $error');
     }
@@ -239,7 +295,10 @@ class AppUpdateService {
       for (final attempt in attempts)
         if (attempt.release != null) attempt.source.label: attempt.release!,
     };
-    final consensus = selectAppReleaseConsensus(responses);
+    final consensus = selectAppReleaseConsensus(
+      responses,
+      allowSingleSourceFallback: true,
+    );
     if (consensus == null) {
       final details = attempts
           .map(
@@ -248,10 +307,29 @@ class AppUpdateService {
                 : '${attempt.source.label}=${attempt.error}',
           )
           .join('；');
-      throw UpdateSourceException('官方源不可用，更新镜像未形成一致结果：$details');
+      debugPrint('Update mirror consensus failed: $details');
+      if (responses.isEmpty) {
+        throw UpdateSourceException(
+          '官方源和 ${_metadataMirrorSources.length} 个更新镜像均未返回有效版本信息',
+        );
+      }
+      throw UpdateSourceException(
+        '官方源不可用，${responses.length} 个有效镜像响应互相冲突，已拒绝采用',
+      );
     }
     final labels = consensus.sourceLabels.join(' + ');
-    return _FetchedRelease(consensus.release, '镜像共识（$labels）');
+    if (!consensus.isCrossVerified) {
+      return _FetchedRelease(
+        consensus.release,
+        '单一镜像（$labels）',
+        isSingleMirrorFallback: true,
+      );
+    }
+    return _FetchedRelease(
+      consensus.release,
+      '镜像共识（$labels）',
+      isSingleMirrorFallback: false,
+    );
   }
 
   Future<_ReleaseAttempt> _tryFetchMirrorRelease(_UpdateSource source) async {
@@ -598,10 +676,15 @@ class _MirrorPrefix {
 }
 
 class _FetchedRelease {
-  const _FetchedRelease(this.release, this.sourceLabel);
+  const _FetchedRelease(
+    this.release,
+    this.sourceLabel, {
+    required this.isSingleMirrorFallback,
+  });
 
   final AppRelease release;
   final String sourceLabel;
+  final bool isSingleMirrorFallback;
 }
 
 class _ReleaseAttempt {

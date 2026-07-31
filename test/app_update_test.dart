@@ -154,7 +154,32 @@ void main() {
         release.verificationIdentity,
       );
       expect(consensus?.sourceLabels, ['镜像 A', '镜像 B']);
+      expect(consensus?.isCrossVerified, isTrue);
       expect(selectAppReleaseConsensus({'唯一镜像': release}), isNull);
+
+      final single = selectAppReleaseConsensus({
+        '唯一镜像': release,
+      }, allowSingleSourceFallback: true);
+      expect(single?.sourceLabels, ['唯一镜像']);
+      expect(single?.isCrossVerified, isFalse);
+
+      expect(
+        selectAppReleaseConsensus({
+          '镜像 A': release,
+          '冲突镜像': changed,
+        }, allowSingleSourceFallback: true),
+        isNull,
+      );
+
+      expect(
+        selectAppReleaseConsensus({
+          '镜像 A1': release,
+          '镜像 A2': same,
+          '镜像 B1': changed,
+          '镜像 B2': changed,
+        }, allowSingleSourceFallback: true),
+        isNull,
+      );
     });
   });
 
