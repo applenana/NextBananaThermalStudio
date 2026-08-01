@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:banana_thermal/update/app_update.dart';
+import 'package:banana_thermal/update/update_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -12,6 +13,14 @@ void main() {
       'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 
   group('AppVersion', () {
+    test('四段发布标签覆盖平台的三段内部版本', () {
+      expect(
+        resolveInstalledAppVersion('0.5.2', compiledReleaseVersion: '0.5.2.1'),
+        '0.5.2.1',
+      );
+      expect(resolveInstalledAppVersion('0.5.2'), '0.5.2');
+    });
+
     test('解析 v 前缀、构建号并比较多位版本', () {
       final current = AppVersion.tryParse('0.3.50+123')!;
       final newer = AppVersion.tryParse('v0.3.60')!;
@@ -19,6 +28,12 @@ void main() {
 
       expect(newer.compareTo(current), greaterThan(0));
       expect(current.compareTo(equivalent), 0);
+      expect(
+        AppVersion.tryParse(
+          'v0.5.2.1',
+        )!.compareTo(AppVersion.tryParse('0.5.2')!),
+        1,
+      );
     });
 
     test('正式版高于预发布版并遵循数字标识符顺序', () {

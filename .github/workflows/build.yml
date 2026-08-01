@@ -29,8 +29,9 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
-      # 打 tag 时让 APK/EXE 内部版本与 tag 对齐:
-      #   refs/tags/v1.2.3 -> --build-name=1.2.3 --build-number=<run_number>
+      # 打 tag 时让 APK/EXE 内部版本与 tag 对齐。Windows 的 Flutter 工具只接受
+      # 三段 build-name，因此 v1.2.3.4 映射为 build-name=1.2.3、build-number=4，
+      # 同时通过 dart-define 保留完整版本供应用内更新比较。
       # 非 tag 推送保留 pubspec.yaml 默认 (避免污染常规构建).
       - name: Resolve version
         id: ver
@@ -38,14 +39,20 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             NAME="${GITHUB_REF_NAME#v}"
-            if [[ ! "$NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "Windows installer requires a numeric vMAJOR.MINOR.PATCH tag" >&2
+            if [[ "$NAME" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
+              BASE="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+              HOTFIX="${BASH_REMATCH[5]:-}"
+            else
+              echo "Windows release requires a numeric vMAJOR.MINOR.PATCH[.HOTFIX] tag" >&2
               exit 1
             fi
-            NUM="$GITHUB_RUN_NUMBER"
-            echo "args=--build-name=$NAME --build-number=$NUM" >> "$GITHUB_OUTPUT"
+            NUM="${HOTFIX:-$GITHUB_RUN_NUMBER}"
+            FILE_VERSION="$NAME"
+            if [[ -z "$HOTFIX" ]]; then FILE_VERSION="$NAME.0"; fi
+            echo "args=--build-name=$BASE --build-number=$NUM --dart-define=APP_RELEASE_VERSION=$NAME" >> "$GITHUB_OUTPUT"
             echo "name=$NAME" >> "$GITHUB_OUTPUT"
-            echo "Tag build: $NAME ($NUM)"
+            echo "file_version=$FILE_VERSION" >> "$GITHUB_OUTPUT"
+            echo "Tag build: $NAME -> Flutter $BASE+$NUM / file $FILE_VERSION"
           else
             NAME="$(sed -nE 's/^version:[[:space:]]*([^+]+).*/\1/p' pubspec.yaml)"
             echo "args=" >> "$GITHUB_OUTPUT"
@@ -75,7 +82,7 @@ jobs:
           choco install nsis --no-progress --yes
           $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
           if (-not (Test-Path $makensis)) { throw "NSIS compiler not found: $makensis" }
-          & $makensis "/INPUTCHARSET" "UTF8" "/DAPP_VERSION=${{ steps.ver.outputs.name }}" "installer\windows_installer.nsi"
+          & $makensis "/INPUTCHARSET" "UTF8" "/DAPP_VERSION=${{ steps.ver.outputs.name }}" "/DAPP_FILE_VERSION=${{ steps.ver.outputs.file_version }}" "installer\windows_installer.nsi"
           if ($LASTEXITCODE -ne 0) { throw "NSIS failed with exit code $LASTEXITCODE" }
 
       - name: Upload windows artifact
@@ -140,8 +147,12 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             NAME="${GITHUB_REF_NAME#v}"
+            if [[ ! "$NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+              echo "Android release requires a numeric vMAJOR.MINOR.PATCH[.HOTFIX] tag" >&2
+              exit 1
+            fi
             NUM="$GITHUB_RUN_NUMBER"
-            echo "args=--build-name=$NAME --build-number=$NUM" >> "$GITHUB_OUTPUT"
+            echo "args=--build-name=$NAME --build-number=$NUM --dart-define=APP_RELEASE_VERSION=$NAME" >> "$GITHUB_OUTPUT"
             echo "Tag build: $NAME ($NUM)"
           else
             echo "args=" >> "$GITHUB_OUTPUT"
@@ -231,8 +242,12 @@ jobs:
         run: |
           # 此 job 只在 tag 时触发, 必然走 tag 分支.
           NAME="${GITHUB_REF_NAME#v}"
+          if [[ ! "$NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "Android release requires a numeric vMAJOR.MINOR.PATCH[.HOTFIX] tag" >&2
+            exit 1
+          fi
           NUM="$GITHUB_RUN_NUMBER"
-          echo "args=--build-name=$NAME --build-number=$NUM" >> "$GITHUB_OUTPUT"
+          echo "args=--build-name=$NAME --build-number=$NUM --dart-define=APP_RELEASE_VERSION=$NAME" >> "$GITHUB_OUTPUT"
           echo "Tag build: $NAME ($NUM)"
 
       - name: Build universal APK (release)

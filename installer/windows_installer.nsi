@@ -3,6 +3,9 @@ Unicode true
 !ifndef APP_VERSION
   !define APP_VERSION "0.0.0"
 !endif
+!ifndef APP_FILE_VERSION
+  !define APP_FILE_VERSION "${APP_VERSION}.0"
+!endif
 
 !define APP_NAME "BananaThermal Studio"
 !define APP_EXE "banana_thermal.exe"
@@ -22,7 +25,7 @@ ShowInstDetails show
 ShowUninstDetails show
 BrandingText "${APP_NAME} ${APP_VERSION}"
 
-VIProductVersion "${APP_VERSION}.0"
+VIProductVersion "${APP_FILE_VERSION}"
 VIAddVersionKey /LANG=2052 "ProductName" "${APP_NAME}"
 VIAddVersionKey /LANG=2052 "CompanyName" "${APP_PUBLISHER}"
 VIAddVersionKey /LANG=2052 "FileDescription" "${APP_NAME} 安装程序"

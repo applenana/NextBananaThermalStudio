@@ -14,6 +14,13 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'app_update.dart';
 
+String resolveInstalledAppVersion(
+  String? packageVersion, {
+  String compiledReleaseVersion = '',
+}) => compiledReleaseVersion.isNotEmpty
+    ? compiledReleaseVersion
+    : packageVersion ?? '读取中';
+
 enum AppUpdatePhase {
   idle,
   checking,
@@ -43,6 +50,10 @@ class AppUpdateSnapshot {
 
 class AppUpdateService {
   AppUpdateService._();
+
+  static const _compiledReleaseVersion = String.fromEnvironment(
+    'APP_RELEASE_VERSION',
+  );
 
   static final AppUpdateService instance = AppUpdateService._();
 
@@ -141,7 +152,10 @@ class AppUpdateService {
   HttpClient? _downloadClient;
   bool _downloadCancelled = false;
 
-  String get currentVersion => _packageInfo?.version ?? '读取中';
+  String get currentVersion => resolveInstalledAppVersion(
+    _packageInfo?.version,
+    compiledReleaseVersion: _compiledReleaseVersion,
+  );
   String get currentBuildNumber => _packageInfo?.buildNumber ?? '';
 
   AppUpdatePlatform get platform => currentUpdatePlatform(

@@ -449,24 +449,30 @@ class _CustomFirmwareFlashDialogState
 
   Future<void> _selectFile() async {
     if (_selecting || _running) return;
-    final picked = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['uf2'],
-      allowMultiple: false,
-    );
-    if (picked == null) return;
-    final path = picked.files.single.path;
-    if (path == null || path.isEmpty) {
-      setState(() => _fileError = StateError('文件选择器没有返回可读取的本地路径'));
-      return;
-    }
     setState(() {
       _selecting = true;
       _fileError = null;
-      _image = null;
-      _riskConfirmed = false;
     });
     try {
+      // Android 的 MIME 数据库通常不认识 .uf2。file_picker 若使用 custom
+      // 过滤会在拉起系统选择器之前直接报 invalid_format_type，因此 Android
+      // 选择任意文件，再由 prepareCustomFirmware 严格检查扩展名和 UF2 内容。
+      final picked = await FilePicker.platform.pickFiles(
+        type: Platform.isAndroid ? FileType.any : FileType.custom,
+        allowedExtensions: Platform.isAndroid ? null : const ['uf2'],
+        allowMultiple: false,
+      );
+      if (picked == null) return;
+      final path = picked.files.single.path;
+      if (path == null || path.isEmpty) {
+        throw StateError('文件选择器没有返回可读取的本地路径');
+      }
+      if (mounted) {
+        setState(() {
+          _image = null;
+          _riskConfirmed = false;
+        });
+      }
       final image = await _service.prepareCustomFirmware(File(path));
       if (mounted) setState(() => _image = image);
     } catch (error) {
