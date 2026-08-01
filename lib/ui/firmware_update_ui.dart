@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -15,6 +16,12 @@ String? _presentingFirmwareTag;
 
 bool get _automaticFirmwareFlashSupported =>
     Platform.isWindows || Platform.isAndroid;
+
+bool get _customFirmwareFlashSupported =>
+    Platform.isWindows ||
+    Platform.isAndroid ||
+    Platform.isMacOS ||
+    Platform.isLinux;
 
 Future<void> checkFirmwareForConnectedDevice(
   BuildContext context,
@@ -120,6 +127,14 @@ Future<void> showFirmwareManagerDialog(
       initialRelease: initialRelease,
       initialCatalog: initialCatalog,
     ),
+  );
+}
+
+Future<void> showCustomFirmwareFlashDialog(BuildContext context, AppState app) {
+  return showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => _CustomFirmwareFlashDialog(app: app),
   );
 }
 
@@ -311,6 +326,15 @@ class _FirmwareUpdateSettingsControlState
                   icon: const Icon(Icons.developer_board_rounded, size: 18),
                   label: const Text('固件管理 / 升降级'),
                 ),
+                OutlinedButton.icon(
+                  onPressed:
+                      _customFirmwareFlashSupported &&
+                          !_service.snapshot.value.busy
+                      ? () => showCustomFirmwareFlashDialog(context, app)
+                      : null,
+                  icon: const Icon(Icons.upload_file_rounded, size: 18),
+                  label: const Text('烧录自定义 UF2'),
+                ),
                 TextButton.icon(
                   onPressed: () async {
                     try {
@@ -337,6 +361,478 @@ class _FirmwareUpdateSettingsControlState
           ],
         );
       },
+    );
+  }
+}
+
+class _CustomFirmwareFlashDialog extends StatefulWidget {
+  const _CustomFirmwareFlashDialog({required this.app});
+
+  final AppState app;
+
+  @override
+  State<_CustomFirmwareFlashDialog> createState() =>
+      _CustomFirmwareFlashDialogState();
+}
+
+class _CustomFirmwareFlashDialogState
+    extends State<_CustomFirmwareFlashDialog> {
+  final _service = FirmwareUpdateService.instance;
+  Timer? _probeTimer;
+  CustomFirmwareImage? _image;
+  AndroidFirmwareUsbState? _androidUsbState;
+  List<Uf2Volume> _desktopVolumes = const [];
+  Uf2Volume? _selectedDesktopVolume;
+  Object? _fileError;
+  Object? _deviceError;
+  bool _selecting = false;
+  bool _selectingTarget = false;
+  bool _running = false;
+  bool _probing = false;
+  bool _requestingPermission = false;
+  bool _riskConfirmed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _service.markReady('请选择自定义 UF2，并完成风险确认');
+    _service.snapshot.addListener(_refresh);
+    unawaited(_probeDevices());
+    _probeTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => unawaited(_probeDevices()),
+    );
+  }
+
+  void _refresh() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _probeTimer?.cancel();
+    _service.snapshot.removeListener(_refresh);
+    super.dispose();
+  }
+
+  Future<void> _probeDevices() async {
+    if (_probing || _running) return;
+    _probing = true;
+    try {
+      if (Platform.isAndroid) {
+        final state = await AndroidUf2Flasher.inspectUsbState();
+        if (mounted) {
+          setState(() {
+            _androidUsbState = state;
+            _deviceError = null;
+          });
+        }
+      } else {
+        final volumes = await Uf2Flasher.findRp2040Volumes();
+        if (mounted) {
+          setState(() {
+            _desktopVolumes = volumes;
+            _deviceError = null;
+          });
+        }
+      }
+    } catch (error) {
+      if (mounted) setState(() => _deviceError = error);
+    } finally {
+      if (mounted) {
+        setState(() => _probing = false);
+      } else {
+        _probing = false;
+      }
+    }
+  }
+
+  Future<void> _selectFile() async {
+    if (_selecting || _running) return;
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['uf2'],
+      allowMultiple: false,
+    );
+    if (picked == null) return;
+    final path = picked.files.single.path;
+    if (path == null || path.isEmpty) {
+      setState(() => _fileError = StateError('文件选择器没有返回可读取的本地路径'));
+      return;
+    }
+    setState(() {
+      _selecting = true;
+      _fileError = null;
+      _image = null;
+      _riskConfirmed = false;
+    });
+    try {
+      final image = await _service.prepareCustomFirmware(File(path));
+      if (mounted) setState(() => _image = image);
+    } catch (error) {
+      if (mounted) setState(() => _fileError = error);
+    } finally {
+      if (mounted) setState(() => _selecting = false);
+    }
+  }
+
+  Future<void> _requestPermission() async {
+    final device = _androidUsbState?.singleBootloader;
+    if (device == null || _requestingPermission || _running) return;
+    setState(() {
+      _requestingPermission = true;
+      _deviceError = null;
+    });
+    try {
+      await AndroidUf2Flasher.requestPermission(device);
+      await _probeDevices();
+    } catch (error) {
+      if (mounted) setState(() => _deviceError = error);
+    } finally {
+      if (mounted) setState(() => _requestingPermission = false);
+    }
+  }
+
+  Future<Uf2Volume?> _selectDesktopTarget() async {
+    if (!Platform.isMacOS || _selectingTarget) return null;
+    setState(() {
+      _selectingTarget = true;
+      _deviceError = null;
+    });
+    try {
+      final path = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: '选择 RPI-RP2 磁盘根目录',
+      );
+      if (path == null || path.isEmpty) return null;
+      final volume = await Uf2Flasher.inspectRp2040Volume(Directory(path));
+      if (volume == null) {
+        throw StateError('所选目录没有有效的 RP2040 INFO_UF2.TXT，请选择 RPI-RP2 磁盘根目录');
+      }
+      if (mounted) {
+        setState(() {
+          _selectedDesktopVolume = volume;
+          _deviceError = null;
+        });
+      }
+      return volume;
+    } catch (error) {
+      if (mounted) setState(() => _deviceError = error);
+      return null;
+    } finally {
+      if (mounted) setState(() => _selectingTarget = false);
+    }
+  }
+
+  Future<void> _startFlash() async {
+    final image = _image;
+    if (image == null || !_riskAccepted || !_targetReady) return;
+    setState(() => _running = true);
+    try {
+      await _service.flashCustomFirmware(
+        app: widget.app,
+        image: image,
+        selectedDesktopVolume: Platform.isMacOS ? _selectedDesktopVolume : null,
+        selectDesktopVolume: Platform.isMacOS ? _selectDesktopTarget : null,
+      );
+      if (mounted) {
+        setState(() => _riskConfirmed = false);
+        BananaToast.show(
+          context,
+          _service.snapshot.value.message ?? '自定义 UF2 已提交',
+          icon: Icons.warning_amber_rounded,
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        BananaToast.show(
+          context,
+          _service.snapshot.value.message ?? error.toString(),
+          icon: Icons.error_outline_rounded,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _running = false);
+        unawaited(_probeDevices());
+      }
+    }
+  }
+
+  bool get _serialConnected =>
+      widget.app.status == ConnectionStatus.connected &&
+      widget.app.currentPort != null;
+
+  List<Uf2Volume> get _desktopCandidates {
+    final byPath = <String, Uf2Volume>{
+      for (final volume in _desktopVolumes) volume.root.path: volume,
+    };
+    final selected = _selectedDesktopVolume;
+    if (selected != null) byPath[selected.root.path] = selected;
+    return byPath.values.toList();
+  }
+
+  bool get _targetReady {
+    if (Platform.isAndroid) {
+      final state = _androidUsbState;
+      if (state == null || !state.usbHostSupported) return false;
+      if (state.bootloaders.length > 1) return false;
+      final bootloader = state.singleBootloader;
+      if (_serialConnected && bootloader != null) return false;
+      return _serialConnected || bootloader?.hasPermission == true;
+    }
+    final candidates = _desktopCandidates;
+    if (candidates.length > 1) return false;
+    if (_serialConnected && candidates.length == 1) return false;
+    return _serialConnected || candidates.length == 1;
+  }
+
+  bool get _riskAccepted => _riskConfirmed;
+
+  Widget _desktopDeviceCard(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final volumes = _desktopCandidates;
+    late final IconData icon;
+    late final String title;
+    late final String detail;
+    var isError = false;
+    if (_deviceError != null) {
+      icon = Icons.error_outline_rounded;
+      title = '设备检测失败';
+      detail = _deviceError.toString();
+      isError = true;
+    } else if (volumes.length > 1) {
+      icon = Icons.warning_amber_rounded;
+      title = '检测到多个 RP2040 UF2 磁盘';
+      detail = '请只保留当前准备烧录的一台设备。';
+      isError = true;
+    } else if (_serialConnected && volumes.length == 1) {
+      icon = Icons.warning_amber_rounded;
+      title = '同时检测到串口设备和 UF2 磁盘';
+      detail = '无法安全确定目标，请断开无关设备。';
+      isError = true;
+    } else if (volumes.length == 1) {
+      icon = Icons.usb_rounded;
+      title = 'RP2040 UF2 磁盘已就绪';
+      detail = volumes.single.root.path;
+    } else if (_serialConnected) {
+      icon = Icons.settings_input_component_rounded;
+      title = '串口设备已连接';
+      detail = '开始后会尝试自动切换到 BOOTSEL；不支持时请按提示手动操作。';
+    } else {
+      icon = Icons.usb_off_rounded;
+      title = '未检测到可烧录设备';
+      detail = Platform.isMacOS
+          ? '请让 RP2040 进入 RPI-RP2 模式，再通过下方按钮明确选择磁盘。'
+          : '请连接串口设备，或让 RP2040 进入 RPI-RP2 / UF2 磁盘模式。';
+    }
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: isError ? scheme.errorContainer : scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  detail,
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                ),
+                if (Platform.isMacOS) ...[
+                  const SizedBox(height: 6),
+                  TextButton.icon(
+                    onPressed: _selectingTarget || _running
+                        ? null
+                        : _selectDesktopTarget,
+                    icon: _selectingTarget
+                        ? const SizedBox.square(
+                            dimension: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.drive_file_move_rounded, size: 17),
+                    label: const Text('选择 RPI-RP2 磁盘'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: _probing || _running ? null : _probeDevices,
+            tooltip: '重新检测',
+            icon: _probing
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = _service.snapshot.value;
+    final busy = _running || state.busy;
+    final scheme = Theme.of(context).colorScheme;
+    return AlertDialog(
+      icon: Icon(Icons.warning_amber_rounded, color: scheme.error),
+      title: const Text('烧录自定义 UF2'),
+      content: SizedBox(
+        width: 700,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const _WarningBox(
+                text:
+                    '高风险操作：自定义 UF2 未经过 BananaThermal 官方来源、型号、Flash 容量、'
+                    '分区布局或功能兼容性验证。错误固件可能导致设备无法启动、串口消失、参数或照片丢失。',
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: busy || _selecting ? null : _selectFile,
+                icon: _selecting
+                    ? const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.folder_open_rounded),
+                label: Text(_image == null ? '选择 UF2 文件' : '重新选择 UF2 文件'),
+              ),
+              if (_fileError != null) ...[
+                const SizedBox(height: 8),
+                _WarningBox(text: '文件校验失败：$_fileError'),
+              ],
+              if (_image case final image?) ...[
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        image.originalName,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${(image.bytes / 1024 / 1024).toStringAsFixed(2)} MiB · '
+                        '${image.blockCount} 个 UF2 块 · RP2040 基础结构校验通过',
+                        style: TextStyle(
+                          color: scheme.onSurfaceVariant,
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      SelectableText(
+                        'SHA-256  ${image.sha256}',
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '结构校验通过只说明文件是连续的 RP2040 主 Flash UF2，不代表它适用于当前热成像设备。',
+                        style: TextStyle(color: scheme.error, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              if (Platform.isAndroid)
+                _AndroidFirmwareConnectionCard(
+                  serialConnected: _serialConnected,
+                  usbState: _androidUsbState,
+                  error: _deviceError,
+                  probing: _probing,
+                  requestingPermission: _requestingPermission,
+                  busy: busy,
+                  onRefresh: _probeDevices,
+                  onRequestPermission: _requestPermission,
+                  identityWarning:
+                      'BOOTSEL 只能确认 RP2040 芯片，不能确认热成像型号；兼容性完全由用户自行负责。',
+                )
+              else
+                _desktopDeviceCard(context),
+              const SizedBox(height: 12),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _riskConfirmed,
+                onChanged: busy
+                    ? null
+                    : (value) => setState(() => _riskConfirmed = value == true),
+                title: const Text('我已阅读上述风险，确认固件兼容性由我负责，并已备份重要数据'),
+                subtitle: const Text('错误固件可能导致设备无法启动、串口消失或设备数据丢失'),
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+              if (state.busy ||
+                  state.phase == FirmwareUpdatePhase.completed ||
+                  state.phase == FirmwareUpdatePhase.error) ...[
+                const SizedBox(height: 14),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: state.phase == FirmwareUpdatePhase.error
+                        ? scheme.errorContainer
+                        : scheme.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(state.message ?? '正在处理自定义固件…'),
+                      if (state.progress != null || state.busy) ...[
+                        const SizedBox(height: 8),
+                        LinearProgressIndicator(value: state.progress),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: busy ? null : () => Navigator.pop(context),
+          child: const Text('关闭'),
+        ),
+        FilledButton.icon(
+          onPressed: !busy && _image != null && _riskAccepted && _targetReady
+              ? _startFlash
+              : null,
+          style: FilledButton.styleFrom(
+            backgroundColor: scheme.error,
+            foregroundColor: scheme.onError,
+          ),
+          icon: const Icon(Icons.warning_amber_rounded),
+          label: const Text('承担风险并烧录'),
+        ),
+      ],
     );
   }
 }
@@ -877,6 +1373,7 @@ class _AndroidFirmwareConnectionCard extends StatelessWidget {
     required this.busy,
     required this.onRefresh,
     required this.onRequestPermission,
+    this.identityWarning = 'USB 磁盘本身不能证明热成像型号；烧录仍以此前串口确认的设备身份和固件变体为准。',
   });
 
   final bool serialConnected;
@@ -887,6 +1384,7 @@ class _AndroidFirmwareConnectionCard extends StatelessWidget {
   final bool busy;
   final Future<void> Function() onRefresh;
   final Future<void> Function() onRequestPermission;
+  final String identityWarning;
 
   @override
   Widget build(BuildContext context) {
@@ -982,8 +1480,7 @@ class _AndroidFirmwareConnectionCard extends StatelessWidget {
           if (bootloader != null) ...[
             const SizedBox(height: 8),
             Text(
-              'BOOTSEL ${bootloader.id}。USB 磁盘本身不能证明热成像型号；'
-              '烧录仍以此前串口确认的设备身份和固件变体为准。',
+              'BOOTSEL ${bootloader.id}。$identityWarning',
               style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 11),
             ),
           ],

@@ -89,6 +89,24 @@ class FirmwareRecoverySession {
   final DateTime createdAt;
 }
 
+class CustomFirmwareImage {
+  const CustomFirmwareImage({
+    required this.file,
+    required this.originalName,
+    required this.destinationName,
+    required this.bytes,
+    required this.blockCount,
+    required this.sha256,
+  });
+
+  final File file;
+  final String originalName;
+  final String destinationName;
+  final int bytes;
+  final int blockCount;
+  final String sha256;
+}
+
 class FirmwareUpdateService {
   FirmwareUpdateService._();
 
@@ -545,6 +563,252 @@ class FirmwareUpdateService {
     }
   }
 
+  Future<CustomFirmwareImage> prepareCustomFirmware(File source) async {
+    final originalName = p.basename(source.path);
+    if (p.extension(originalName).toLowerCase() != '.uf2') {
+      throw const FormatException('请选择扩展名为 .uf2 的固件文件');
+    }
+    if (!await source.exists()) {
+      throw FileSystemException('选择的 UF2 文件不存在', source.path);
+    }
+    final blockCount = await validateRp2040Uf2File(source);
+    final bytes = await source.length();
+    final digest = (await sha256.bind(source.openRead()).first).toString();
+
+    // 文件选择器在 Android/macOS 上可能只临时授予外部文件访问权。立即复制到
+    // 应用缓存，既保证后续烧录仍可读取，也满足 Android 原生层只接受私有路径
+    // 的安全约束。
+    final temporary = await getTemporaryDirectory();
+    final cacheDirectory = Directory(p.join(temporary.path, 'custom-firmware'));
+    await cacheDirectory.create(recursive: true);
+    final destinationName = 'CUSTOM-${digest.substring(0, 12)}.UF2';
+    final cached = File(p.join(cacheDirectory.path, destinationName));
+    if (!await _fileMatches(cached, bytes, digest)) {
+      final partial = File('${cached.path}.partial');
+      try {
+        if (await partial.exists()) await partial.delete();
+        await source.copy(partial.path);
+        if (!await _fileMatches(partial, bytes, digest)) {
+          throw const FormatException('复制到应用缓存后的 UF2 校验失败');
+        }
+        if (await cached.exists()) await cached.delete();
+        await partial.rename(cached.path);
+      } finally {
+        if (await partial.exists()) await partial.delete();
+      }
+    }
+    final cachedBlockCount = await validateRp2040Uf2File(cached);
+    if (cachedBlockCount != blockCount) {
+      throw const FormatException('复制到应用缓存后的 UF2 块数发生变化');
+    }
+    return CustomFirmwareImage(
+      file: cached,
+      originalName: originalName,
+      destinationName: destinationName,
+      bytes: bytes,
+      blockCount: blockCount,
+      sha256: digest,
+    );
+  }
+
+  Future<void> flashCustomFirmware({
+    required AppState app,
+    required CustomFirmwareImage image,
+    Uf2Volume? selectedDesktopVolume,
+    Future<Uf2Volume?> Function()? selectDesktopVolume,
+  }) async {
+    final desktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+    if (!Platform.isAndroid && !desktop) {
+      throw UnsupportedError('当前构建不支持直接写入 RP2040 UF2');
+    }
+    if (snapshot.value.busy) throw StateError('已有固件烧录任务正在进行');
+
+    try {
+      final blockCount = await validateRp2040Uf2File(image.file);
+      if (blockCount != image.blockCount ||
+          !await _fileMatches(image.file, image.bytes, image.sha256)) {
+        throw const FormatException('自定义 UF2 在选择后发生变化，已拒绝烧录');
+      }
+      final port = app.currentPort;
+      final serialConnected =
+          port != null && app.status == ConnectionStatus.connected;
+
+      if (Platform.isAndroid) {
+        final usbState = await AndroidUf2Flasher.inspectUsbState();
+        if (!usbState.usbHostSupported) {
+          throw StateError('此 Android 设备不支持 USB Host / OTG');
+        }
+        if (usbState.bootloaders.length > 1) {
+          throw StateError('检测到多个 RP2040 USB 磁盘，请只保留待烧录设备');
+        }
+        final bootloader = usbState.singleBootloader;
+        if (bootloader != null && serialConnected) {
+          throw StateError('同时检测到串口设备和 RP2040 USB 磁盘，无法安全确定烧录目标');
+        }
+        if (bootloader == null && !serialConnected) {
+          throw StateError('没有检测到串口设备或 RP2040 USB 磁盘');
+        }
+        if (bootloader != null && !bootloader.hasPermission) {
+          snapshot.value = const FirmwareUpdateSnapshot(
+            phase: FirmwareUpdatePhase.waitingForBootloader,
+            message: '自定义 UF2 已校验，等待 RP2040 USB 系统授权…',
+          );
+          await AndroidUf2Flasher.requestPermission(bootloader);
+        } else if (bootloader == null) {
+          snapshot.value = const FirmwareUpdateSnapshot(
+            phase: FirmwareUpdatePhase.waitingForBootloader,
+            message: '正在让串口设备进入 RP2040 Bootloader…',
+          );
+          await app.disconnect();
+          final touched = await SerialService.touch1200Bootloader(port!);
+          snapshot.value = FirmwareUpdateSnapshot(
+            phase: FirmwareUpdatePhase.waitingForBootloader,
+            message: touched
+                ? '串口切换命令已发送，等待 RP2040 USB 磁盘…'
+                : '自动切换未确认；请手动使用 BOOTSEL / RESET 进入 USB 磁盘模式',
+          );
+        }
+
+        await AndroidUf2Flasher.flashUf2(
+          firmware: image.file,
+          expectedSha256: image.sha256,
+          destinationName: image.destinationName,
+          timeout: const Duration(seconds: 60),
+          onProgress: (progress, message) {
+            final waiting =
+                message.startsWith('等待') ||
+                message.contains('授权') ||
+                message.contains('结构已校验');
+            snapshot.value = FirmwareUpdateSnapshot(
+              phase: waiting
+                  ? FirmwareUpdatePhase.waitingForBootloader
+                  : FirmwareUpdatePhase.flashing,
+              progress: progress,
+              message: message,
+            );
+          },
+        );
+      } else {
+        final existingByPath = <String, Uf2Volume>{};
+        for (final volume in await Uf2Flasher.findRp2040Volumes()) {
+          existingByPath[p.normalize(volume.root.path)] = volume;
+        }
+        if (selectedDesktopVolume != null) {
+          final refreshed = await Uf2Flasher.inspectRp2040Volume(
+            selectedDesktopVolume.root,
+          );
+          if (refreshed == null) {
+            throw StateError('先前选择的目录已不是可访问的 RP2040 UF2 磁盘，请重新选择');
+          }
+          existingByPath[p.normalize(refreshed.root.path)] = refreshed;
+        }
+        final existing = existingByPath.values.toList();
+        if (existing.length > 1) {
+          throw StateError('检测到多个 RP2040 UF2 磁盘，请只保留待烧录设备');
+        }
+        if (existing.isNotEmpty && serialConnected) {
+          throw StateError('同时检测到串口设备和 RP2040 UF2 磁盘，无法安全确定烧录目标');
+        }
+        if (existing.isEmpty && !serialConnected) {
+          throw StateError('没有检测到串口设备或 RP2040 UF2 磁盘');
+        }
+
+        late final Uf2Volume volume;
+        if (existing.length == 1) {
+          volume = existing.single;
+        } else {
+          snapshot.value = const FirmwareUpdateSnapshot(
+            phase: FirmwareUpdatePhase.waitingForBootloader,
+            message: '正在让串口设备进入 RP2040 Bootloader…',
+          );
+          await app.disconnect();
+          final touched = await SerialService.touch1200Bootloader(port!);
+          if (!touched) {
+            snapshot.value = const FirmwareUpdateSnapshot(
+              phase: FirmwareUpdatePhase.waitingForBootloader,
+              message: '自动切换未确认；请手动使用 BOOTSEL / RESET 进入 UF2 磁盘模式',
+            );
+          }
+          if (Platform.isMacOS && selectDesktopVolume != null) {
+            snapshot.value = const FirmwareUpdateSnapshot(
+              phase: FirmwareUpdatePhase.waitingForBootloader,
+              message: '请在系统窗口中选择刚出现的 RPI-RP2 磁盘根目录',
+            );
+            final selected = await selectDesktopVolume();
+            if (selected == null) {
+              throw StateError('未选择 RP2040 UF2 磁盘，已取消烧录');
+            }
+            final refreshed = await Uf2Flasher.inspectRp2040Volume(
+              selected.root,
+            );
+            if (refreshed == null) {
+              throw StateError('所选目录不是可访问的 RP2040 UF2 磁盘根目录');
+            }
+            volume = refreshed;
+          } else {
+            volume = await Uf2Flasher.waitForSingleRp2040Volume(
+              baseline: const <String>{},
+              timeout: const Duration(seconds: 60),
+              onStillWaiting: () {
+                snapshot.value = const FirmwareUpdateSnapshot(
+                  phase: FirmwareUpdatePhase.waitingForBootloader,
+                  message: '等待 RP2040 UF2 磁盘；检测到后会继续写入自定义固件',
+                );
+              },
+            );
+          }
+        }
+
+        snapshot.value = FirmwareUpdateSnapshot(
+          phase: FirmwareUpdatePhase.flashing,
+          progress: 0,
+          message: '已验证 ${volume.root.path}，正在写入 ${image.originalName}',
+        );
+        await Uf2Flasher.copyFirmware(
+          image.file,
+          volume,
+          destinationName: image.destinationName,
+          onProgress: (progress) {
+            snapshot.value = FirmwareUpdateSnapshot(
+              phase: FirmwareUpdatePhase.flashing,
+              progress: progress,
+              message: '正在写入自定义 UF2 · ${(progress * 100).toStringAsFixed(0)}%',
+            );
+          },
+        );
+        await Uf2Flasher.waitForVolumeToDisappear(
+          volume,
+          timeout: const Duration(seconds: 12),
+        );
+      }
+
+      snapshot.value = const FirmwareUpdateSnapshot(
+        phase: FirmwareUpdatePhase.reconnecting,
+        message: '自定义 UF2 已完整提交，正在尝试重新识别设备…',
+      );
+      await Future<void>.delayed(const Duration(seconds: 2));
+      var reconnected = false;
+      try {
+        reconnected = await app.autoSearchAndConnect();
+      } catch (_) {
+        reconnected = false;
+      }
+      snapshot.value = FirmwareUpdateSnapshot(
+        phase: FirmwareUpdatePhase.completed,
+        progress: 1,
+        message: reconnected
+            ? '自定义 UF2 已写入，设备已重新识别；无法验证第三方固件版本或功能'
+            : '自定义 UF2 已提交；设备未被自动识别，请手动检查固件功能和 USB 状态',
+      );
+    } catch (error) {
+      snapshot.value = FirmwareUpdateSnapshot(
+        phase: FirmwareUpdatePhase.error,
+        message: _friendlyError(error),
+      );
+      rethrow;
+    }
+  }
+
   void cancelDownload() {
     if (snapshot.value.phase != FirmwareUpdatePhase.downloading) return;
     _cancelDownload = true;
@@ -934,28 +1198,86 @@ class Uf2Flasher {
   }
 
   static Future<List<Uf2Volume>> findRp2040Volumes() async {
-    if (!Platform.isWindows) return const [];
     final volumes = <Uf2Volume>[];
-    for (var code = 'A'.codeUnitAt(0); code <= 'Z'.codeUnitAt(0); code++) {
-      final root = Directory('${String.fromCharCode(code)}:\\');
-      final infoFile = File(p.join(root.path, 'INFO_UF2.TXT'));
-      try {
-        if (!await infoFile.exists()) continue;
-        final handle = await infoFile.open();
-        late final Uint8List bytes;
-        try {
-          final length = (await handle.length()).clamp(0, 64 * 1024).toInt();
-          bytes = await handle.read(length);
-        } finally {
-          await handle.close();
-        }
-        final info = utf8.decode(bytes, allowMalformed: true);
-        if (isRp2040Info(info)) volumes.add(Uf2Volume(root: root, info: info));
-      } catch (_) {
-        // 未就绪、受保护或正在弹出的盘符直接跳过。
-      }
+    final roots = await _candidateVolumeRoots();
+    for (final root in roots) {
+      final volume = await inspectRp2040Volume(root);
+      if (volume != null) volumes.add(volume);
     }
     return volumes;
+  }
+
+  /// 对用户明确选择的目录执行与自动扫描完全相同的目标校验。
+  ///
+  /// macOS App Sandbox 需要用户通过系统目录选择器授予磁盘访问权；调用方可用
+  /// 此方法确认选中的确是 RP2040 UF2 Bootloader 根目录，而不是任意可写目录。
+  static Future<Uf2Volume?> inspectRp2040Volume(Directory root) async {
+    final infoFile = File(p.join(root.path, 'INFO_UF2.TXT'));
+    try {
+      if (!await infoFile.exists()) return null;
+      final handle = await infoFile.open();
+      late final Uint8List bytes;
+      try {
+        final length = (await handle.length()).clamp(0, 64 * 1024).toInt();
+        bytes = await handle.read(length);
+      } finally {
+        await handle.close();
+      }
+      final info = utf8.decode(bytes, allowMalformed: true);
+      return isRp2040Info(info) ? Uf2Volume(root: root, info: info) : null;
+    } catch (_) {
+      // 未就绪、受保护或正在弹出的盘符视为无效目标。
+      return null;
+    }
+  }
+
+  static Future<List<Directory>> _candidateVolumeRoots() async {
+    if (Platform.isWindows) {
+      return [
+        for (var code = 'A'.codeUnitAt(0); code <= 'Z'.codeUnitAt(0); code++)
+          Directory('${String.fromCharCode(code)}:\\'),
+      ];
+    }
+    if (Platform.isMacOS) {
+      return _childDirectories(Directory('/Volumes'), depth: 1);
+    }
+    if (Platform.isLinux) {
+      final roots = <Directory>[];
+      for (final base in const ['/media', '/run/media', '/mnt']) {
+        roots.addAll(await _childDirectories(Directory(base), depth: 2));
+      }
+      final seen = <String>{};
+      return [
+        for (final root in roots)
+          if (seen.add(p.normalize(root.path))) root,
+      ];
+    }
+    return const <Directory>[];
+  }
+
+  static Future<List<Directory>> _childDirectories(
+    Directory base, {
+    required int depth,
+  }) async {
+    if (depth <= 0) return const <Directory>[];
+    try {
+      if (!await base.exists()) return const <Directory>[];
+      final result = <Directory>[];
+      var count = 0;
+      await for (final entity in base.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        result.add(entity);
+        if (depth > 1) {
+          result.addAll(await _childDirectories(entity, depth: depth - 1));
+        }
+        // Mount roots should remain small. Bound enumeration so an unusual /mnt
+        // hierarchy cannot stall the firmware page.
+        if (++count >= 128) break;
+      }
+      return result;
+    } catch (_) {
+      return const <Directory>[];
+    }
   }
 
   static Future<Uf2Volume> waitForSingleRp2040Volume({

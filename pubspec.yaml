@@ -1,7 +1,7 @@
 name: banana_thermal
 description: "BananaThermal Studio - 跨平台热成像 + 可见光双光上位机 (Flutter 桌面版)"
 publish_to: 'none'
-version: 0.5.0+105
+version: 0.5.2+107
 
 environment:
   sdk: ^3.11.5

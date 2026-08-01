@@ -26,6 +26,8 @@
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>用于识别并写入用户确认的 RP2040 RPI-RP2 固件磁盘。</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

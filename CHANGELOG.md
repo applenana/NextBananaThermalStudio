@@ -4,6 +4,16 @@
 
 ## 未发布
 
+## [v0.5.2] - 2026-08-01
+
+### 新增 (Added)
+
+- 新增自定义 UF2 烧录入口：Windows、Android、macOS 与 Linux 均可选择本地 RP2040 `.uf2` 文件；Windows / Android 保持自动切换与写入主流程，macOS / Linux 支持已挂载 UF2 磁盘，macOS 还可通过系统目录选择器明确授权目标磁盘。
+- 自定义固件在写入前后执行 RP2040 family ID、连续块序、主 Flash 地址范围、完整大小和 SHA-256 双重校验；界面以高风险入口隔离，用户勾选风险知情确认后才能开始。
+- 新增用户选择 RP2040 磁盘与完整 UF2 文件校验测试，防止把普通目录或截断文件当作烧录目标。
+
+## [v0.5.1] - 2026-08-01
+
 ### 新增 (Added)
 
 - Android 固件管理现支持 RP2040 全自动烧录：对已确认的双光设备执行 1200-baud Bootloader 重启，请求重新枚举后的 USB 权限，通过 USB Mass Storage Bulk-Only Transport / SCSI 直接写入 UF2，并在重启后回读目标版本。

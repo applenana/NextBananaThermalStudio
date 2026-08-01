@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:banana_thermal/firmware/android_uf2_flasher.dart';
@@ -213,6 +214,25 @@ void main() {
     );
   });
 
+  test('用户选择的目录必须通过 RP2040 UF2 磁盘校验', () async {
+    final directory = await Directory.systemTemp.createTemp('uf2-volume-test-');
+    try {
+      expect(await Uf2Flasher.inspectRp2040Volume(directory), isNull);
+      await File(
+        '${directory.path}${Platform.pathSeparator}INFO_UF2.TXT',
+      ).writeAsString(
+        'UF2 Bootloader v3.0\nModel: Raspberry Pi RP2\n'
+        'Board-ID: RPI-RP2\n',
+      );
+
+      final volume = await Uf2Flasher.inspectRp2040Volume(directory);
+      expect(volume, isNotNull);
+      expect(volume!.root.path, directory.path);
+    } finally {
+      await directory.delete(recursive: true);
+    }
+  });
+
   group('RP2040 UF2 结构校验', () {
     test('接受连续、带 RP2040 family ID 且只写主 Flash 的块', () {
       validateRp2040Uf2Block(_uf2Block(0, 2), index: 0, blockCount: 2);
@@ -248,6 +268,28 @@ void main() {
         ),
         throwsFormatException,
       );
+    });
+
+    test('完整文件校验接受连续块并拒绝截断文件', () async {
+      final directory = await Directory.systemTemp.createTemp('uf2-file-test-');
+      try {
+        final valid = File(
+          '${directory.path}${Platform.pathSeparator}valid.uf2',
+        );
+        await valid.writeAsBytes([..._uf2Block(0, 2), ..._uf2Block(1, 2)]);
+        expect(await validateRp2040Uf2File(valid), 2);
+
+        final truncated = File(
+          '${directory.path}${Platform.pathSeparator}truncated.uf2',
+        );
+        await truncated.writeAsBytes(_uf2Block(0, 1).sublist(0, 511));
+        await expectLater(
+          validateRp2040Uf2File(truncated),
+          throwsFormatException,
+        );
+      } finally {
+        await directory.delete(recursive: true);
+      }
     });
   });
 }
