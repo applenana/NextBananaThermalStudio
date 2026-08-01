@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../app_state.dart';
 import '../serial/serial_service.dart';
 import '../update/app_update.dart' show AppVersion, githubProxyUri;
+import 'android_uf2_flasher.dart';
 import 'firmware_update.dart';
 
 enum FirmwareUpdatePhase {
@@ -74,6 +75,20 @@ class FirmwareUpdateNotice {
   final FirmwareCatalog catalog;
 }
 
+class FirmwareRecoverySession {
+  const FirmwareRecoverySession({
+    required this.identity,
+    required this.targetTag,
+    required this.variant,
+    required this.createdAt,
+  });
+
+  final FirmwareDeviceIdentity identity;
+  final String targetTag;
+  final FirmwareVariant variant;
+  final DateTime createdAt;
+}
+
 class FirmwareUpdateService {
   FirmwareUpdateService._();
 
@@ -88,6 +103,8 @@ class FirmwareUpdateService {
   );
   static const _autoCheckKey = 'firmware_update_auto_check';
   static const _deviceVariantsKey = 'firmware_update_device_variants';
+  static const _recoverySessionKey = 'firmware_update_recovery_session';
+  static const _recoverySessionLifetime = Duration(hours: 24);
 
   static final List<_FirmwareSource> _metadataMirrors = [
     for (final base in const [
@@ -123,6 +140,9 @@ class FirmwareUpdateService {
     const FirmwareUpdateSnapshot(),
   );
   final ValueNotifier<bool> automaticCheckEnabled = ValueNotifier(true);
+  final ValueNotifier<FirmwareRecoverySession?> recoverySession = ValueNotifier(
+    null,
+  );
 
   SharedPreferences? _preferences;
   Map<String, FirmwareVariant> _rememberedVariants = {};
@@ -153,6 +173,46 @@ class FirmwareUpdateService {
         _rememberedVariants = {};
       }
     }
+    final recoveryEncoded = _preferences?.getString(_recoverySessionKey);
+    if (recoveryEncoded != null) {
+      try {
+        final decoded = jsonDecode(recoveryEncoded);
+        if (decoded is Map) {
+          final createdAt = DateTime.tryParse(
+            decoded['createdAt']?.toString() ?? '',
+          );
+          final variant = FirmwareVariant.fromEnvironment(decoded['variant']);
+          final targetTag = decoded['targetTag']?.toString();
+          final model = decoded['model']?.toString();
+          final now = DateTime.now();
+          if (createdAt != null &&
+              variant != null &&
+              targetTag != null &&
+              targetTag.isNotEmpty &&
+              model == bananaDualLightModel &&
+              !createdAt.isAfter(now.add(const Duration(minutes: 5))) &&
+              now.difference(createdAt) <= _recoverySessionLifetime) {
+            recoverySession.value = FirmwareRecoverySession(
+              identity: FirmwareDeviceIdentity(
+                family: FirmwareDeviceFamily.bananaDualLight,
+                model: model,
+                currentVersion: decoded['currentVersion']?.toString(),
+                serialNumber: decoded['serialNumber']?.toString(),
+                reportedVariant: variant,
+                reason: '已恢复上次经过串口确认的双光热成像烧录会话',
+              ),
+              targetTag: targetTag,
+              variant: variant,
+              createdAt: createdAt,
+            );
+          } else {
+            await _preferences?.remove(_recoverySessionKey);
+          }
+        }
+      } catch (_) {
+        await _preferences?.remove(_recoverySessionKey);
+      }
+    }
     _initialized = true;
   }
 
@@ -181,12 +241,58 @@ class FirmwareUpdateService {
     );
   }
 
+  Future<void> rememberRecoverySession(
+    FirmwareDeviceIdentity identity,
+    FirmwareRelease release,
+    FirmwareVariant variant,
+  ) async {
+    await initialize();
+    if (!identity.canFlash || identity.model != bananaDualLightModel) {
+      throw StateError('只有经过串口确认的双光热成像可以建立恢复烧录会话');
+    }
+    final session = FirmwareRecoverySession(
+      identity: identity,
+      targetTag: release.tagName,
+      variant: variant,
+      createdAt: DateTime.now(),
+    );
+    recoverySession.value = session;
+    await _preferences?.setString(
+      _recoverySessionKey,
+      jsonEncode({
+        'model': identity.model,
+        'currentVersion': identity.currentVersion,
+        'serialNumber': identity.serialNumber,
+        'targetTag': release.tagName,
+        'variant': variant.environment,
+        'createdAt': session.createdAt.toIso8601String(),
+      }),
+    );
+  }
+
+  Future<void> clearRecoverySession() async {
+    await initialize();
+    recoverySession.value = null;
+    await _preferences?.remove(_recoverySessionKey);
+  }
+
+  void markReady(String message) {
+    if (snapshot.value.busy) return;
+    snapshot.value = FirmwareUpdateSnapshot(
+      phase: FirmwareUpdatePhase.ready,
+      message: message,
+      target: snapshot.value.target,
+    );
+  }
+
   Future<void> resetPreferences() async {
     await initialize();
     automaticCheckEnabled.value = true;
     _rememberedVariants.clear();
+    recoverySession.value = null;
     await _preferences?.remove(_autoCheckKey);
     await _preferences?.remove(_deviceVariantsKey);
+    await _preferences?.remove(_recoverySessionKey);
   }
 
   Future<FirmwareCatalog> loadCatalog({bool force = false}) {
@@ -267,8 +373,8 @@ class FirmwareUpdateService {
     required FirmwareRelease release,
     required FirmwareVariant variant,
   }) async {
-    if (!Platform.isWindows) {
-      throw UnsupportedError('自动烧录目前仅支持 Windows');
+    if (!Platform.isWindows && !Platform.isAndroid) {
+      throw UnsupportedError('自动烧录目前支持 Windows 和 Android');
     }
     if (!identity.canFlash) throw StateError(identity.reason);
     if (snapshot.value.busy) throw StateError('已有固件烧录任务正在进行');
@@ -276,66 +382,134 @@ class FirmwareUpdateService {
     _cancelDownload = false;
     try {
       final bundle = await _downloadBundle(release, variant);
-      await rememberVariant(identity, variant);
+      await validateRp2040Uf2File(bundle.file);
       final port = app.currentPort;
-      if (port == null || app.status != ConnectionStatus.connected) {
-        throw StateError('设备已断开，请重新连接后再烧录');
-      }
 
-      final baseline = await Uf2Flasher.findRp2040Volumes();
-      snapshot.value = FirmwareUpdateSnapshot(
-        phase: FirmwareUpdatePhase.waitingForBootloader,
-        target: release,
-        message: '正在让设备进入 RP2040 Bootloader…',
-      );
-      await app.disconnect();
-      final touched = await SerialService.touch1200Bootloader(port);
-      if (!touched) {
-        debugPrint('1200-baud bootloader touch failed for $port');
-      }
+      if (Platform.isAndroid) {
+        final usbState = await AndroidUf2Flasher.inspectUsbState();
+        if (!usbState.usbHostSupported) {
+          throw StateError('此 Android 设备不支持 USB Host / OTG');
+        }
+        if (usbState.bootloaders.length > 1) {
+          throw StateError('检测到多个 RP2040 USB 磁盘，请只保留待烧录设备');
+        }
+        final bootloader = usbState.singleBootloader;
+        final serialConnected =
+            port != null && app.status == ConnectionStatus.connected;
+        if (bootloader != null && serialConnected) {
+          throw StateError('同时检测到串口设备和 RP2040 USB 磁盘，无法确认目标；请只连接一台待烧录设备');
+        }
+        if (bootloader == null && !serialConnected) {
+          throw StateError('没有检测到串口设备或 RP2040 USB 磁盘');
+        }
 
-      final volume = await Uf2Flasher.waitForSingleRp2040Volume(
-        baseline: baseline.map((item) => item.root.path).toSet(),
-        timeout: const Duration(seconds: 50),
-        onStillWaiting: () {
+        await rememberRecoverySession(identity, release, variant);
+        if (bootloader != null) {
           snapshot.value = FirmwareUpdateSnapshot(
             phase: FirmwareUpdatePhase.waitingForBootloader,
             target: release,
-            message:
-                '等待 RP2040 磁盘：按住按钮 A / BOOTSEL，短按 RESET，'
-                '看到磁盘后松开按钮 A；程序会继续自动烧录',
+            message: bootloader.hasPermission
+                ? '已检测到并授权 RP2040 USB 磁盘，正在验证磁盘结构…'
+                : '已检测到 RP2040 USB 磁盘，等待 USB 系统授权…',
           );
-        },
-      );
-
-      snapshot.value = FirmwareUpdateSnapshot(
-        phase: FirmwareUpdatePhase.flashing,
-        progress: 0,
-        target: release,
-        message: '已识别 ${volume.root.path}，正在写入 ${bundle.artifact.file}',
-      );
-      await Uf2Flasher.copyFirmware(
-        bundle.file,
-        volume,
-        destinationName: bundle.artifact.file,
-        onProgress: (progress) {
+          if (!bootloader.hasPermission) {
+            await AndroidUf2Flasher.requestPermission(bootloader);
+          }
+        } else {
           snapshot.value = FirmwareUpdateSnapshot(
-            phase: FirmwareUpdatePhase.flashing,
-            progress: progress,
+            phase: FirmwareUpdatePhase.waitingForBootloader,
             target: release,
-            message: '正在烧录 ${release.tagName} · ${variant.label}',
+            message: '已检测到串口设备，正在切换到 RP2040 Bootloader…',
           );
-        },
-      );
+          await app.disconnect();
+          final touched = await SerialService.touch1200Bootloader(port!);
+          snapshot.value = FirmwareUpdateSnapshot(
+            phase: FirmwareUpdatePhase.waitingForBootloader,
+            target: release,
+            message: touched
+                ? '串口切换命令已发送，等待 RP2040 USB 磁盘…'
+                : '自动切换未确认；请按住按钮 A / BOOTSEL，短按 RESET 后松开按钮 A',
+          );
+        }
+
+        await AndroidUf2Flasher.flashUf2(
+          firmware: bundle.file,
+          expectedSha256: bundle.artifact.sha256,
+          destinationName: bundle.artifact.file,
+          timeout: const Duration(seconds: 50),
+          onProgress: (progress, message) {
+            final phase =
+                message.startsWith('等待') ||
+                    message.contains('授权') ||
+                    message.contains('结构已校验')
+                ? FirmwareUpdatePhase.waitingForBootloader
+                : FirmwareUpdatePhase.flashing;
+            snapshot.value = FirmwareUpdateSnapshot(
+              phase: phase,
+              progress: progress,
+              target: release,
+              message: message,
+            );
+          },
+        );
+      } else {
+        if (port == null || app.status != ConnectionStatus.connected) {
+          throw StateError('设备已断开，请重新连接后再烧录');
+        }
+        final windowsBaseline = await Uf2Flasher.findRp2040Volumes();
+        snapshot.value = FirmwareUpdateSnapshot(
+          phase: FirmwareUpdatePhase.waitingForBootloader,
+          target: release,
+          message: '正在让设备进入 RP2040 Bootloader…',
+        );
+        await app.disconnect();
+        final touched = await SerialService.touch1200Bootloader(port);
+        if (!touched) {
+          debugPrint('1200-baud bootloader touch failed for $port');
+        }
+        final volume = await Uf2Flasher.waitForSingleRp2040Volume(
+          baseline: windowsBaseline.map((item) => item.root.path).toSet(),
+          timeout: const Duration(seconds: 50),
+          onStillWaiting: () {
+            snapshot.value = FirmwareUpdateSnapshot(
+              phase: FirmwareUpdatePhase.waitingForBootloader,
+              target: release,
+              message:
+                  '等待 RP2040 磁盘：按住按钮 A / BOOTSEL，短按 RESET，'
+                  '看到磁盘后松开按钮 A；程序会继续自动烧录',
+            );
+          },
+        );
+
+        snapshot.value = FirmwareUpdateSnapshot(
+          phase: FirmwareUpdatePhase.flashing,
+          progress: 0,
+          target: release,
+          message: '已识别 ${volume.root.path}，正在写入 ${bundle.artifact.file}',
+        );
+        await Uf2Flasher.copyFirmware(
+          bundle.file,
+          volume,
+          destinationName: bundle.artifact.file,
+          onProgress: (progress) {
+            snapshot.value = FirmwareUpdateSnapshot(
+              phase: FirmwareUpdatePhase.flashing,
+              progress: progress,
+              target: release,
+              message: '正在烧录 ${release.tagName} · ${variant.label}',
+            );
+          },
+        );
+        await Uf2Flasher.waitForVolumeToDisappear(
+          volume,
+          timeout: const Duration(seconds: 12),
+        );
+      }
 
       snapshot.value = FirmwareUpdateSnapshot(
         phase: FirmwareUpdatePhase.reconnecting,
         target: release,
         message: '固件已写入，正在等待设备重启并回读版本…',
-      );
-      await Uf2Flasher.waitForVolumeToDisappear(
-        volume,
-        timeout: const Duration(seconds: 12),
       );
       final connected = await _reconnect(app);
       if (!connected) {
@@ -353,6 +527,8 @@ class FirmwareUpdateService {
           '与目标 ${release.tagName} 不一致',
         );
       }
+      await rememberVariant(updatedIdentity, variant);
+      if (Platform.isAndroid) await clearRecoverySession();
       snapshot.value = FirmwareUpdateSnapshot(
         phase: FirmwareUpdatePhase.completed,
         progress: 1,
@@ -663,6 +839,81 @@ class FirmwareUpdateService {
       RegExp(r'^\w+(?:<[^>]+>)?Exception:\s*'),
       '',
     );
+  }
+}
+
+const _uf2BlockBytes = 512;
+const _uf2MagicStart0 = 0x0A324655;
+const _uf2MagicStart1 = 0x9E5D5157;
+const _uf2MagicEnd = 0x0AB16F30;
+const _uf2FlagNotMainFlash = 0x00000001;
+const _uf2FlagFamilyIdPresent = 0x00002000;
+const _rp2040FamilyId = 0xE48BFF56;
+const _rp2040XipBase = 0x10000000;
+const _rp2040XipEnd = 0x11000000;
+const _maximumUf2Bytes = 64 * 1024 * 1024;
+
+/// 在断开当前设备之前复核整个 UF2 的 RP2040 写入契约。
+///
+/// 发布 manifest/SHA-256 解决“文件是不是官方发布的”，这里解决“文件本身是否
+/// 是完整、连续且只写 RP2040 主 Flash 的 UF2”。Android 原生层还会独立复核
+/// 一次，用于防止 MethodChannel 参数或应用私有缓存发生意外变化。
+Future<int> validateRp2040Uf2File(File file) async {
+  final length = await file.length();
+  if (length <= 0 ||
+      length > _maximumUf2Bytes ||
+      length % _uf2BlockBytes != 0) {
+    throw const FormatException('UF2 文件大小无效');
+  }
+  final blockCount = length ~/ _uf2BlockBytes;
+  final input = await file.open();
+  try {
+    for (var index = 0; index < blockCount; index++) {
+      final block = await input.read(_uf2BlockBytes);
+      if (block.length != _uf2BlockBytes) {
+        throw FormatException('UF2 第 ${index + 1} 块读取不完整');
+      }
+      validateRp2040Uf2Block(block, index: index, blockCount: blockCount);
+    }
+  } finally {
+    await input.close();
+  }
+  return blockCount;
+}
+
+@visibleForTesting
+void validateRp2040Uf2Block(
+  Uint8List block, {
+  required int index,
+  required int blockCount,
+}) {
+  if (block.length != _uf2BlockBytes || index < 0 || blockCount <= 0) {
+    throw const FormatException('UF2 块参数无效');
+  }
+  final data = ByteData.sublistView(block);
+  if (data.getUint32(0, Endian.little) != _uf2MagicStart0 ||
+      data.getUint32(4, Endian.little) != _uf2MagicStart1 ||
+      data.getUint32(508, Endian.little) != _uf2MagicEnd) {
+    throw FormatException('UF2 第 ${index + 1} 块魔数无效');
+  }
+  final flags = data.getUint32(8, Endian.little);
+  final address = data.getUint32(12, Endian.little);
+  final payloadSize = data.getUint32(16, Endian.little);
+  final blockNumber = data.getUint32(20, Endian.little);
+  final declaredBlocks = data.getUint32(24, Endian.little);
+  final familyId = data.getUint32(28, Endian.little);
+  if (payloadSize != 256 ||
+      blockNumber != index ||
+      declaredBlocks != blockCount) {
+    throw FormatException('UF2 第 ${index + 1} 块的编号或负载长度无效');
+  }
+  if ((flags & _uf2FlagNotMainFlash) != 0 ||
+      (flags & _uf2FlagFamilyIdPresent) == 0 ||
+      familyId != _rp2040FamilyId) {
+    throw const FormatException('UF2 不是 RP2040 主 Flash 固件');
+  }
+  if (address < _rp2040XipBase || address + payloadSize > _rp2040XipEnd) {
+    throw const FormatException('UF2 包含超出 RP2040 Flash 的目标地址');
   }
 }
 

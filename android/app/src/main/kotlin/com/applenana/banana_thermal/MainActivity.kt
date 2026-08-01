@@ -12,9 +12,11 @@ import java.io.File
 
 class MainActivity : FlutterActivity() {
     private val updateChannel = "com.applenana.banana_thermal/app_update"
+    private var firmwareFlasher: AndroidFirmwareFlasher? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        firmwareFlasher = AndroidFirmwareFlasher(this, flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, updateChannel)
             .setMethodCallHandler { call, result ->
                 if (call.method != "installApk") {
@@ -28,6 +30,12 @@ class MainActivity : FlutterActivity() {
                 }
                 installApk(path, result)
             }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        firmwareFlasher?.dispose()
+        firmwareFlasher = null
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     private fun installApk(path: String, result: MethodChannel.Result) {

@@ -67,20 +67,24 @@ class SerialService {
       SerialPort? p;
       try {
         p = SerialPort(name);
-        result.add(SerialPortInfo(
-          name: name,
-          description: _safeAscii(p.description),
-          manufacturer: _safeAscii(p.manufacturer),
-          productName: _safeAscii(p.productName),
-          vendorId: p.vendorId,
-          productId: p.productId,
-        ));
+        result.add(
+          SerialPortInfo(
+            name: name,
+            description: _safeAscii(p.description),
+            manufacturer: _safeAscii(p.manufacturer),
+            productName: _safeAscii(p.productName),
+            vendorId: p.vendorId,
+            productId: p.productId,
+          ),
+        );
       } catch (_) {
         result.add(SerialPortInfo(name: name, description: ''));
       } finally {
         // 必须显式 dispose, 否则 GC finalizer 跨线程释放 native handle
         // 会与后续打开的 reader 线程竞态, 在 Debug CRT 下触发 heap assert.
-        try { p?.dispose(); } catch (_) {}
+        try {
+          p?.dispose();
+        } catch (_) {}
       }
     }
     return result;
@@ -151,14 +155,20 @@ class SerialService {
     // 顺序: 取消上层 sub → 关 reader (停下 native 读线程) → 关 port.
     // 重点: 不调 port.dispose() / reader.dispose(),
     // flutter_libserialport 0.4.0 Windows 下手动 dispose 会和 finalizer 双释放闪退.
-    try { await _sub?.cancel(); } catch (_) {}
+    try {
+      await _sub?.cancel();
+    } catch (_) {}
     _sub = null;
-    try { _reader?.close(); } catch (_) {}
+    try {
+      _reader?.close();
+    } catch (_) {}
     _reader = null;
     final p = _port;
     _port = null;
     if (p != null) {
-      try { if (p.isOpen) p.close(); } catch (_) {}
+      try {
+        if (p.isOpen) p.close();
+      } catch (_) {}
     }
   }
 
@@ -177,8 +187,9 @@ class SerialService {
     final port = _port;
     if (port == null || !port.isOpen) return 0;
     return port.write(
-        bytes is Uint8List ? bytes : Uint8List.fromList(bytes),
-        timeout: 200);
+      bytes is Uint8List ? bytes : Uint8List.fromList(bytes),
+      timeout: 200,
+    );
   }
 
   Future<void> dispose() async {
@@ -197,7 +208,9 @@ class SerialService {
   /// Bootloader。失败只返回 false，调用方仍可等待用户通过 BOOTSEL/RESET
   /// 手动进入，不能把普通串口设备误判为已经进入烧录模式。
   static Future<bool> touch1200Bootloader(String name) async {
-    if (Platform.isAndroid) return false;
+    if (Platform.isAndroid) {
+      return AndroidSerialImpl.touch1200Bootloader(name);
+    }
     SerialPort? port;
     try {
       port = SerialPort(name);
@@ -226,7 +239,9 @@ class SerialService {
     } catch (_) {
       return false;
     } finally {
-      try { if (port?.isOpen == true) port?.close(); } catch (_) {}
+      try {
+        if (port?.isOpen == true) port?.close();
+      } catch (_) {}
       // 与 open/close 主路径一致，不手动 dispose，避免 Windows 上 finalizer
       // 与原生句柄发生二次释放竞态。
     }
@@ -250,7 +265,11 @@ class SerialService {
     if (Platform.isAndroid) {
       return AndroidSerialImpl.probeDevice(name, baud: baud, timeout: timeout);
     }
-    return _probeDeviceCore(name, baud: baud, timeoutMs: timeout.inMilliseconds);
+    return _probeDeviceCore(
+      name,
+      baud: baud,
+      timeoutMs: timeout.inMilliseconds,
+    );
   }
 
   /// 判断端口描述是否可能是热成像 USB CDC 设备 (优先尝试).
@@ -277,7 +296,7 @@ class SerialService {
   /// 同步 FFI (openReadWrite / close 等) 卡住 UI 线程. 进度 / 结果通过
   /// SendPort 回主线程, 失败兜底为主 isolate 串行探测.
   static Future<({String? port, Map<String, dynamic>? info})>
-      searchTargetDevice({
+  searchTargetDevice({
     int baud = 115200,
     Duration perPortTimeout = const Duration(milliseconds: 1500),
     void Function(String port)? onProbe,
@@ -314,8 +333,9 @@ class SerialService {
           foundCompleter.complete(port is String ? port : null);
         }
         if (!resultCompleter.isCompleted) {
-          resultCompleter
-              .complete(info is Map ? info.cast<String, dynamic>() : null);
+          resultCompleter.complete(
+            info is Map ? info.cast<String, dynamic>() : null,
+          );
         }
       }
     });
@@ -357,13 +377,18 @@ class SerialService {
       // 兜底: 没法用 isolate 时退回主 isolate 串行扫描, 不至于完全没功能.
       for (final name in ordered) {
         onProbe?.call(name);
-        final info = await _probeDeviceCore(name,
-            baud: baud, timeoutMs: perPortTimeout.inMilliseconds);
+        final info = await _probeDeviceCore(
+          name,
+          baud: baud,
+          timeoutMs: perPortTimeout.inMilliseconds,
+        );
         if (info != null) return (port: name, info: info);
       }
       return (port: null, info: null);
     } finally {
-      try { isolate?.kill(priority: Isolate.immediate); } catch (_) {}
+      try {
+        isolate?.kill(priority: Isolate.immediate);
+      } catch (_) {}
       _currentSearchIsolate = null;
       _searchCancelled = false;
       await progSub.cancel();
@@ -418,50 +443,52 @@ class SerialService {
       port.config = cfg;
 
       reader = SerialPortReader(port);
-      sub = reader.stream.listen((data) {
-        if (completer.isCompleted) return;
-        buf.add(data);
-        final all = buf.toBytes();
-        int last = 0;
-        for (int i = 0; i < all.length; i++) {
-          if (all[i] != 0x0A) continue;
-          final raw = all.sublist(last, i);
-          last = i + 1;
-          final ascii = raw
-              .where((b) => b == 0x09 || (b >= 0x20 && b < 0x7F))
-              .toList(growable: false);
-          final line = String.fromCharCodes(ascii).trim();
-          if (line.startsWith('{') && line.endsWith('}')) {
-            try {
-              final j = jsonDecode(line);
-              if (j is Map<String, dynamic> &&
-                  (j.containsKey('Activated') ||
-                      j.containsKey('Serial') ||
-                      j.containsKey('SerialNum') ||
-                      j.containsKey('isActivated'))) {
-                if (!completer.isCompleted) completer.complete(j);
-                return;
-              }
-            } catch (_) {}
+      sub = reader.stream.listen(
+        (data) {
+          if (completer.isCompleted) return;
+          buf.add(data);
+          final all = buf.toBytes();
+          int last = 0;
+          for (int i = 0; i < all.length; i++) {
+            if (all[i] != 0x0A) continue;
+            final raw = all.sublist(last, i);
+            last = i + 1;
+            final ascii = raw
+                .where((b) => b == 0x09 || (b >= 0x20 && b < 0x7F))
+                .toList(growable: false);
+            final line = String.fromCharCodes(ascii).trim();
+            if (line.startsWith('{') && line.endsWith('}')) {
+              try {
+                final j = jsonDecode(line);
+                if (j is Map<String, dynamic> &&
+                    (j.containsKey('Activated') ||
+                        j.containsKey('Serial') ||
+                        j.containsKey('SerialNum') ||
+                        j.containsKey('isActivated'))) {
+                  if (!completer.isCompleted) completer.complete(j);
+                  return;
+                }
+              } catch (_) {}
+            }
           }
-        }
-        if (last > 0 && last < all.length) {
-          final tail = all.sublist(last);
-          buf.clear();
-          buf.add(tail);
-        } else if (last >= all.length) {
-          buf.clear();
-        }
-      }, onError: (_) {
-        if (!completer.isCompleted) completer.complete(null);
-      });
+          if (last > 0 && last < all.length) {
+            final tail = all.sublist(last);
+            buf.clear();
+            buf.add(tail);
+          } else if (last >= all.length) {
+            buf.clear();
+          }
+        },
+        onError: (_) {
+          if (!completer.isCompleted) completer.complete(null);
+        },
+      );
 
       await Future<void>.delayed(const Duration(milliseconds: 150));
       if (!port.isOpen) {
         if (!completer.isCompleted) completer.complete(null);
       } else {
-        port.write(Uint8List.fromList('GetSysInfo\n'.codeUnits),
-            timeout: 200);
+        port.write(Uint8List.fromList('GetSysInfo\n'.codeUnits), timeout: 200);
       }
 
       return await completer.future.timeout(
@@ -471,9 +498,15 @@ class SerialService {
     } catch (_) {
       return null;
     } finally {
-      try { await sub?.cancel(); } catch (_) {}
-      try { reader?.close(); } catch (_) {}
-      try { if (port?.isOpen == true) port?.close(); } catch (_) {}
+      try {
+        await sub?.cancel();
+      } catch (_) {}
+      try {
+        reader?.close();
+      } catch (_) {}
+      try {
+        if (port?.isOpen == true) port?.close();
+      } catch (_) {}
     }
   }
 }

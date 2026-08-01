@@ -36,26 +36,66 @@ class AndroidSerialImpl {
   /// (deviceName, 形如 `/dev/bus/usb/001/002`), 用于 [open] 时回查.
   static Future<List<SerialPortInfo>> listPortsAsync() async {
     final devices = await UsbSerial.listDevices();
-    return devices.map((d) {
-      final vidHex = d.vid?.toRadixString(16).padLeft(4, '0').toUpperCase();
-      final pidHex = d.pid?.toRadixString(16).padLeft(4, '0').toUpperCase();
-      final desc = StringBuffer();
-      if (d.productName != null && d.productName!.isNotEmpty) {
-        desc.write(d.productName);
-      }
-      if (vidHex != null && pidHex != null) {
-        if (desc.isNotEmpty) desc.write(' ');
-        desc.write('[$vidHex:$pidHex]');
-      }
-      return SerialPortInfo(
-        name: d.deviceName,
-        description: desc.toString(),
-        manufacturer: d.manufacturerName,
-        productName: d.productName,
-        vendorId: d.vid,
-        productId: d.pid,
+    return devices
+        .map((d) {
+          final vidHex = d.vid?.toRadixString(16).padLeft(4, '0').toUpperCase();
+          final pidHex = d.pid?.toRadixString(16).padLeft(4, '0').toUpperCase();
+          final desc = StringBuffer();
+          if (d.productName != null && d.productName!.isNotEmpty) {
+            desc.write(d.productName);
+          }
+          if (vidHex != null && pidHex != null) {
+            if (desc.isNotEmpty) desc.write(' ');
+            desc.write('[$vidHex:$pidHex]');
+          }
+          return SerialPortInfo(
+            name: d.deviceName,
+            description: desc.toString(),
+            manufacturer: d.manufacturerName,
+            productName: d.productName,
+            vendorId: d.vid,
+            productId: d.pid,
+          );
+        })
+        .toList(growable: false);
+  }
+
+  /// 对已经获权且当前以 USB CDC 枚举的设备执行 1200-baud touch。
+  ///
+  /// RP2040 随后会断开并以 BOOTSEL Mass Storage 重新枚举；那个新设备必须由
+  /// Android 原生烧录桥再次向用户申请 USB 权限。
+  static Future<bool> touch1200Bootloader(String name) async {
+    final devices = await UsbSerial.listDevices();
+    final matches = devices.where((device) => device.deviceName == name);
+    if (matches.length != 1) return false;
+    final device = matches.single;
+    UsbPort? port;
+    var releasedDtr = false;
+    try {
+      port = await device.create();
+      if (port == null || !await port.open()) return false;
+      await port.setPortParameters(
+        1200,
+        UsbPort.DATABITS_8,
+        UsbPort.STOPBITS_1,
+        UsbPort.PARITY_NONE,
       );
-    }).toList(growable: false);
+      await port.setRTS(false);
+      await port.setDTR(true);
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await port.setDTR(false);
+      releasedDtr = true;
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      return true;
+    } catch (_) {
+      // 设备可能在 DTR 下降沿后立即断开，导致 close/后续控制传输报错；只要
+      // 下降沿已经成功提交，就应继续等待 BOOTSEL 枚举。
+      return releasedDtr;
+    } finally {
+      try {
+        await port?.close();
+      } catch (_) {}
+    }
   }
 
   Future<void> open(String name, {int baud = 115200}) async {
@@ -70,7 +110,11 @@ class AndroidSerialImpl {
     final ok = await port.open();
     if (!ok) throw StateError('无法打开 USB 串口: $name');
     await port.setPortParameters(
-        baud, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
+      baud,
+      UsbPort.DATABITS_8,
+      UsbPort.STOPBITS_1,
+      UsbPort.PARITY_NONE,
+    );
     // 与桌面端一致: 显式拉高 DTR / RTS, 唤醒 TinyUSB CDC 设备 TX.
     await port.setDTR(true);
     await port.setRTS(true);
@@ -99,29 +143,37 @@ class AndroidSerialImpl {
     // 监听 USB attach/detach 广播: usb_serial 的 inputStream 在设备拔出后
     // 不会主动 done, 必须靠 Android USB Host 广播触发清理. 命中当前设备
     // detach 时主动 close + 抛 error, 让 AppState 进入自动重连流程.
-    try { await _eventSub?.cancel(); } catch (_) {}
+    try {
+      await _eventSub?.cancel();
+    } catch (_) {}
     _eventSub = UsbSerial.usbEventStream?.listen((ev) {
       if (ev.event != UsbEvent.ACTION_USB_DETACHED) return;
       final d = ev.device;
       if (_port == null) return;
-      final matches = d == null ||
-          ((d.vid == _currentVid) && (d.pid == _currentPid));
+      final matches =
+          d == null || ((d.vid == _currentVid) && (d.pid == _currentPid));
       if (!matches) return;
       // 主动触发断开: 先把 _port 清空让 isOpen 立刻 false, 再抛 error.
       _port = null;
       _portName = null;
       _currentVid = null;
       _currentPid = null;
-      try { _sub?.cancel(); } catch (_) {}
+      try {
+        _sub?.cancel();
+      } catch (_) {}
       _sub = null;
       _byteCtrl.addError(StateError('USB 设备已拔出'));
     });
   }
 
   Future<void> close() async {
-    try { await _sub?.cancel(); } catch (_) {}
+    try {
+      await _sub?.cancel();
+    } catch (_) {}
     _sub = null;
-    try { await _eventSub?.cancel(); } catch (_) {}
+    try {
+      await _eventSub?.cancel();
+    } catch (_) {}
     _eventSub = null;
     final p = _port;
     _port = null;
@@ -129,7 +181,9 @@ class AndroidSerialImpl {
     _currentVid = null;
     _currentPid = null;
     if (p != null) {
-      try { await p.close(); } catch (_) {}
+      try {
+        await p.close();
+      } catch (_) {}
     }
   }
 
@@ -143,8 +197,7 @@ class AndroidSerialImpl {
     return data.length;
   }
 
-  int writeString(String s) =>
-      writeBytes(Uint8List.fromList(s.codeUnits));
+  int writeString(String s) => writeBytes(Uint8List.fromList(s.codeUnits));
 
   Future<void> dispose() async {
     await close();
@@ -173,47 +226,54 @@ class AndroidSerialImpl {
       port = await device.create();
       if (port == null) return null;
       if (!await port.open()) return null;
-      await port.setPortParameters(baud, UsbPort.DATABITS_8,
-          UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
+      await port.setPortParameters(
+        baud,
+        UsbPort.DATABITS_8,
+        UsbPort.STOPBITS_1,
+        UsbPort.PARITY_NONE,
+      );
       await port.setDTR(true);
       await port.setRTS(true);
-      sub = port.inputStream?.listen((data) {
-        if (completer.isCompleted) return;
-        buf.add(data);
-        final all = buf.toBytes();
-        int last = 0;
-        for (int i = 0; i < all.length; i++) {
-          if (all[i] != 0x0A) continue;
-          final raw = all.sublist(last, i);
-          last = i + 1;
-          final ascii = raw
-              .where((b) => b == 0x09 || (b >= 0x20 && b < 0x7F))
-              .toList(growable: false);
-          final line = String.fromCharCodes(ascii).trim();
-          if (line.startsWith('{') && line.endsWith('}')) {
-            try {
-              final j = jsonDecode(line);
-              if (j is Map<String, dynamic> &&
-                  (j.containsKey('Activated') ||
-                      j.containsKey('Serial') ||
-                      j.containsKey('SerialNum') ||
-                      j.containsKey('isActivated'))) {
-                if (!completer.isCompleted) completer.complete(j);
-                return;
-              }
-            } catch (_) {}
+      sub = port.inputStream?.listen(
+        (data) {
+          if (completer.isCompleted) return;
+          buf.add(data);
+          final all = buf.toBytes();
+          int last = 0;
+          for (int i = 0; i < all.length; i++) {
+            if (all[i] != 0x0A) continue;
+            final raw = all.sublist(last, i);
+            last = i + 1;
+            final ascii = raw
+                .where((b) => b == 0x09 || (b >= 0x20 && b < 0x7F))
+                .toList(growable: false);
+            final line = String.fromCharCodes(ascii).trim();
+            if (line.startsWith('{') && line.endsWith('}')) {
+              try {
+                final j = jsonDecode(line);
+                if (j is Map<String, dynamic> &&
+                    (j.containsKey('Activated') ||
+                        j.containsKey('Serial') ||
+                        j.containsKey('SerialNum') ||
+                        j.containsKey('isActivated'))) {
+                  if (!completer.isCompleted) completer.complete(j);
+                  return;
+                }
+              } catch (_) {}
+            }
           }
-        }
-        if (last > 0 && last < all.length) {
-          final tail = all.sublist(last);
-          buf.clear();
-          buf.add(tail);
-        } else if (last >= all.length) {
-          buf.clear();
-        }
-      }, onError: (_) {
-        if (!completer.isCompleted) completer.complete(null);
-      });
+          if (last > 0 && last < all.length) {
+            final tail = all.sublist(last);
+            buf.clear();
+            buf.add(tail);
+          } else if (last >= all.length) {
+            buf.clear();
+          }
+        },
+        onError: (_) {
+          if (!completer.isCompleted) completer.complete(null);
+        },
+      );
 
       await Future<void>.delayed(const Duration(milliseconds: 150));
       await port.write(Uint8List.fromList('GetSysInfo\n'.codeUnits));
@@ -222,13 +282,17 @@ class AndroidSerialImpl {
     } catch (_) {
       return null;
     } finally {
-      try { await sub?.cancel(); } catch (_) {}
-      try { await port?.close(); } catch (_) {}
+      try {
+        await sub?.cancel();
+      } catch (_) {}
+      try {
+        await port?.close();
+      } catch (_) {}
     }
   }
 
   static Future<({String? port, Map<String, dynamic>? info})>
-      searchTargetDevice({
+  searchTargetDevice({
     int baud = 115200,
     Duration perPortTimeout = const Duration(milliseconds: 1500),
     void Function(String port)? onProbe,
@@ -236,8 +300,11 @@ class AndroidSerialImpl {
     final ports = await listPortsAsync();
     for (final info in ports) {
       onProbe?.call(info.name);
-      final res = await probeDevice(info.name,
-          baud: baud, timeout: perPortTimeout);
+      final res = await probeDevice(
+        info.name,
+        baud: baud,
+        timeout: perPortTimeout,
+      );
       if (res != null) return (port: info.name, info: res);
     }
     return (port: null, info: null);

@@ -2,6 +2,24 @@
 
 本项目所有显著变更记录于此。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)，发布日志按时间倒序。
 
+## 未发布
+
+### 新增 (Added)
+
+- Android 固件管理现支持 RP2040 全自动烧录：对已确认的双光设备执行 1200-baud Bootloader 重启，请求重新枚举后的 USB 权限，通过 USB Mass Storage Bulk-Only Transport / SCSI 直接写入 UF2，并在重启后回读目标版本。
+- Android 写入前严格匹配官方 RP2040 BOOTSEL VID/PID、Mass Storage 接口、`RPI-RP2` FAT16 卷和 `INFO_UF2.TXT`；同时在 Flutter 与 Android 原生层分别校验 UF2 块序、RP2040 family ID、主 Flash 标志、地址范围和完整 SHA-256。
+- Android 固件页新增串口、BOOTSEL、USB 未授权、USB 已授权、写入和重连阶段检测；授权或烧录失败后可从仍然连接的 `RPI-RP2` 继续，不再强制设备重新枚举。
+- 新增 RP2040 UF2 结构回归测试，覆盖正确文件以及错误家族、乱序、非主 Flash 和越界地址等拒绝路径。
+
+### 优化 (Changed)
+
+- 固件变体只在写入、重连和版本回读全部成功后记忆，避免失败任务污染后续 2 MB / 8 MB 选择。
+
+### 修复 (Fixed)
+
+- 修复 Android 将官方 RP2040 BOOTSEL 分区引导扇区误判为非 FAT16：官方 VBR 没有传统的末尾 `0x55AA`，现改为校验 FAT16 BPB、扩展签名、文件系统类型、卷标及 `INFO_UF2.TXT`。
+- 修复部分 Android 系统授权成功后回调未到达导致流程停住：授权结果现以 `UsbManager.hasPermission()` 为准，广播仅用于唤醒，并允许单独重新授权。
+
 ## [v0.5.0] - 2026-08-01
 
 ### 新增 (Added)

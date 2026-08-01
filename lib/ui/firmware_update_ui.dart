@@ -5,12 +5,16 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../firmware/android_uf2_flasher.dart';
 import '../firmware/firmware_update.dart';
 import '../firmware/firmware_update_service.dart';
 import '../update/app_update.dart' show AppVersion;
 import 'banana_toast.dart';
 
 String? _presentingFirmwareTag;
+
+bool get _automaticFirmwareFlashSupported =>
+    Platform.isWindows || Platform.isAndroid;
 
 Future<void> checkFirmwareForConnectedDevice(
   BuildContext context,
@@ -61,9 +65,9 @@ Future<void> showFirmwareUpdateAvailableDialog(
               ],
               const SizedBox(height: 10),
               Text(
-                Platform.isWindows
+                _automaticFirmwareFlashSupported
                     ? '你可以立即自动烧录，也可以在固件管理中选择任意正式版本进行升级、降级或重刷。'
-                    : '你可以查看并选择任意正式版本；直接写入 RP2040 UF2 磁盘目前需要 Windows 版。',
+                    : '你可以查看并选择任意正式版本；自动烧录目前支持 Windows 和 Android。',
               ),
             ],
           ),
@@ -76,7 +80,9 @@ Future<void> showFirmwareUpdateAvailableDialog(
           FilledButton.icon(
             onPressed: () => Navigator.pop(dialogContext, true),
             icon: const Icon(Icons.tune_rounded),
-            label: Text(Platform.isWindows ? '选择版本并烧录' : '查看固件版本'),
+            label: Text(
+              _automaticFirmwareFlashSupported ? '选择版本并烧录' : '查看固件版本',
+            ),
           ),
         ],
       ),
@@ -99,6 +105,7 @@ Future<void> showFirmwareUpdateAvailableDialog(
 Future<void> showFirmwareManagerDialog(
   BuildContext context,
   AppState app, {
+  FirmwareDeviceIdentity? identityOverride,
   FirmwareRelease? initialRelease,
   FirmwareCatalog? initialCatalog,
 }) {
@@ -107,7 +114,9 @@ Future<void> showFirmwareManagerDialog(
     barrierDismissible: false,
     builder: (_) => _FirmwareManagerDialog(
       app: app,
-      identity: FirmwareDeviceIdentity.fromDeviceInfo(app.deviceInfo),
+      identity:
+          identityOverride ??
+          FirmwareDeviceIdentity.fromDeviceInfo(app.deviceInfo),
       initialRelease: initialRelease,
       initialCatalog: initialCatalog,
     ),
@@ -125,23 +134,55 @@ class FirmwareUpdateSettingsControl extends StatefulWidget {
 class _FirmwareUpdateSettingsControlState
     extends State<FirmwareUpdateSettingsControl> {
   final _service = FirmwareUpdateService.instance;
+  Timer? _usbProbeTimer;
+  AndroidFirmwareUsbState? _androidUsbState;
+  Object? _androidUsbError;
+  bool _usbProbeInFlight = false;
 
   @override
   void initState() {
     super.initState();
     _service.snapshot.addListener(_refresh);
     _service.automaticCheckEnabled.addListener(_refresh);
+    _service.recoverySession.addListener(_refresh);
     unawaited(_service.initialize().then((_) => _refresh()));
+    if (Platform.isAndroid) {
+      unawaited(_probeAndroidUsb());
+      _usbProbeTimer = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => unawaited(_probeAndroidUsb()),
+      );
+    }
   }
 
   void _refresh() {
     if (mounted) setState(() {});
   }
 
+  Future<void> _probeAndroidUsb() async {
+    if (!Platform.isAndroid || _usbProbeInFlight) return;
+    _usbProbeInFlight = true;
+    try {
+      final state = await AndroidUf2Flasher.inspectUsbState();
+      if (mounted) {
+        setState(() {
+          _androidUsbState = state;
+          _androidUsbError = null;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _androidUsbError = error);
+    } finally {
+      _usbProbeInFlight = false;
+    }
+  }
+
   @override
   void dispose() {
+    _usbProbeTimer?.cancel();
     _service.snapshot.removeListener(_refresh);
     _service.automaticCheckEnabled.removeListener(_refresh);
+    _service.recoverySession.removeListener(_refresh);
     super.dispose();
   }
 
@@ -167,7 +208,21 @@ class _FirmwareUpdateSettingsControlState
     return Consumer<AppState>(
       builder: (context, app, _) {
         final connected = app.status == ConnectionStatus.connected;
-        final identity = FirmwareDeviceIdentity.fromDeviceInfo(app.deviceInfo);
+        final liveIdentity = FirmwareDeviceIdentity.fromDeviceInfo(
+          app.deviceInfo,
+        );
+        final recovery = _service.recoverySession.value;
+        final bootloaders = _androidUsbState?.bootloaders ?? const [];
+        final canRecover =
+            Platform.isAndroid &&
+            !connected &&
+            bootloaders.length == 1 &&
+            recovery != null;
+        final identity = liveIdentity.canFlash
+            ? liveIdentity
+            : canRecover
+            ? recovery.identity
+            : liveIdentity;
         final checking =
             _service.snapshot.value.phase == FirmwareUpdatePhase.checking;
         final variant = identity.canFlash
@@ -196,7 +251,9 @@ class _FirmwareUpdateSettingsControlState
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        identity.canFlash
+                        canRecover
+                            ? '已检测到 RP2040 USB 磁盘 · 可恢复烧录'
+                            : identity.canFlash
                             ? '3.2 寸双光热成像 · ${identity.currentVersion ?? '版本未知'}'
                             : connected
                             ? '当前设备不允许使用此固件源'
@@ -205,9 +262,16 @@ class _FirmwareUpdateSettingsControlState
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        identity.canFlash
+                        canRecover
+                            ? '上次已确认 ${identity.model} · '
+                                  '目标 ${recovery.targetTag} · ${recovery.variant.label}'
+                            : identity.canFlash
                             ? '${identity.reason} · '
                                   '${variant?.label ?? '尚未确认 Flash 变体'}'
+                            : _androidUsbError != null
+                            ? 'USB 状态读取失败：$_androidUsbError'
+                            : bootloaders.length > 1
+                            ? '检测到多个 RP2040 USB 磁盘，请只保留待烧录设备'
                             : identity.reason,
                         style: TextStyle(
                           color: scheme.onSurfaceVariant,
@@ -237,8 +301,12 @@ class _FirmwareUpdateSettingsControlState
                   label: Text(checking ? '检查中' : '检查新版本'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: identity.canFlash
-                      ? () => showFirmwareManagerDialog(context, app)
+                  onPressed: identity.canFlash && (connected || canRecover)
+                      ? () => showFirmwareManagerDialog(
+                          context,
+                          app,
+                          identityOverride: identity,
+                        )
                       : null,
                   icon: const Icon(Icons.developer_board_rounded, size: 18),
                   label: const Text('固件管理 / 升降级'),
@@ -298,20 +366,36 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
   FirmwareVariant? _selectedVariant;
   bool _loading = false;
   bool _running = false;
+  bool _usbProbeInFlight = false;
+  bool _requestingUsbPermission = false;
+  AndroidFirmwareUsbState? _androidUsbState;
+  Object? _androidUsbError;
+  Timer? _usbProbeTimer;
 
   @override
   void initState() {
     super.initState();
     _catalog = widget.initialCatalog;
     _selectedRelease = widget.initialRelease;
-    _selectedVariant = _service.variantFor(widget.identity);
+    final recovery = _service.recoverySession.value;
+    final matchingRecovery =
+        recovery?.identity.deviceKey == widget.identity.deviceKey
+        ? recovery
+        : null;
+    _selectedVariant =
+        matchingRecovery?.variant ?? _service.variantFor(widget.identity);
     _service.snapshot.addListener(_refresh);
+    if (Platform.isAndroid) {
+      unawaited(_probeAndroidUsb());
+      _usbProbeTimer = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => unawaited(_probeAndroidUsb()),
+      );
+    }
     if (_catalog == null) {
       unawaited(_load());
     } else {
-      _selectedRelease ??= _catalog!.releases.isEmpty
-          ? null
-          : _catalog!.releases.first;
+      _selectDefaultRelease(_catalog!);
     }
   }
 
@@ -319,8 +403,67 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
     if (mounted) setState(() {});
   }
 
+  void _selectDefaultRelease(FirmwareCatalog catalog) {
+    if (_selectedRelease != null || catalog.releases.isEmpty) return;
+    final recovery = _service.recoverySession.value;
+    if (recovery != null &&
+        recovery.identity.deviceKey == widget.identity.deviceKey) {
+      for (final release in catalog.releases) {
+        if (release.tagName == recovery.targetTag) {
+          _selectedRelease = release;
+          return;
+        }
+      }
+    }
+    _selectedRelease = catalog.releases.first;
+  }
+
+  Future<void> _probeAndroidUsb() async {
+    if (!Platform.isAndroid || _usbProbeInFlight) return;
+    _usbProbeInFlight = true;
+    try {
+      final state = await AndroidUf2Flasher.inspectUsbState();
+      if (mounted) {
+        setState(() {
+          _androidUsbState = state;
+          _androidUsbError = null;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _androidUsbError = error);
+    } finally {
+      _usbProbeInFlight = false;
+    }
+  }
+
+  Future<void> _requestBootloaderPermission() async {
+    final device = _androidUsbState?.singleBootloader;
+    if (device == null || _requestingUsbPermission) return;
+    setState(() {
+      _requestingUsbPermission = true;
+      _androidUsbError = null;
+    });
+    try {
+      await AndroidUf2Flasher.requestPermission(device);
+      await _probeAndroidUsb();
+      if (mounted) {
+        _service.markReady('RP2040 USB 磁盘已授权，可以继续烧录');
+        BananaToast.show(
+          context,
+          'RP2040 USB 磁盘授权成功，可以继续烧录',
+          icon: Icons.usb_rounded,
+        );
+      }
+    } catch (error) {
+      if (mounted) setState(() => _androidUsbError = error);
+    } finally {
+      if (mounted) setState(() => _requestingUsbPermission = false);
+    }
+  }
+
   @override
   void dispose() {
+    _usbProbeTimer?.cancel();
     _service.snapshot.removeListener(_refresh);
     super.dispose();
   }
@@ -335,9 +478,7 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
       if (!mounted) return;
       setState(() {
         _catalog = catalog;
-        _selectedRelease ??= catalog.releases.isEmpty
-            ? null
-            : catalog.releases.first;
+        _selectDefaultRelease(catalog);
       });
     } catch (error) {
       if (mounted) setState(() => _loadError = error);
@@ -358,6 +499,34 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
     final release = _selectedRelease;
     final variant = _selectedVariant;
     if (release == null || variant == null) return;
+    if (Platform.isAndroid) {
+      await _probeAndroidUsb();
+      final usbState = _androidUsbState;
+      final serialConnected =
+          widget.app.status == ConnectionStatus.connected &&
+          widget.app.currentPort != null;
+      if (usbState == null || !usbState.usbHostSupported) {
+        setState(
+          () => _androidUsbError = StateError('此设备无法读取 Android USB Host 状态'),
+        );
+        return;
+      }
+      if (usbState.bootloaders.length > 1 ||
+          (serialConnected && usbState.singleBootloader != null)) {
+        setState(
+          () => _androidUsbError = StateError(
+            '无法唯一确认烧录目标，请只连接一台串口设备或一个 RP2040 USB 磁盘',
+          ),
+        );
+        return;
+      }
+      if (!serialConnected && usbState.singleBootloader == null) {
+        setState(
+          () => _androidUsbError = StateError('未检测到串口设备或 RP2040 USB 磁盘'),
+        );
+        return;
+      }
+    }
     final confirmed = await _confirmFlash(release, variant);
     if (confirmed != true || !mounted) return;
     setState(() => _running = true);
@@ -466,6 +635,16 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
     final releases = _catalog?.releases ?? const <FirmwareRelease>[];
     final busy = _running || state.busy;
     final scheme = Theme.of(context).colorScheme;
+    final serialConnected =
+        widget.app.status == ConnectionStatus.connected &&
+        widget.app.currentPort != null;
+    final bootloader = _androidUsbState?.singleBootloader;
+    final ambiguousAndroidTarget =
+        Platform.isAndroid && (_androidUsbState?.bootloaders.length ?? 0) > 1 ||
+        (Platform.isAndroid && serialConnected && bootloader != null);
+    final androidTargetAvailable =
+        !Platform.isAndroid ||
+        (serialConnected || bootloader != null) && !ambiguousAndroidTarget;
     return AlertDialog(
       icon: const Icon(Icons.developer_board_rounded),
       title: const Text('设备固件管理'),
@@ -488,6 +667,19 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
                 '当前发布源仅包含 3.2 寸双光热成像；其他设备即使协议兼容也不会放行。',
                 style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
               ),
+              if (Platform.isAndroid) ...[
+                const SizedBox(height: 14),
+                _AndroidFirmwareConnectionCard(
+                  serialConnected: serialConnected,
+                  usbState: _androidUsbState,
+                  error: _androidUsbError,
+                  probing: _usbProbeInFlight,
+                  requestingPermission: _requestingUsbPermission,
+                  busy: busy,
+                  onRefresh: _probeAndroidUsb,
+                  onRequestPermission: _requestBootloaderPermission,
+                ),
+              ],
               const SizedBox(height: 16),
               if (_loading)
                 const Center(child: CircularProgressIndicator())
@@ -594,12 +786,10 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
                   ),
                 ),
               ],
-              if (!Platform.isWindows) ...[
+              if (!Platform.isAndroid && !Platform.isWindows) ...[
                 const SizedBox(height: 14),
                 const _WarningBox(
-                  text:
-                      'Android 不允许应用在未授权情况下直接写 RP2040 USB 大容量存储。'
-                      '版本检查和固件选择可用；全自动烧录请使用 Windows 版 Studio。',
+                  text: '自动烧录目前支持 Windows 和 Android；此平台只能查看正式版本。',
                 ),
               ],
             ],
@@ -616,7 +806,7 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
           onPressed: busy ? null : () => Navigator.pop(context),
           child: const Text('关闭'),
         ),
-        if (!Platform.isWindows)
+        if (!_automaticFirmwareFlashSupported)
           FilledButton.tonalIcon(
             onPressed: () => _service.openReleasePage(_selectedRelease),
             icon: const Icon(Icons.open_in_new_rounded),
@@ -628,11 +818,30 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
                 !widget.identity.canFlash ||
                     _selectedRelease == null ||
                     _selectedVariant == null ||
-                    busy
+                    busy ||
+                    !androidTargetAvailable
                 ? null
+                : Platform.isAndroid &&
+                      bootloader != null &&
+                      !bootloader.hasPermission
+                ? _requestBootloaderPermission
                 : _startFlash,
-            icon: const Icon(Icons.bolt_rounded),
-            label: Text(_actionLabel(_selectedRelease)),
+            icon: Icon(
+              Platform.isAndroid &&
+                      bootloader != null &&
+                      !bootloader.hasPermission
+                  ? Icons.usb_rounded
+                  : Icons.bolt_rounded,
+            ),
+            label: Text(
+              Platform.isAndroid &&
+                      bootloader != null &&
+                      !bootloader.hasPermission
+                  ? '授权 USB 磁盘'
+                  : Platform.isAndroid && bootloader != null
+                  ? '从 USB 磁盘继续烧录'
+                  : _actionLabel(_selectedRelease),
+            ),
           ),
       ],
     );
@@ -655,6 +864,162 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
     if (compared > 0) return '自动升级';
     if (compared < 0) return '自动降级';
     return '重新烧录';
+  }
+}
+
+class _AndroidFirmwareConnectionCard extends StatelessWidget {
+  const _AndroidFirmwareConnectionCard({
+    required this.serialConnected,
+    required this.usbState,
+    required this.error,
+    required this.probing,
+    required this.requestingPermission,
+    required this.busy,
+    required this.onRefresh,
+    required this.onRequestPermission,
+  });
+
+  final bool serialConnected;
+  final AndroidFirmwareUsbState? usbState;
+  final Object? error;
+  final bool probing;
+  final bool requestingPermission;
+  final bool busy;
+  final Future<void> Function() onRefresh;
+  final Future<void> Function() onRequestPermission;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final bootloaders =
+        usbState?.bootloaders ?? const <AndroidBootloaderDevice>[];
+    final bootloader = bootloaders.length == 1 ? bootloaders.single : null;
+
+    late final IconData icon;
+    late final String title;
+    late final String detail;
+    var isError = false;
+    if (error != null) {
+      icon = Icons.error_outline_rounded;
+      title = 'USB 阶段发生错误';
+      detail = error
+          .toString()
+          .replaceFirst(RegExp(r'^Bad state:\s*'), '')
+          .replaceFirst(RegExp(r'^StateError:\s*'), '');
+      isError = true;
+    } else if (usbState == null) {
+      icon = Icons.usb_rounded;
+      title = '正在检测 USB 设备';
+      detail = '正在判断设备当前处于串口模式还是 RP2040 USB 磁盘模式。';
+    } else if (!usbState!.usbHostSupported) {
+      icon = Icons.usb_off_rounded;
+      title = '此 Android 设备不支持 USB Host / OTG';
+      detail = '无法直接访问 RP2040 Bootloader。';
+      isError = true;
+    } else if (bootloaders.length > 1) {
+      icon = Icons.warning_amber_rounded;
+      title = '检测到多个 RP2040 USB 磁盘';
+      detail = '无法安全确定烧录目标，请只保留待烧录设备。';
+      isError = true;
+    } else if (serialConnected && bootloader != null) {
+      icon = Icons.warning_amber_rounded;
+      title = '同时检测到串口和 USB 磁盘';
+      detail = '这通常表示连接了两台设备；为防止刷错，请断开无关设备。';
+      isError = true;
+    } else if (bootloader != null && !bootloader.hasPermission) {
+      icon = Icons.lock_outline_rounded;
+      title = '阶段 2/4 · 已检测到 RP2040 USB 磁盘';
+      detail = '尚未获得此枚举实例的访问权限，请先完成系统 USB 授权。';
+    } else if (bootloader != null) {
+      icon = Icons.usb_rounded;
+      title = '阶段 3/4 · RP2040 USB 磁盘已授权';
+      detail = '可以验证 RPI-RP2 磁盘结构并继续写入 UF2。';
+    } else if (serialConnected) {
+      icon = Icons.settings_input_component_rounded;
+      title = '阶段 1/4 · 串口设备已连接';
+      detail = '开始后将发送 1200 波特率切换命令；若失败可手动进入 BOOTSEL。';
+    } else {
+      icon = Icons.usb_off_rounded;
+      title = '未检测到可烧录设备';
+      detail = '请连接串口设备，或让已确认的设备进入 RP2040 BOOTSEL 模式。';
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: isError ? scheme.errorContainer : scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      detail,
+                      style: TextStyle(
+                        color: scheme.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (bootloader != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              'BOOTSEL ${bootloader.id}。USB 磁盘本身不能证明热成像型号；'
+              '烧录仍以此前串口确认的设备身份和固件变体为准。',
+              style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 11),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              TextButton.icon(
+                onPressed: busy || probing ? null : onRefresh,
+                icon: probing
+                    ? const SizedBox.square(
+                        dimension: 15,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh_rounded, size: 18),
+                label: const Text('重新检测'),
+              ),
+              if (bootloader != null && !bootloader.hasPermission)
+                FilledButton.tonalIcon(
+                  onPressed: busy || requestingPermission
+                      ? null
+                      : onRequestPermission,
+                  icon: requestingPermission
+                      ? const SizedBox.square(
+                          dimension: 15,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.lock_open_rounded, size: 18),
+                  label: Text(requestingPermission ? '等待系统授权' : '授权 USB 磁盘'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 
