@@ -68,6 +68,8 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  integration_test:
+    sdk: flutter
   flutter_lints: ^6.0.0
   # 一键生成所有平台的 App 图标 (Android adaptive + macOS).
   # 用法: dart run flutter_launcher_icons

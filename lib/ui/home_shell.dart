@@ -26,6 +26,7 @@ import '../main.dart'
         setWindowSizePersist,
         resetAllSettings;
 import 'connection_bar.dart';
+import 'app_font_picker.dart';
 import 'gallery_shell.dart';
 import 'photo_download_tab.dart' show photoTabRefreshTrigger;
 import 'realtime_tab.dart';
@@ -866,6 +867,13 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
           ),
           const SizedBox(height: 12),
           const _SettingsSection(
+            icon: Icons.font_download_outlined,
+            title: '界面字体',
+            subtitle: '读取设备已安装字体并立即应用，Windows 与 Android 设置独立持久化',
+            child: AppFontSettingsControl(),
+          ),
+          const SizedBox(height: 12),
+          const _SettingsSection(
             icon: Icons.notifications_active_outlined,
             title: '设备温度报警',
             subtitle: '过热/过冷独立阈值与迟滞、确认延时、锁存和报警模块重复上报；参数持久化在设备端',
@@ -1072,7 +1080,8 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
           _SettingsSection(
             icon: Icons.restore_rounded,
             title: '恢复出厂设置',
-            subtitle: '一键重置所有设置 (主题 / 缩放 / 断点 / 控制台 / 下载路径 / 软件与固件更新 / 窗口尺寸)',
+            subtitle:
+                '一键重置所有设置 (主题 / 字体 / 缩放 / 断点 / 控制台 / 下载路径 / 软件与固件更新 / 窗口尺寸)',
             child: const _ResetSettingsControl(),
           ),
           const SizedBox(height: 12),

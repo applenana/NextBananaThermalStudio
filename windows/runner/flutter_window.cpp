@@ -1,9 +1,14 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <set>
+#include <string>
 #include <dwmapi.h>
 
+#include <flutter/standard_method_codec.h>
+
 #include "flutter/generated_plugin_registrant.h"
+#include "utils.h"
 
 #pragma comment(lib, "Dwmapi.lib")
 
@@ -12,6 +17,8 @@
 // so DestroyWindow / SetWindowPos always run on the window-owning thread.
 static constexpr UINT kSplashDismissMsg = WM_APP + 0x21;
 static constexpr UINT_PTR kSplashFallbackTimerId = 0xBA0;
+static constexpr char kSystemFontsChannel[] =
+    "com.applenana.banana_thermal/system_fonts";
 
 // Newer DWM attributes (Win11 22000+). Define here to avoid SDK version gates.
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -40,6 +47,43 @@ static void ApplyModernTitleBar(HWND hwnd) {
   DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &brd, sizeof(brd));
 }
 
+static int CALLBACK CollectFontFamily(const LOGFONTW* log_font,
+                                      const TEXTMETRICW*, DWORD,
+                                      LPARAM user_data) {
+  if (!log_font || !user_data || log_font->lfFaceName[0] == L'@') return 1;
+  auto* families = reinterpret_cast<std::set<std::wstring>*>(user_data);
+  families->insert(log_font->lfFaceName);
+  return 1;
+}
+
+static flutter::EncodableList ListSystemFonts() {
+  std::set<std::wstring> families;
+  HDC device_context = GetDC(nullptr);
+  if (device_context) {
+    LOGFONTW query = {};
+    query.lfCharSet = DEFAULT_CHARSET;
+    query.lfFaceName[0] = L'\0';
+    query.lfPitchAndFamily = 0;
+    EnumFontFamiliesExW(device_context, &query, CollectFontFamily,
+                        reinterpret_cast<LPARAM>(&families), 0);
+    ReleaseDC(nullptr, device_context);
+  }
+
+  flutter::EncodableList result;
+  result.reserve(families.size());
+  for (const auto& family : families) {
+    const std::string utf8_name = Utf8FromUtf16(family.c_str());
+    if (utf8_name.empty()) continue;
+    result.emplace_back(flutter::EncodableMap{
+        {flutter::EncodableValue("label"),
+         flutter::EncodableValue(utf8_name)},
+        {flutter::EncodableValue("family"),
+         flutter::EncodableValue(utf8_name)},
+    });
+  }
+  return result;
+}
+
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
@@ -63,6 +107,20 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  system_fonts_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), kSystemFontsChannel,
+          &flutter::StandardMethodCodec::GetInstance());
+  system_fonts_channel_->SetMethodCallHandler(
+      [](const flutter::MethodCall<flutter::EncodableValue>& call,
+         std::unique_ptr<
+             flutter::MethodResult<flutter::EncodableValue>> result) {
+        if (call.method_name() == "listSystemFonts") {
+          result->Success(flutter::EncodableValue(ListSystemFonts()));
+          return;
+        }
+        result->NotImplemented();
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   // Splash dismissal must run on the UI thread (DestroyWindow + SetWindowPos
@@ -88,6 +146,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  system_fonts_channel_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
