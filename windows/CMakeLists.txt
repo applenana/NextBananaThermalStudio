@@ -61,6 +61,15 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# audioplayers_windows 4.3.1 pulls an older Windows Implementation Library
+# that still includes <experimental/coroutine>. MSVC 14.51 turns that
+# deprecation into STL1011, so accept the upstream compatibility escape hatch
+# until the plugin migrates to the standard C++20 coroutine header.
+if(TARGET audioplayers_windows_plugin)
+  target_compile_definitions(audioplayers_windows_plugin PRIVATE
+    "_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS")
+endif()
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
