@@ -632,6 +632,26 @@ class AppState extends ChangeNotifier {
     CalibrationCurve curve, {
     required TemperatureCalibration fallbackLinear,
   }) async {
+    // A device already identified as v1/legacy cannot understand the v2
+    // transaction at all. Write the independently optimized compatibility
+    // line immediately instead of validating or probing the piecewise curve.
+    if (curve.kind == CalibrationCurveKind.piecewise &&
+        !deviceSupportsCalibrationV2) {
+      if (!fallbackLinear.isWithinDeviceLimits) {
+        throw ArgumentError('兼容单直线超出设备允许的斜率或偏移范围');
+      }
+      final result = await applyTemperatureCalibration(
+        gain: fallbackLinear.gain,
+        offset: fallbackLinear.offset,
+      );
+      deviceCalibrationCurve = CalibrationCurve.linear(
+        gain: result.gain,
+        offset: result.offset,
+        persisted: result.persisted,
+      );
+      notifyListeners();
+      return deviceCalibrationCurve;
+    }
     final validation = curve.validate();
     if (!validation.valid) throw ArgumentError(validation.errors.join('；'));
     if (curve.kind != CalibrationCurveKind.piecewise) {
