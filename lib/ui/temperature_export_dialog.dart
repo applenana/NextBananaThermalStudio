@@ -11,6 +11,7 @@ import 'package:flutter/rendering.dart';
 import '../temperature/temperature_export_service.dart';
 import '../temperature/temperature_history_store.dart';
 import '../temperature/temperature_recorder.dart';
+import 'app_font.dart';
 
 Future<void> showTemperatureExportDialog(
   BuildContext context, {
@@ -394,11 +395,11 @@ class _TemperatureExportPreview extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
+            Text(
               'BananaThermal 温度趋势记录',
               style: TextStyle(
                 color: Colors.white,
-                fontFamily: 'SmileySans',
+                fontFamily: currentAppFontFamily,
                 fontSize: 28,
                 fontWeight: FontWeight.w700,
               ),

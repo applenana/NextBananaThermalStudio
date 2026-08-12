@@ -30,6 +30,7 @@ import '../storage/capture_package.dart';
 import '../storage/capture_service.dart';
 import 'widgets/temp_overlay.dart';
 import 'widgets/thermal_canvas.dart';
+import 'app_font.dart';
 import 'banana_toast.dart';
 
 /// 全局软件图库刷新触发器: GalleryShell 在副 tab 切到"软件图库"时 ++,
@@ -101,8 +102,9 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
         content: const Text('该操作不可恢复. 已选中的所有 .btpkg 将从磁盘永久删除.'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: Theme.of(ctx).colorScheme.error,
@@ -195,8 +197,9 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
 
   // ---------------- 列表操作 ----------------
   Future<void> _onRename(SoftwareGalleryItem it) async {
-    final ctrl =
-        TextEditingController(text: p.basenameWithoutExtension(it.name));
+    final ctrl = TextEditingController(
+      text: p.basenameWithoutExtension(it.name),
+    );
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
@@ -208,11 +211,13 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(c, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(c, true),
-              child: const Text('确定')),
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('确定'),
+          ),
         ],
       ),
     );
@@ -220,8 +225,7 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
     final newBase = ctrl.text.trim();
     if (newBase.isEmpty || newBase.contains(RegExp(r'[\\/:*?"<>|]'))) {
       if (!mounted) return;
-      BananaToast.show(context, '文件名非法',
-          icon: Icons.error_outline_rounded);
+      BananaToast.show(context, '文件名非法', icon: Icons.error_outline_rounded);
       return;
     }
     try {
@@ -230,16 +234,14 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
       if (newPath == it.path) return;
       if (await File(newPath).exists()) {
         if (!mounted) return;
-        BananaToast.show(context, '同名文件已存在',
-            icon: Icons.error_outline_rounded);
+        BananaToast.show(context, '同名文件已存在', icon: Icons.error_outline_rounded);
         return;
       }
       await File(it.path).rename(newPath);
       await _refresh();
     } catch (e) {
       if (!mounted) return;
-      BananaToast.show(context, '重命名失败: $e',
-          icon: Icons.error_outline_rounded);
+      BananaToast.show(context, '重命名失败: $e', icon: Icons.error_outline_rounded);
     }
   }
 
@@ -257,11 +259,13 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(c, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(c, true),
-              child: const Text('保存')),
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('保存'),
+          ),
         ],
       ),
     );
@@ -271,8 +275,7 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
       await _refresh();
     } catch (e) {
       if (!mounted) return;
-      BananaToast.show(context, '保存失败: $e',
-          icon: Icons.error_outline_rounded);
+      BananaToast.show(context, '保存失败: $e', icon: Icons.error_outline_rounded);
     }
   }
 
@@ -284,8 +287,9 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
         content: Text('将永久删除 ${it.name}, 此操作不可撤销.'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(c, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(c, true),
             child: const Text('删除'),
@@ -300,8 +304,7 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
       await _refresh();
     } catch (e) {
       if (!mounted) return;
-      BananaToast.show(context, '删除失败: $e',
-          icon: Icons.error_outline_rounded);
+      BananaToast.show(context, '删除失败: $e', icon: Icons.error_outline_rounded);
     }
   }
 
@@ -310,7 +313,45 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
   Widget build(BuildContext context) {
     // Android 手机: 列表 / 详情单页切换, 平板/桌面双栏.
     if (Platform.isAndroid) {
-      return LayoutBuilder(builder: (context, c) {
+      return LayoutBuilder(
+        builder: (context, c) {
+          final wide = c.maxWidth > 760;
+          if (wide) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(width: 320, child: _buildListCard()),
+                const SizedBox(width: 12),
+                Expanded(child: _buildDetailCard()),
+              ],
+            );
+          }
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 260),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, anim) => FadeTransition(
+              opacity: anim,
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.96, end: 1.0).animate(anim),
+                child: child,
+              ),
+            ),
+            child: _phoneShowDetail
+                ? KeyedSubtree(
+                    key: const ValueKey('soft-detail'),
+                    child: _buildDetailCard(phone: true),
+                  )
+                : KeyedSubtree(
+                    key: const ValueKey('soft-list'),
+                    child: _buildListCard(phone: true),
+                  ),
+          );
+        },
+      );
+    }
+    return LayoutBuilder(
+      builder: (context, c) {
         final wide = c.maxWidth > 760;
         if (wide) {
           return Row(
@@ -322,49 +363,15 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
             ],
           );
         }
-        return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 260),
-          switchInCurve: Curves.easeOutCubic,
-          switchOutCurve: Curves.easeInCubic,
-          transitionBuilder: (child, anim) => FadeTransition(
-            opacity: anim,
-            child: ScaleTransition(
-              scale: Tween<double>(begin: 0.96, end: 1.0).animate(anim),
-              child: child,
-            ),
-          ),
-          child: _phoneShowDetail
-              ? KeyedSubtree(
-                  key: const ValueKey('soft-detail'),
-                  child: _buildDetailCard(phone: true),
-                )
-              : KeyedSubtree(
-                  key: const ValueKey('soft-list'),
-                  child: _buildListCard(phone: true),
-                ),
-        );
-      });
-    }
-    return LayoutBuilder(builder: (context, c) {
-      final wide = c.maxWidth > 760;
-      if (wide) {
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        return Column(
           children: [
-            SizedBox(width: 320, child: _buildListCard()),
-            const SizedBox(width: 12),
-            Expanded(child: _buildDetailCard()),
+            Expanded(flex: 2, child: _buildListCard()),
+            const SizedBox(height: 12),
+            Expanded(flex: 3, child: _buildDetailCard()),
           ],
         );
-      }
-      return Column(
-        children: [
-          Expanded(flex: 2, child: _buildListCard()),
-          const SizedBox(height: 12),
-          Expanded(flex: 3, child: _buildDetailCard()),
-        ],
-      );
-    });
+      },
+    );
   }
 
   Widget _buildListCard({bool phone = false}) {
@@ -386,7 +393,9 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                   Text(
                     '已选 ${_selectedPaths.length}',
                     style: const TextStyle(
-                        fontWeight: FontWeight.w700, fontSize: 14),
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                    ),
                   ),
                   const Spacer(),
                   TextButton.icon(
@@ -396,15 +405,16 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                   ),
                   const SizedBox(width: 4),
                   FilledButton.icon(
-                    onPressed:
-                        _selectedPaths.isEmpty ? null : _bulkDelete,
+                    onPressed: _selectedPaths.isEmpty ? null : _bulkDelete,
                     icon: const Icon(Icons.delete_sweep_rounded, size: 16),
                     label: const Text('删除选中'),
                     style: FilledButton.styleFrom(
                       backgroundColor: scheme.error,
                       foregroundColor: scheme.onError,
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                     ),
                   ),
                 ] else ...[
@@ -412,14 +422,15 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                   const SizedBox(width: 8),
                   const Text(
                     '软件图库',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
                   ),
                   const Spacer(),
                   Text(
                     '${_items.length} 项',
                     style: TextStyle(
-                        fontSize: 11, color: scheme.onSurfaceVariant),
+                      fontSize: 11,
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
                   const SizedBox(width: 4),
                   IconButton(
@@ -435,7 +446,9 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                     label: const Text('刷新'),
                     style: FilledButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                     ),
                   ),
                 ],
@@ -445,52 +458,55 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
             if (_error != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 6),
-                child: Text(_error!,
-                    style: TextStyle(fontSize: 11, color: scheme.error)),
+                child: Text(
+                  _error!,
+                  style: TextStyle(fontSize: 11, color: scheme.error),
+                ),
               ),
             Expanded(
               child: _loading
                   ? const Center(child: CircularProgressIndicator())
                   : _items.isEmpty
-                      ? Center(
-                          child: Text(
-                            '空空如也\n请到实时画面用拍摄/录制按钮新建',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                                fontSize: 12,
-                                color: scheme.onSurfaceVariant),
-                          ),
-                        )
-                      : ListView.separated(
-                          itemCount: _items.length,
-                          separatorBuilder: (_, i) => const SizedBox(height: 6),
-                          itemBuilder: (_, i) {
-                            final it = _items[i];
-                            final isSel = _selected?.path == it.path;
-                            final inMulti = _multiMode;
-                            final checked = _selectedPaths.contains(it.path);
-                            return _PkgTile(
-                              item: it,
-                              selected: isSel,
-                              multiMode: inMulti,
-                              checked: checked,
-                              onTap: () {
-                                if (inMulti) {
-                                  _toggleSelectPath(it.path);
-                                  return;
-                                }
-                                setState(() => _selected = it);
-                                if (phone) _setPhoneShowDetail(true);
-                              },
-                              onLongPress: () {
-                                if (!inMulti) _enterMultiWith(it.path);
-                              },
-                              onRename: () => _onRename(it),
-                              onEditNote: () => _onEditNote(it),
-                              onDelete: () => _onDelete(it),
-                            );
-                          },
+                  ? Center(
+                      child: Text(
+                        '空空如也\n请到实时画面用拍摄/录制按钮新建',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: scheme.onSurfaceVariant,
                         ),
+                      ),
+                    )
+                  : ListView.separated(
+                      itemCount: _items.length,
+                      separatorBuilder: (_, i) => const SizedBox(height: 6),
+                      itemBuilder: (_, i) {
+                        final it = _items[i];
+                        final isSel = _selected?.path == it.path;
+                        final inMulti = _multiMode;
+                        final checked = _selectedPaths.contains(it.path);
+                        return _PkgTile(
+                          item: it,
+                          selected: isSel,
+                          multiMode: inMulti,
+                          checked: checked,
+                          onTap: () {
+                            if (inMulti) {
+                              _toggleSelectPath(it.path);
+                              return;
+                            }
+                            setState(() => _selected = it);
+                            if (phone) _setPhoneShowDetail(true);
+                          },
+                          onLongPress: () {
+                            if (!inMulti) _enterMultiWith(it.path);
+                          },
+                          onRename: () => _onRename(it),
+                          onEditNote: () => _onEditNote(it),
+                          onDelete: () => _onDelete(it),
+                        );
+                      },
+                    ),
             ),
           ],
         ),
@@ -521,8 +537,7 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                 const SizedBox(width: 8),
                 const Text(
                   '详情 / 预览',
-                  style:
-                      TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
                 ),
                 const Spacer(),
                 if (sel != null) ...[
@@ -530,8 +545,9 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                     tooltip: '重命名',
                     onPressed: () => _onRename(sel),
                     icon: const Icon(
-                        Icons.drive_file_rename_outline_rounded,
-                        size: 18),
+                      Icons.drive_file_rename_outline_rounded,
+                      size: 18,
+                    ),
                   ),
                   IconButton(
                     tooltip: '编辑备注',
@@ -554,12 +570,16 @@ class _SoftwareGalleryTabState extends State<SoftwareGalleryTab> {
                   child: Text(
                     '在左侧选择一个数据包',
                     style: TextStyle(
-                        fontSize: 12, color: scheme.onSurfaceVariant),
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
               )
             else
-              Expanded(child: _DetailBody(key: ValueKey(sel.path), item: sel)),
+              Expanded(
+                child: _DetailBody(key: ValueKey(sel.path), item: sel),
+              ),
           ],
         ),
       ),
@@ -638,7 +658,9 @@ class _PkgTile extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w600),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                     const SizedBox(height: 2),
                     Text(
@@ -673,8 +695,11 @@ class _PkgTile extends StatelessWidget {
               if (!multiMode)
                 PopupMenuButton<String>(
                   tooltip: '更多',
-                  icon: Icon(Icons.more_vert_rounded,
-                      size: 18, color: scheme.onSurfaceVariant),
+                  icon: Icon(
+                    Icons.more_vert_rounded,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
                   onSelected: (v) {
                     switch (v) {
                       case 'rename':
@@ -727,8 +752,7 @@ class _TileThumb extends StatelessWidget {
         width: 30,
         height: 30,
         alignment: Alignment.center,
-        color:
-            selected ? scheme.primary : scheme.surfaceContainerHighest,
+        color: selected ? scheme.primary : scheme.surfaceContainerHighest,
         child: FutureBuilder<Uint8List?>(
           future: _GalleryThumbCache.get(item.path, item.mtime),
           builder: (_, snap) {
@@ -815,7 +839,10 @@ class _GalleryThumbCache {
       // 优先热成像缩略图 (即使没有可见光也能预览温度分布).
       if (f.thermal != null && f.thermal!.isNotEmpty) {
         final png = _renderThermalThumb(
-            f.thermal!, r.meta.thermalW, r.meta.thermalH);
+          f.thermal!,
+          r.meta.thermalW,
+          r.meta.thermalH,
+        );
         if (png != null) return png;
       }
       // 次选可见光首帧.
@@ -1089,10 +1116,12 @@ class _DetailBodyState extends State<_DetailBody> {
     final custom = appPhotoDownloadDir.value;
     final root = (custom != null && custom.isNotEmpty)
         ? Directory(custom)
-        : Directory(p.join(
-            (await getApplicationDocumentsDirectory()).path,
-            'BananaThermalStudio',
-          ));
+        : Directory(
+            p.join(
+              (await getApplicationDocumentsDirectory()).path,
+              'BananaThermalStudio',
+            ),
+          );
     if (!await root.exists()) await root.create(recursive: true);
     final dir = Directory(p.join(root.path, 'exports'));
     if (!await dir.exists()) await dir.create(recursive: true);
@@ -1154,16 +1183,28 @@ class _DetailBodyState extends State<_DetailBody> {
     );
     final baseImg = await completer.future;
     final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder,
-        Rect.fromLTWH(0, 0, r.width.toDouble(), r.height.toDouble()));
+    final canvas = Canvas(
+      recorder,
+      Rect.fromLTWH(0, 0, r.width.toDouble(), r.height.toDouble()),
+    );
     canvas.drawImage(baseImg, Offset.zero, Paint());
     if (hasOverlay) {
-      _drawTempOverlayOnCanvas(canvas, r.width.toDouble(),
-          r.height.toDouble(), overlayMin, overlayMax, overlayAvg);
+      _drawTempOverlayOnCanvas(
+        canvas,
+        r.width.toDouble(),
+        r.height.toDouble(),
+        overlayMin,
+        overlayMax,
+        overlayAvg,
+      );
     }
     if (hasMarkers) {
-      _drawMarkersOnCanvas(canvas, r.width.toDouble(), r.height.toDouble(),
-          markers);
+      _drawMarkersOnCanvas(
+        canvas,
+        r.width.toDouble(),
+        r.height.toDouble(),
+        markers,
+      );
     }
     if (hasExtremeTracking) {
       _drawExtremeTrackingOnCanvas(
@@ -1177,11 +1218,7 @@ class _DetailBodyState extends State<_DetailBody> {
     final outImg = await picture.toImage(r.width, r.height);
     final bd = await outImg.toByteData(format: ui.ImageByteFormat.rawRgba);
     if (bd == null) throw 'toByteData rawRgba null';
-    return (
-      rgba: bd.buffer.asUint8List(),
-      width: r.width,
-      height: r.height,
-    );
+    return (rgba: bd.buffer.asUint8List(), width: r.width, height: r.height);
   }
 
   /// 把单帧渲染结果 + (可选)温度叠加烘焙成 PNG bytes.
@@ -1212,16 +1249,28 @@ class _DetailBodyState extends State<_DetailBody> {
     );
     final baseImg = await completer.future;
     final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder,
-        Rect.fromLTWH(0, 0, r.width.toDouble(), r.height.toDouble()));
+    final canvas = Canvas(
+      recorder,
+      Rect.fromLTWH(0, 0, r.width.toDouble(), r.height.toDouble()),
+    );
     canvas.drawImage(baseImg, Offset.zero, Paint());
     if (overlayMin != null && overlayMax != null && overlayAvg != null) {
-      _drawTempOverlayOnCanvas(canvas, r.width.toDouble(),
-          r.height.toDouble(), overlayMin, overlayMax, overlayAvg);
+      _drawTempOverlayOnCanvas(
+        canvas,
+        r.width.toDouble(),
+        r.height.toDouble(),
+        overlayMin,
+        overlayMax,
+        overlayAvg,
+      );
     }
     if (markers != null && markers.isNotEmpty) {
       _drawMarkersOnCanvas(
-          canvas, r.width.toDouble(), r.height.toDouble(), markers);
+        canvas,
+        r.width.toDouble(),
+        r.height.toDouble(),
+        markers,
+      );
     }
     if (_trackHotSpot || _trackColdSpot) {
       _drawExtremeTrackingOnCanvas(
@@ -1273,6 +1322,7 @@ class _DetailBodyState extends State<_DetailBody> {
             color: Colors.white,
             fontSize: fontSize,
             fontWeight: FontWeight.w700,
+            fontFamily: currentAppFontFamily,
           ),
         ),
         textDirection: TextDirection.ltr,
@@ -1298,8 +1348,7 @@ class _DetailBodyState extends State<_DetailBody> {
     _VideoExtremeTrackingState? trackingState,
     int? frameTimestampMs,
   }) {
-    if ((!_trackHotSpot && !_trackColdSpot) ||
-        frame.temperatureField.isEmpty) {
+    if ((!_trackHotSpot && !_trackColdSpot) || frame.temperatureField.isEmpty) {
       return;
     }
     int hotIndex = -1;
@@ -1404,7 +1453,7 @@ class _DetailBodyState extends State<_DetailBody> {
           color: Colors.white,
           fontSize: fontSize,
           fontWeight: FontWeight.w700,
-          fontFamily: 'SmileySans',
+          fontFamily: currentAppFontFamily,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -1447,42 +1496,56 @@ class _DetailBodyState extends State<_DetailBody> {
     final dotR = (fontSize * 0.28).clamp(2.0, 6.0);
 
     TextPainter mk(String s, double size, FontWeight w, Color c) => TextPainter(
-          text: TextSpan(
-            text: s,
-            style: TextStyle(
-              fontSize: size,
-              fontWeight: w,
-              color: c,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout();
+      text: TextSpan(
+        text: s,
+        style: TextStyle(
+          fontSize: size,
+          fontWeight: w,
+          color: c,
+          fontFeatures: const [FontFeature.tabularFigures()],
+          fontFamily: currentAppFontFamily,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
 
     final items = <({Color color, TextPainter label, TextPainter value})>[
       (
         color: const Color(0xFFFF6E40),
         label: mk('MAX', labelSize, FontWeight.w600, Colors.white70),
-        value: mk('${tMax.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
-            Colors.white),
+        value: mk(
+          '${tMax.toStringAsFixed(1)}°',
+          fontSize,
+          FontWeight.w700,
+          Colors.white,
+        ),
       ),
       (
         color: const Color(0xFF40C4FF),
         label: mk('MIN', labelSize, FontWeight.w600, Colors.white70),
-        value: mk('${tMin.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
-            Colors.white),
+        value: mk(
+          '${tMin.toStringAsFixed(1)}°',
+          fontSize,
+          FontWeight.w700,
+          Colors.white,
+        ),
       ),
       (
         color: const Color(0xFFFFD740),
         label: mk('AVG', labelSize, FontWeight.w600, Colors.white70),
-        value: mk('${tAvg.toStringAsFixed(1)}°', fontSize, FontWeight.w700,
-            Colors.white),
+        value: mk(
+          '${tAvg.toStringAsFixed(1)}°',
+          fontSize,
+          FontWeight.w700,
+          Colors.white,
+        ),
       ),
     ];
 
     double itemW(({Color color, TextPainter label, TextPainter value}) it) {
-      final textW =
-          it.label.width > it.value.width ? it.label.width : it.value.width;
+      final textW = it.label.width > it.value.width
+          ? it.label.width
+          : it.value.width;
       return dotR * 2 + 4 + textW;
     }
 
@@ -1523,7 +1586,7 @@ class _DetailBodyState extends State<_DetailBody> {
   ///   - 返回 null: 帧无热像数据.
   ///   - rendered: 渲染结果, t{Min,Max,Avg}: 当 _tempOverlayEnabled 时非空.
   Future<({RenderedFrame rendered, double? tMin, double? tMax, double? tAvg})?>
-      _renderThermalFrame(CaptureFrame frame, CaptureMeta meta) async {
+  _renderThermalFrame(CaptureFrame frame, CaptureMeta meta) async {
     if (!(frame.hasThermal && frame.thermal != null)) return null;
     Uint8List? visRgb;
     int vw = 0, vh = 0;
@@ -1674,14 +1737,14 @@ class _DetailBodyState extends State<_DetailBody> {
       final dir = await _ensureExportRoot();
       final file = File(p.join(dir.path, '$name.$ext'));
       await file.writeAsBytes(bytes);
-      final albumOk =
-          await _saveToGalleryIfAndroid(bytes: bytes, name: name);
+      final albumOk = await _saveToGalleryIfAndroid(bytes: bytes, name: name);
       if (!mounted) return;
       BananaToast.show(
-          context,
-          albumOk
-              ? '已导出 ${p.basename(file.path)} (相册已保存)'
-              : '已导出 ${p.basename(file.path)}');
+        context,
+        albumOk
+            ? '已导出 ${p.basename(file.path)} (相册已保存)'
+            : '已导出 ${p.basename(file.path)}',
+      );
     } catch (e) {
       if (!mounted) return;
       BananaToast.show(context, '导出失败: $e');
@@ -1706,8 +1769,7 @@ class _DetailBodyState extends State<_DetailBody> {
       _playTimer = null;
       setState(() => _playing = false);
     }
-    final usePlugin =
-        Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
+    final usePlugin = Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
     setState(() => _exporting = true);
     try {
       // 1) 探测 fps: 取首两帧时间差.
@@ -1743,8 +1805,7 @@ class _DetailBodyState extends State<_DetailBody> {
       final base = p.basenameWithoutExtension(widget.item.path);
       final dir = await _ensureExportRoot();
       final outPath = p.join(dir.path, '$base.mp4');
-      final bitrate =
-          (w * h * fps * 0.12).round().clamp(500000, 20000000);
+      final bitrate = (w * h * fps * 0.12).round().clamp(500000, 20000000);
 
       if (usePlugin) {
         // 移动 / macOS: 走原生硬件编码插件.
@@ -1760,7 +1821,8 @@ class _DetailBodyState extends State<_DetailBody> {
           filepath: outPath,
         );
         await FlutterQuickVideoEncoder.appendVideoFrame(
-            _cropRgba(first.rgba, first.width, first.height, w, h));
+          _cropRgba(first.rgba, first.width, first.height, w, h),
+        );
         for (var i = 1; i < r.frameCount; i++) {
           final f = await r.readFrame(i);
           final bake = await _bakeFrameToRgba(
@@ -1770,7 +1832,8 @@ class _DetailBodyState extends State<_DetailBody> {
           );
           if (bake == null) continue;
           await FlutterQuickVideoEncoder.appendVideoFrame(
-              _cropRgba(bake.rgba, bake.width, bake.height, w, h));
+            _cropRgba(bake.rgba, bake.width, bake.height, w, h),
+          );
           if (!mounted) {
             await FlutterQuickVideoEncoder.finish();
             return;
@@ -1793,7 +1856,9 @@ class _DetailBodyState extends State<_DetailBody> {
         }
         if (!mounted) return;
         BananaToast.show(
-            context, albumOk ? '已导出 $base.mp4 (相册已保存)' : '已导出 $outPath');
+          context,
+          albumOk ? '已导出 $base.mp4 (相册已保存)' : '已导出 $outPath',
+        );
         return;
       }
 
@@ -1812,22 +1877,34 @@ class _DetailBodyState extends State<_DetailBody> {
       }
       final args = <String>[
         '-hide_banner',
-        '-loglevel', 'error',
+        '-loglevel',
+        'error',
         '-y',
-        '-f', 'rawvideo',
-        '-pix_fmt', 'rgba',
-        '-s', '${w}x$h',
-        '-r', '$fps',
-        '-i', 'pipe:0',
-        '-c:v', 'libx264',
-        '-pix_fmt', 'yuv420p',
-        '-preset', 'medium',
-        '-b:v', '$bitrate',
+        '-f',
+        'rawvideo',
+        '-pix_fmt',
+        'rgba',
+        '-s',
+        '${w}x$h',
+        '-r',
+        '$fps',
+        '-i',
+        'pipe:0',
+        '-c:v',
+        'libx264',
+        '-pix_fmt',
+        'yuv420p',
+        '-preset',
+        'medium',
+        '-b:v',
+        '$bitrate',
         outPath,
       ];
       final proc = await Process.start(ffmpegPath, args);
       final stderrBuf = StringBuffer();
-      proc.stderr.transform(const SystemEncoding().decoder).listen(stderrBuf.write);
+      proc.stderr
+          .transform(const SystemEncoding().decoder)
+          .listen(stderrBuf.write);
       proc.stdout.drain<void>();
       // 写入首帧
       proc.stdin.add(_cropRgba(first.rgba, first.width, first.height, w, h));
@@ -1856,7 +1933,9 @@ class _DetailBodyState extends State<_DetailBody> {
       if (!mounted) return;
       if (code != 0) {
         BananaToast.show(
-            context, 'ffmpeg 编码失败 (code=$code): ${stderrBuf.toString().trim()}');
+          context,
+          'ffmpeg 编码失败 (code=$code): ${stderrBuf.toString().trim()}',
+        );
         return;
       }
       BananaToast.show(context, '已导出 $outPath');
@@ -1889,7 +1968,9 @@ class _DetailBodyState extends State<_DetailBody> {
   }
 
   /// Windows/Linux 桌面回退: 逐帧 PNG 写入 exports/<base>/ 子目录.
-  Future<void> _exportAllFramesAsPngBatch({bool setExportingFlag = true}) async {
+  Future<void> _exportAllFramesAsPngBatch({
+    bool setExportingFlag = true,
+  }) async {
     final r = _reader;
     if (r == null) return;
     if (setExportingFlag) setState(() => _exporting = true);
@@ -1904,15 +1985,12 @@ class _DetailBodyState extends State<_DetailBody> {
       int ok = 0;
       for (var i = 0; i < r.frameCount; i++) {
         final f = await r.readFrame(i);
-        final baked = await _bakeFrame(
-          f,
-          r.meta,
-          trackingState: trackingState,
-        );
+        final baked = await _bakeFrame(f, r.meta, trackingState: trackingState);
         if (baked == null) continue;
         final (bytes, ext) = baked;
-        final file = File(p.join(subDir.path,
-            '${base}_f${i.toString().padLeft(4, '0')}.$ext'));
+        final file = File(
+          p.join(subDir.path, '${base}_f${i.toString().padLeft(4, '0')}.$ext'),
+        );
         await file.writeAsBytes(bytes);
         ok++;
         if (!mounted) return;
@@ -1937,8 +2015,10 @@ class _DetailBodyState extends State<_DetailBody> {
     }
     if (_error != null) {
       return Center(
-        child: Text(_error!,
-            style: TextStyle(color: Theme.of(context).colorScheme.error)),
+        child: Text(
+          _error!,
+          style: TextStyle(color: Theme.of(context).colorScheme.error),
+        ),
       );
     }
     final r = _reader;
@@ -1974,8 +2054,10 @@ class _DetailBodyState extends State<_DetailBody> {
       if (meta.deviceSn != null) _kv('设备', meta.deviceSn!),
       _kv('位置', (meta.place ?? '').isEmpty ? '未知' : meta.place!),
       if (meta.lat != null && meta.lng != null)
-        _kv('经纬',
-            '${meta.lat!.toStringAsFixed(5)}, ${meta.lng!.toStringAsFixed(5)}'),
+        _kv(
+          '经纬',
+          '${meta.lat!.toStringAsFixed(5)}, ${meta.lng!.toStringAsFixed(5)}',
+        ),
       if (hasThermalInPkg)
         _kv('热成像', '${meta.thermalW} × ${meta.thermalH}')
       else
@@ -2020,8 +2102,7 @@ class _DetailBodyState extends State<_DetailBody> {
             borderRadius: BorderRadius.circular(12),
             onTap: () => setState(() => _metaExpanded = !_metaExpanded),
             child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -2032,7 +2113,9 @@ class _DetailBodyState extends State<_DetailBody> {
                           ? DefaultTextStyle(
                               key: const ValueKey('soft-meta-expanded'),
                               style: TextStyle(
-                                  fontSize: 11.5, color: scheme.onSurface),
+                                fontSize: 11.5,
+                                color: scheme.onSurface,
+                              ),
                               child: Wrap(
                                 spacing: 16,
                                 runSpacing: 4,
@@ -2070,11 +2153,15 @@ class _DetailBodyState extends State<_DetailBody> {
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
-                            : Icon(Icons.download_rounded,
-                                size: 20, color: scheme.primary),
+                            : Icon(
+                                Icons.download_rounded,
+                                size: 20,
+                                color: scheme.primary,
+                              ),
                       ),
                     ),
                   ),
@@ -2088,8 +2175,11 @@ class _DetailBodyState extends State<_DetailBody> {
                         onTap: _exporting ? null : _exportAllFrames,
                         child: Padding(
                           padding: const EdgeInsets.all(4),
-                          child: Icon(Icons.movie_creation_rounded,
-                              size: 20, color: scheme.primary),
+                          child: Icon(
+                            Icons.movie_creation_rounded,
+                            size: 20,
+                            color: scheme.primary,
+                          ),
                         ),
                       ),
                     ),
@@ -2152,15 +2242,13 @@ class _DetailBodyState extends State<_DetailBody> {
                   value: _trackHotSpot,
                   label: '热点追踪',
                   color: const Color(0xFFFFCC00),
-                  onChanged: (value) =>
-                      setState(() => _trackHotSpot = value),
+                  onChanged: (value) => setState(() => _trackHotSpot = value),
                 ),
                 _VideoTrackingCheckbox(
                   value: _trackColdSpot,
                   label: '冷点追踪',
                   color: const Color(0xFF80D8FF),
-                  onChanged: (value) =>
-                      setState(() => _trackColdSpot = value),
+                  onChanged: (value) => setState(() => _trackColdSpot = value),
                 ),
                 Text(
                   '勾选效果会写入导出视频',
@@ -2201,7 +2289,8 @@ class _DetailBodyState extends State<_DetailBody> {
                             meta: meta,
                             params: params,
                             scheme: scheme,
-                            topLeftBadge: (_tempOverlayEnabled &&
+                            topLeftBadge:
+                                (_tempOverlayEnabled &&
                                     tMin != null &&
                                     tMax != null &&
                                     tAvg != null)
@@ -2209,9 +2298,10 @@ class _DetailBodyState extends State<_DetailBody> {
                                     tMax: tMax,
                                     tMin: tMin,
                                     tAvg: tAvg,
-                                    compact: MediaQuery.of(context)
-                                            .size
-                                            .shortestSide <
+                                    compact:
+                                        MediaQuery.of(
+                                          context,
+                                        ).size.shortestSide <
                                         600,
                                   )
                                 : null,
@@ -2228,8 +2318,8 @@ class _DetailBodyState extends State<_DetailBody> {
                             icon: _showVisible
                                 ? Icons.visibility_off_rounded
                                 : Icons.visibility_rounded,
-                            onTap: () => setState(
-                                () => _showVisible = !_showVisible),
+                            onTap: () =>
+                                setState(() => _showVisible = !_showVisible),
                           ),
                         ),
                       // 左上偏右: 温度叠加开关 (仅含热成像才出现).
@@ -2238,14 +2328,13 @@ class _DetailBodyState extends State<_DetailBody> {
                           top: 6,
                           right: (fHasV && fHasT) ? 44 : 6,
                           child: _OverlayIconButton(
-                            tooltip: _tempOverlayEnabled
-                                ? '隐藏温度叠加'
-                                : '显示温度叠加',
+                            tooltip: _tempOverlayEnabled ? '隐藏温度叠加' : '显示温度叠加',
                             icon: _tempOverlayEnabled
                                 ? Icons.thermostat
                                 : Icons.thermostat_outlined,
-                            onTap: () => setState(() =>
-                                _tempOverlayEnabled = !_tempOverlayEnabled),
+                            onTap: () => setState(
+                              () => _tempOverlayEnabled = !_tempOverlayEnabled,
+                            ),
                           ),
                         ),
                       // 再偏右: 清空温度标签 (仅在已存在标签时启用).
@@ -2318,15 +2407,19 @@ class _DetailBodyState extends State<_DetailBody> {
                       children: [
                         Row(
                           children: [
-                            Icon(Icons.image_outlined,
-                                size: 13, color: scheme.onSurfaceVariant),
+                            Icon(
+                              Icons.image_outlined,
+                              size: 13,
+                              color: scheme.onSurfaceVariant,
+                            ),
                             const SizedBox(width: 4),
                             Expanded(
                               child: Text(
                                 '可见光 · ${(f.visiblePng!.length / 1024).toStringAsFixed(1)} KB',
                                 style: TextStyle(
-                                    fontSize: 10.5,
-                                    color: scheme.onSurfaceVariant),
+                                  fontSize: 10.5,
+                                  color: scheme.onSurfaceVariant,
+                                ),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
@@ -2360,12 +2453,18 @@ class _DetailBodyState extends State<_DetailBody> {
     final scheme = Theme.of(context).colorScheme;
     return RichText(
       text: TextSpan(
-        style: TextStyle(fontSize: 12, color: scheme.onSurface),
+        style: TextStyle(
+          fontSize: 12,
+          color: scheme.onSurface,
+          fontFamily: currentAppFontFamily,
+        ),
         children: [
           TextSpan(
             text: '$k  ',
             style: TextStyle(
-                color: scheme.onSurfaceVariant, fontWeight: FontWeight.w500),
+              color: scheme.onSurfaceVariant,
+              fontWeight: FontWeight.w500,
+            ),
           ),
           TextSpan(text: v),
         ],
@@ -2398,13 +2497,15 @@ class _DetailBodyState extends State<_DetailBody> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.layers_clear_rounded,
-                size: 40, color: scheme.onSurfaceVariant),
+            Icon(
+              Icons.layers_clear_rounded,
+              size: 40,
+              color: scheme.onSurfaceVariant,
+            ),
             const SizedBox(height: 6),
             Text(
               '本帧无任何数据 (空槽位)',
-              style: TextStyle(
-                  fontSize: 12, color: scheme.onSurfaceVariant),
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
             ),
           ],
         ),
@@ -2504,31 +2605,31 @@ class _SlotTimelineBar extends StatelessWidget {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(3),
-        child: LayoutBuilder(builder: (ctx, box) {
-          return Stack(
-            children: [
-              Row(
-                children: [
-                  for (final m in masks)
-                    Expanded(
-                      child: Container(color: _colorOf(m, scheme)),
-                    ),
-                ],
-              ),
-              // 游标
-              if (cursor >= 0 && cursor < masks.length)
-                Positioned(
-                  left: (cursor / masks.length) * box.maxWidth,
-                  top: 0,
-                  bottom: 0,
-                  child: Container(
-                    width: 2,
-                    color: Colors.white.withValues(alpha: 0.95),
-                  ),
+        child: LayoutBuilder(
+          builder: (ctx, box) {
+            return Stack(
+              children: [
+                Row(
+                  children: [
+                    for (final m in masks)
+                      Expanded(child: Container(color: _colorOf(m, scheme))),
+                  ],
                 ),
-            ],
-          );
-        }),
+                // 游标
+                if (cursor >= 0 && cursor < masks.length)
+                  Positioned(
+                    left: (cursor / masks.length) * box.maxWidth,
+                    top: 0,
+                    bottom: 0,
+                    child: Container(
+                      width: 2,
+                      color: Colors.white.withValues(alpha: 0.95),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -2562,11 +2663,12 @@ class _ParamsRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     Widget label(String t) => Padding(
-          padding: const EdgeInsets.only(right: 4),
-          child: Text(t,
-              style: TextStyle(
-                  fontSize: 11, color: scheme.onSurfaceVariant)),
-        );
+      padding: const EdgeInsets.only(right: 4),
+      child: Text(
+        t,
+        style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+      ),
+    );
 
     final row1 = <Widget>[
       label('颜色映射'),
@@ -2576,7 +2678,8 @@ class _ParamsRow extends StatelessWidget {
             : 'jet',
         items: _colormapZh.keys.toList(),
         onChanged: (v) => onParamsChanged(
-            params.copyWith(colormapName: v, useCustomColors: false)),
+          params.copyWith(colormapName: v, useCustomColors: false),
+        ),
         labelOf: (v) => _colormapZh[v] ?? v,
       ),
       const SizedBox(width: 14),
@@ -2608,8 +2711,9 @@ class _ParamsRow extends StatelessWidget {
         _Dropdown<FusionMode>(
           value: params.fusion.mode,
           items: FusionMode.values,
-          onChanged: (v) => onParamsChanged(params.copyWith(
-              fusion: params.fusion.copyWith(mode: v))),
+          onChanged: (v) => onParamsChanged(
+            params.copyWith(fusion: params.fusion.copyWith(mode: v)),
+          ),
           labelOf: (v) => switch (v) {
             FusionMode.off => '关闭',
             FusionMode.blend => '混合',
@@ -2624,90 +2728,104 @@ class _ParamsRow extends StatelessWidget {
       final f = params.fusion;
       if (f.mode == FusionMode.blend) {
         row2.addAll([
-          _slider(context,
-              title: '混合度',
-              value: f.alpha,
-              min: 0,
-              max: 1,
-              onChanged: (v) => onParamsChanged(
-                  params.copyWith(fusion: f.copyWith(alpha: v)))),
-          _slider(context,
-              title: '伽马值',
-              value: f.gamma,
-              min: 0.3,
-              max: 3.0,
-              onChanged: (v) => onParamsChanged(
-                  params.copyWith(fusion: f.copyWith(gamma: v)))),
+          _slider(
+            context,
+            title: '混合度',
+            value: f.alpha,
+            min: 0,
+            max: 1,
+            onChanged: (v) =>
+                onParamsChanged(params.copyWith(fusion: f.copyWith(alpha: v))),
+          ),
+          _slider(
+            context,
+            title: '伽马值',
+            value: f.gamma,
+            min: 0.3,
+            max: 3.0,
+            onChanged: (v) =>
+                onParamsChanged(params.copyWith(fusion: f.copyWith(gamma: v))),
+          ),
         ]);
       } else if (f.mode == FusionMode.edge) {
         row2.addAll([
-          _slider(context,
-              title: '伽马值',
-              value: f.gamma,
-              min: 0.3,
-              max: 3.0,
-              onChanged: (v) => onParamsChanged(
-                  params.copyWith(fusion: f.copyWith(gamma: v)))),
-          _slider(context,
-              title: '强度',
-              value: f.edgeStrength,
-              min: 0,
-              max: 1,
-              onChanged: (v) => onParamsChanged(
-                  params.copyWith(fusion: f.copyWith(edgeStrength: v)))),
-          _slider(context,
-              title: '阈值',
-              value: f.edgeThresh,
-              min: 0,
-              max: 0.5,
-              digits: 3,
-              onChanged: (v) => onParamsChanged(
-                  params.copyWith(fusion: f.copyWith(edgeThresh: v)))),
-          _slider(context,
-              title: '粗细',
-              value: f.edgeWidth,
-              min: 0,
-              max: 6,
-              onChanged: (v) => onParamsChanged(
-                  params.copyWith(fusion: f.copyWith(edgeWidth: v)))),
+          _slider(
+            context,
+            title: '伽马值',
+            value: f.gamma,
+            min: 0.3,
+            max: 3.0,
+            onChanged: (v) =>
+                onParamsChanged(params.copyWith(fusion: f.copyWith(gamma: v))),
+          ),
+          _slider(
+            context,
+            title: '强度',
+            value: f.edgeStrength,
+            min: 0,
+            max: 1,
+            onChanged: (v) => onParamsChanged(
+              params.copyWith(fusion: f.copyWith(edgeStrength: v)),
+            ),
+          ),
+          _slider(
+            context,
+            title: '阈值',
+            value: f.edgeThresh,
+            min: 0,
+            max: 0.5,
+            digits: 3,
+            onChanged: (v) => onParamsChanged(
+              params.copyWith(fusion: f.copyWith(edgeThresh: v)),
+            ),
+          ),
+          _slider(
+            context,
+            title: '粗细',
+            value: f.edgeWidth,
+            min: 0,
+            max: 6,
+            onChanged: (v) => onParamsChanged(
+              params.copyWith(fusion: f.copyWith(edgeWidth: v)),
+            ),
+          ),
         ]);
       }
     }
 
     Widget shell(List<Widget> kids) => Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Wrap(
-            spacing: 6,
-            runSpacing: 4,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: kids,
-          ),
-        );
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: kids,
+      ),
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         shell(row1),
-        if (row2.isNotEmpty) ...[
-          const SizedBox(height: 6),
-          shell(row2),
-        ],
+        if (row2.isNotEmpty) ...[const SizedBox(height: 6), shell(row2)],
       ],
     );
   }
 
-  Widget _slider(BuildContext ctx,
-      {required String title,
-      required double value,
-      required double min,
-      required double max,
-      required ValueChanged<double> onChanged,
-      int digits = 2}) {
+  Widget _slider(
+    BuildContext ctx, {
+    required String title,
+    required double value,
+    required double min,
+    required double max,
+    required ValueChanged<double> onChanged,
+    int digits = 2,
+  }) {
     final scheme = Theme.of(ctx).colorScheme;
     return SizedBox(
       width: 230,
@@ -2715,9 +2833,10 @@ class _ParamsRow extends StatelessWidget {
         children: [
           SizedBox(
             width: 48,
-            child: Text(title,
-                style: TextStyle(
-                    fontSize: 11, color: scheme.onSurfaceVariant)),
+            child: Text(
+              title,
+              style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+            ),
           ),
           Expanded(
             child: SliderTheme(
@@ -2739,8 +2858,7 @@ class _ParamsRow extends StatelessWidget {
             child: Text(
               value.toStringAsFixed(digits),
               textAlign: TextAlign.right,
-              style: const TextStyle(
-                  fontSize: 11, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
             ),
           ),
         ],
@@ -2829,10 +2947,7 @@ class _VideoTrackingCheckbox extends StatelessWidget {
             const SizedBox(width: 5),
             Text(
               label,
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
             ),
           ],
         ),
@@ -2862,9 +2977,11 @@ class _OverlayIconButton extends StatelessWidget {
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(6),
-          child: Icon(icon,
-              size: 18,
-              color: Colors.white.withValues(alpha: disabled ? 0.4 : 1.0)),
+          child: Icon(
+            icon,
+            size: 18,
+            color: Colors.white.withValues(alpha: disabled ? 0.4 : 1.0),
+          ),
         ),
       ),
     );
@@ -2918,9 +3035,7 @@ class _VideoOverlay extends StatelessWidget {
               child: Padding(
                 padding: const EdgeInsets.all(4),
                 child: Icon(
-                  playing
-                      ? Icons.pause_rounded
-                      : Icons.play_arrow_rounded,
+                  playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
                   size: 22,
                   color: Colors.white,
                 ),
@@ -2943,8 +3058,9 @@ class _VideoOverlay extends StatelessWidget {
                 data: SliderTheme.of(context).copyWith(
                   trackHeight: 2,
                   overlayShape: SliderComponentShape.noOverlay,
-                  thumbShape:
-                      const RoundSliderThumbShape(enabledThumbRadius: 5),
+                  thumbShape: const RoundSliderThumbShape(
+                    enabledThumbRadius: 5,
+                  ),
                   activeTrackColor: Colors.white,
                   inactiveTrackColor: Colors.white24,
                   thumbColor: Colors.white,
@@ -2953,9 +3069,10 @@ class _VideoOverlay extends StatelessWidget {
                   min: 0,
                   max: (frameCount - 1).toDouble(),
                   divisions: frameCount > 1 ? frameCount - 1 : null,
-                  value: frameIndex
-                      .toDouble()
-                      .clamp(0, (frameCount - 1).toDouble()),
+                  value: frameIndex.toDouble().clamp(
+                    0,
+                    (frameCount - 1).toDouble(),
+                  ),
                   onChanged: (v) => onSeek(v.round()),
                 ),
               ),

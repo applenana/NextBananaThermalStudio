@@ -22,6 +22,7 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../fusion/fusion.dart';
 import 'banana_toast.dart';
+import 'app_font.dart';
 import '../main.dart'
     show
         appPhotoDownloadDir,
@@ -895,8 +896,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(4),
                   child: LinearProgressIndicator(
-                    value:
-                        _progressTotal == 0 ? null : _progress / _progressTotal,
+                    value: _progressTotal == 0
+                        ? null
+                        : _progress / _progressTotal,
                     minHeight: 6,
                   ),
                 ),
@@ -969,7 +971,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       }
       // 排队 / 下载中: 显眼占位 + spinner.
       final sel = _selected;
-      final isQueued = _pendingDownload != null &&
+      final isQueued =
+          _pendingDownload != null &&
           sel != null &&
           _pendingDownload!.filename == sel.filename;
       final title = isQueued ? '排队中' : '下载中';
@@ -1046,7 +1049,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         tempBadge = TempOverlay(
           tMax: r.tMax,
           tMin: r.tMin,
-          tAvg: _session[_selected?.filename]?.thermalAvgC ??
+          tAvg:
+              _session[_selected?.filename]?.thermalAvgC ??
               (dec?.thermal != null
                   ? computeAvgC(dec!.thermal!)
                   : (r.tMin + r.tMax) / 2),
@@ -1176,22 +1180,22 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   }
 
   Widget _kv(String k, String v) => Text.rich(
+    TextSpan(
+      children: [
         TextSpan(
-          children: [
-            TextSpan(
-              text: '$k: ',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            TextSpan(
-              text: v,
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-          ],
+          text: '$k: ',
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontWeight: FontWeight.w500,
+          ),
         ),
-      );
+        TextSpan(
+          text: v,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+      ],
+    ),
+  );
 
   /// 详情顶部的元数据卡: 默认折叠到单行摘要, 点击右侧 ▶ 展开全部 _kv chips.
   /// 折叠态: '#索引 · 文件名 · 大小' 一行 ellipsis, 不挡参数面板.
@@ -1316,8 +1320,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         );
         if (!mounted) return;
         setState(
-          () => _statusText =
-              albumOk ? '已导出: ${f.path} (并保存到相册)' : '已导出: ${f.path}',
+          () => _statusText = albumOk
+              ? '已导出: ${f.path} (并保存到相册)'
+              : '已导出: ${f.path}',
         );
         _toast(
           albumOk
@@ -1363,8 +1368,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       );
       if (!mounted) return;
       setState(
-        () => _statusText =
-            albumOk ? '已导出: ${f.path} (并保存到相册)' : '已导出: ${f.path}',
+        () => _statusText = albumOk
+            ? '已导出: ${f.path} (并保存到相册)'
+            : '已导出: ${f.path}',
       );
       _toast(
         albumOk
@@ -1472,6 +1478,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
             color: Colors.white,
             fontSize: fontSize,
             fontWeight: FontWeight.w700,
+            fontFamily: currentAppFontFamily,
           ),
         ),
         textDirection: TextDirection.ltr,
@@ -1526,17 +1533,18 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     final dotR = (fontSize * 0.28).clamp(2.0, 6.0);
 
     TextPainter mk(String s, double size, FontWeight w, Color c) => TextPainter(
-          text: TextSpan(
-            text: s,
-            style: TextStyle(
-              fontSize: size,
-              fontWeight: w,
-              color: c,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout();
+      text: TextSpan(
+        text: s,
+        style: TextStyle(
+          fontSize: size,
+          fontWeight: w,
+          color: c,
+          fontFeatures: const [FontFeature.tabularFigures()],
+          fontFamily: currentAppFontFamily,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
 
     final items = <({Color color, TextPainter label, TextPainter value})>[
       (
@@ -1573,8 +1581,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
 
     // 每个 item 宽度 = 圆点 + 间隔 + max(label, value) 宽
     double itemW(({Color color, TextPainter label, TextPainter value}) it) {
-      final textW =
-          it.label.width > it.value.width ? it.label.width : it.value.width;
+      final textW = it.label.width > it.value.width
+          ? it.label.width
+          : it.value.width;
       return dotR * 2 + 4 + textW;
     }
 
@@ -1812,12 +1821,12 @@ class _ParamsRow extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
 
     Widget label(String t) => Padding(
-          padding: const EdgeInsets.only(right: 4),
-          child: Text(
-            t,
-            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-          ),
-        );
+      padding: const EdgeInsets.only(right: 4),
+      child: Text(
+        t,
+        style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+      ),
+    );
 
     final colorWidgets = <Widget>[
       label('颜色映射'),
@@ -1940,19 +1949,19 @@ class _ParamsRow extends StatelessWidget {
     }
 
     Widget shell(List<Widget> kids) => Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Wrap(
-            spacing: 6,
-            runSpacing: 4,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: kids,
-          ),
-        );
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: kids,
+      ),
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

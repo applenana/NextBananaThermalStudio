@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 
 import '../../render/render_params.dart';
 import '../../render/render_pipeline.dart';
+import '../app_font.dart';
 import 'rgb_image_view.dart';
 import 'temperature_color_legend.dart';
 
@@ -314,6 +315,7 @@ class _ThermalCanvasState extends State<ThermalCanvas>
                       markers: widget.markers,
                       frameWidth: frame.width,
                       frameHeight: frame.height,
+                      fontFamily: currentAppFontFamily,
                     ),
                   ),
                 ),
@@ -334,6 +336,7 @@ class _ThermalCanvasState extends State<ThermalCanvas>
                       coldTo: _coldTo,
                       showHot: widget.showHotSpot,
                       showCold: widget.showColdSpot,
+                      fontFamily: currentAppFontFamily,
                     ),
                   ),
                 ),
@@ -402,6 +405,7 @@ class _ThermalCanvasState extends State<ThermalCanvas>
             y: relY,
             temp: temp,
             color: Colors.white.withValues(alpha: 0.85),
+            fontFamily: currentAppFontFamily,
           ),
         ),
       ),
@@ -559,12 +563,14 @@ class _CrossPainter extends CustomPainter {
   final double x, y;
   final double temp;
   final Color color;
+  final String? fontFamily;
 
   _CrossPainter({
     required this.x,
     required this.y,
     required this.temp,
     required this.color,
+    required this.fontFamily,
   });
 
   @override
@@ -578,11 +584,11 @@ class _CrossPainter extends CustomPainter {
     final tp = TextPainter(
       text: TextSpan(
         text: '${temp.toStringAsFixed(1)} °C',
-        style: const TextStyle(
+        style: TextStyle(
           color: Colors.white,
           fontSize: 12,
           fontWeight: FontWeight.w600,
-          fontFamily: 'SmileySans',
+          fontFamily: fontFamily,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -599,18 +605,20 @@ class _CrossPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _CrossPainter o) =>
-      o.x != x || o.y != y || o.temp != temp;
+      o.x != x || o.y != y || o.temp != temp || o.fontFamily != fontFamily;
 }
 
 class _MarkersPainter extends CustomPainter {
   final List<TempMarker> markers;
   final int frameWidth;
   final int frameHeight;
+  final String? fontFamily;
 
   _MarkersPainter({
     required this.markers,
     required this.frameWidth,
     required this.frameHeight,
+    required this.fontFamily,
   });
 
   @override
@@ -639,11 +647,11 @@ class _MarkersPainter extends CustomPainter {
       final tp = TextPainter(
         text: TextSpan(
           text: '${m.temp.toStringAsFixed(1)} °C',
-          style: const TextStyle(
+          style: TextStyle(
             color: Colors.white,
             fontSize: 11,
             fontWeight: FontWeight.w700,
-            fontFamily: 'SmileySans',
+            fontFamily: fontFamily,
           ),
         ),
         textDirection: TextDirection.ltr,
@@ -663,7 +671,8 @@ class _MarkersPainter extends CustomPainter {
   bool shouldRepaint(covariant _MarkersPainter o) =>
       o.markers != markers ||
       o.frameWidth != frameWidth ||
-      o.frameHeight != frameHeight;
+      o.frameHeight != frameHeight ||
+      o.fontFamily != fontFamily;
 }
 
 class _ExtremeSpot {
@@ -746,6 +755,7 @@ class _ExtremesPainter extends CustomPainter {
   final _ExtremeSpot? coldTo;
   final bool showHot;
   final bool showCold;
+  final String? fontFamily;
 
   _ExtremesPainter({
     required this.progress,
@@ -755,6 +765,7 @@ class _ExtremesPainter extends CustomPainter {
     required this.coldTo,
     required this.showHot,
     required this.showCold,
+    required this.fontFamily,
   }) : super(repaint: progress);
 
   @override
@@ -832,12 +843,12 @@ class _ExtremesPainter extends CustomPainter {
     final tp = TextPainter(
       text: TextSpan(
         text: tip,
-        style: const TextStyle(
+        style: TextStyle(
           color: Colors.white,
           fontSize: 10,
           fontWeight: FontWeight.w700,
           letterSpacing: 0.2,
-          fontFamily: 'SmileySans',
+          fontFamily: fontFamily,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -867,5 +878,6 @@ class _ExtremesPainter extends CustomPainter {
       o.coldFrom != coldFrom ||
       o.coldTo != coldTo ||
       o.showHot != showHot ||
-      o.showCold != showCold;
+      o.showCold != showCold ||
+      o.fontFamily != fontFamily;
 }

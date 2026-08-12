@@ -14,6 +14,7 @@ import '../main.dart' show appPhotoDownloadDir;
 import '../temperature/temperature_history_store.dart';
 import '../temperature/temperature_recorder.dart';
 import 'banana_toast.dart';
+import 'app_font.dart';
 import 'temperature_export_dialog.dart';
 
 enum _HistoryDateFilter { all, today, sevenDays, thirtyDays }
@@ -1116,9 +1117,10 @@ class _HistorySessionDetailState extends State<_HistorySessionDetail> {
                               for (final spot in spots)
                                 LineTooltipItem(
                                   '${spot.y.toStringAsFixed(2)} °C',
-                                  const TextStyle(
+                                  TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.w500,
+                                    fontFamily: currentAppFontFamily,
                                   ),
                                 ),
                             ],

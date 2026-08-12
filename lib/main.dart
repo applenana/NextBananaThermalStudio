@@ -10,6 +10,7 @@ import 'temperature/temperature_recorder.dart';
 import 'update/update_service.dart';
 import 'firmware/firmware_update_service.dart';
 import 'ui/activation_overlay.dart';
+import 'ui/app_font.dart';
 import 'ui/home_shell.dart';
 import 'ui/window_size_ffi.dart';
 import 'ui/windows_theme_ffi.dart';
@@ -120,6 +121,8 @@ Future<void> _loadPersistedSettings() async {
   final prefs = await SharedPreferences.getInstance();
   _prefs = prefs;
 
+  await AppFontController.instance.initialize(prefs);
+
   // ThemeMode
   final tm = prefs.getInt(_kThemeMode);
   if (tm != null && tm >= 0 && tm <= 2) {
@@ -197,6 +200,7 @@ Future<void> resetAllSettings() async {
   await prefs.remove(_kWindowW);
   await prefs.remove(_kWindowH);
   await prefs.remove(_kTemperatureRecordIntervalMs);
+  await AppFontController.instance.reset();
 
   appThemeMode.value = _defaultThemeMode;
   appUiScale.value = _defaultUiScale;
@@ -267,7 +271,7 @@ class BananaThermalApp extends StatelessWidget {
   // 主题种子色: 低饱和度青蓝绿 (Material teal 300), 温柔现代, 替代之前过艳的橙色.
   static const _seed = Color(0xFF4DB6AC);
 
-  ThemeData _buildTheme(Brightness brightness) {
+  ThemeData _buildTheme(Brightness brightness, String? fontFamily) {
     final isDark = brightness == Brightness.dark;
     final base = ColorScheme.fromSeed(seedColor: _seed, brightness: brightness);
     final scheme = isDark
@@ -288,7 +292,7 @@ class BananaThermalApp extends StatelessWidget {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
-      fontFamily: 'SmileySans',
+      fontFamily: fontFamily,
       scaffoldBackgroundColor: scheme.surface,
       cardTheme: CardThemeData(
         elevation: 0,
@@ -302,7 +306,7 @@ class BananaThermalApp extends StatelessWidget {
         scrolledUnderElevation: 0,
         centerTitle: false,
         titleTextStyle: TextStyle(
-          fontFamily: 'SmileySans',
+          fontFamily: fontFamily,
           fontSize: 20,
           fontWeight: FontWeight.w600,
           color: scheme.onSurface,
@@ -378,70 +382,74 @@ class BananaThermalApp extends StatelessWidget {
       create: (_) => AppState(),
       child: ValueListenableBuilder<ThemeMode>(
         valueListenable: appThemeMode,
-        builder: (context, mode, _) => ValueListenableBuilder<Brightness?>(
-          valueListenable: windowsSystemBrightness,
-          builder: (context, winBrightness, _) {
-            // Windows + 跟随系统 + FFI 拿到了兑定值时, 手动解析到 light/dark,
-            // 避开 Flutter embedder 不可靠的 platformBrightness.
-            ThemeMode effectiveMode = mode;
-            if (mode == ThemeMode.system &&
-                Platform.isWindows &&
-                winBrightness != null) {
-              effectiveMode = winBrightness == Brightness.dark
-                  ? ThemeMode.dark
-                  : ThemeMode.light;
-            }
-            return MaterialApp(
-              title: 'BananaThermalStudio',
-              debugShowCheckedModeBanner: false,
-              themeMode: effectiveMode,
-              theme: _buildTheme(Brightness.light),
-              darkTheme: _buildTheme(Brightness.dark),
-              // DPI / UI 缩放: 同时缩放控件与字体.
-              // 关键: 外层占位 = 父约束(窗口实际像素), 内部 child 约束 = 父约束/scale,
-              //       再用 Transform.scale 把内容放大回父约束尺寸.
-              // 否则 hit-test 区域 = SizedBox 尺寸 ≠ 视觉尺寸, 会出现点不到/黑边.
-              builder: (ctx, child) {
-                return ValueListenableBuilder<double>(
-                  valueListenable: appUiScale,
-                  builder: (c, scale, _) {
-                    return LayoutBuilder(
-                      builder: (lc, cons) {
-                        final mq = MediaQuery.of(lc);
-                        final w = cons.maxWidth;
-                        final h = cons.maxHeight;
-                        final lw = w / scale;
-                        final lh = h / scale;
-                        return SizedBox(
-                          width: w,
-                          height: h,
-                          child: FittedBox(
-                            fit: BoxFit.fill,
-                            alignment: Alignment.topLeft,
-                            child: SizedBox(
-                              width: lw,
-                              height: lh,
-                              child: MediaQuery(
-                                data: mq.copyWith(
-                                  size: Size(lw, lh),
-                                  devicePixelRatio: mq.devicePixelRatio * scale,
-                                  textScaler: const TextScaler.linear(1.0),
+        builder: (context, mode, _) => ValueListenableBuilder<AppFontOption>(
+          valueListenable: AppFontController.instance.selection,
+          builder: (context, font, _) => ValueListenableBuilder<Brightness?>(
+            valueListenable: windowsSystemBrightness,
+            builder: (context, winBrightness, _) {
+              // Windows + 跟随系统 + FFI 拿到了兑定值时, 手动解析到 light/dark,
+              // 避开 Flutter embedder 不可靠的 platformBrightness.
+              ThemeMode effectiveMode = mode;
+              if (mode == ThemeMode.system &&
+                  Platform.isWindows &&
+                  winBrightness != null) {
+                effectiveMode = winBrightness == Brightness.dark
+                    ? ThemeMode.dark
+                    : ThemeMode.light;
+              }
+              return MaterialApp(
+                title: 'BananaThermalStudio',
+                debugShowCheckedModeBanner: false,
+                themeMode: effectiveMode,
+                theme: _buildTheme(Brightness.light, font.resolvedFamily),
+                darkTheme: _buildTheme(Brightness.dark, font.resolvedFamily),
+                // DPI / UI 缩放: 同时缩放控件与字体.
+                // 关键: 外层占位 = 父约束(窗口实际像素), 内部 child 约束 = 父约束/scale,
+                //       再用 Transform.scale 把内容放大回父约束尺寸.
+                // 否则 hit-test 区域 = SizedBox 尺寸 ≠ 视觉尺寸, 会出现点不到/黑边.
+                builder: (ctx, child) {
+                  return ValueListenableBuilder<double>(
+                    valueListenable: appUiScale,
+                    builder: (c, scale, _) {
+                      return LayoutBuilder(
+                        builder: (lc, cons) {
+                          final mq = MediaQuery.of(lc);
+                          final w = cons.maxWidth;
+                          final h = cons.maxHeight;
+                          final lw = w / scale;
+                          final lh = h / scale;
+                          return SizedBox(
+                            width: w,
+                            height: h,
+                            child: FittedBox(
+                              fit: BoxFit.fill,
+                              alignment: Alignment.topLeft,
+                              child: SizedBox(
+                                width: lw,
+                                height: lh,
+                                child: MediaQuery(
+                                  data: mq.copyWith(
+                                    size: Size(lw, lh),
+                                    devicePixelRatio:
+                                        mq.devicePixelRatio * scale,
+                                    textScaler: const TextScaler.linear(1.0),
+                                  ),
+                                  child: child!,
                                 ),
-                                child: child!,
                               ),
                             ),
-                          ),
-                        );
-                      },
-                    );
-                  },
-                );
-              },
-              home: const NightLightSyncWatcher(
-                child: ActivationOverlay(child: HomeShell()),
-              ),
-            );
-          },
+                          );
+                        },
+                      );
+                    },
+                  );
+                },
+                home: const NightLightSyncWatcher(
+                  child: ActivationOverlay(child: HomeShell()),
+                ),
+              );
+            },
+          ),
         ),
       ),
     );

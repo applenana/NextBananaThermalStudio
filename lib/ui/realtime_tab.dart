@@ -23,6 +23,7 @@ import '../render/render_pipeline.dart';
 import '../temperature/temperature_history_store.dart';
 import '../temperature/temperature_recorder.dart';
 import 'connection_bar.dart';
+import 'app_font.dart';
 import 'software_gallery_tab.dart' show softwareGalleryRefreshTrigger;
 import 'banana_toast.dart';
 import 'temperature_export_dialog.dart';
@@ -305,7 +306,7 @@ class _KpiTile extends StatelessWidget {
                     style: TextStyle(
                       fontSize: valueSize,
                       fontWeight: FontWeight.w700,
-                      fontFamily: 'SmileySans',
+                      fontFamily: currentAppFontFamily,
                     ),
                   ),
                 ],
@@ -1560,11 +1561,11 @@ class _GlassKpi extends StatelessWidget {
         const Spacer(),
         Text(
           '${value.toStringAsFixed(1)} °C',
-          style: const TextStyle(
+          style: TextStyle(
             color: Colors.white,
             fontSize: 15,
             fontWeight: FontWeight.w800,
-            fontFamily: 'SmileySans',
+            fontFamily: currentAppFontFamily,
           ),
         ),
       ],
@@ -2128,6 +2129,7 @@ class _ChartCard extends StatelessWidget {
                                       color: spot.bar.color ?? scheme.onSurface,
                                       fontSize: 11,
                                       fontWeight: FontWeight.w600,
+                                      fontFamily: currentAppFontFamily,
                                     ),
                                   ),
                               ];
