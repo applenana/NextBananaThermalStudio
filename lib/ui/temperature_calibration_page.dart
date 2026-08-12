@@ -504,12 +504,16 @@ class _TemperatureCalibrationPageState
     final fit = _fit;
     if (fit == null || _applying) return;
     final app = context.read<AppState>();
-    final validation = fit.curve.validate();
-    if (!validation.valid) {
-      setState(() => _error = validation.errors.join('；'));
+    final supportsV2 = app.deviceSupportsCalibrationV2;
+    if (!fit.canWriteToDevice(supportsPiecewise: supportsV2)) {
+      final validation = supportsV2 ? fit.curve.validate() : null;
+      setState(
+        () => _error = validation != null && !validation.valid
+            ? validation.errors.join('；')
+            : '兼容单直线超出设备允许的斜率或偏移范围',
+      );
       return;
     }
-    final supportsV2 = app.deviceSupportsCalibrationV2;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -527,7 +531,9 @@ class _TemperatureCalibrationPageState
               : '当前固件不支持分段协议，将写入最佳稳健直线：'
                     'T = 原始温度 × ${fit.fallbackLinear.gain.toStringAsFixed(6)} '
                     '${_signed(fit.fallbackLinear.offset, digits: 3)}℃。'
-                    '升级固件后才能使用 ${fit.curve.segmentCount} 段结果。',
+                    '兼容直线 RMSE ${fit.fallbackRmse.toStringAsFixed(3)}℃，'
+                    '最大误差 ${fit.fallbackMaximumAbsoluteError.toStringAsFixed(3)}℃。'
+                    '建议及时升级热成像固件，以使用 ${fit.curve.segmentCount} 段结果并获得更高精度。',
         ),
         actions: [
           TextButton(
@@ -1039,22 +1045,21 @@ class _TemperatureCalibrationPageState
               onChangeEnd: (_) => _dataChanged(),
             ),
           ],
-          _LabeledSlider(
-            label: '每段最少独立温点',
-            valueText: '${_options.minimumPointsPerSegment}',
-            value: _options.minimumPointsPerSegment.toDouble(),
-            min: 3,
-            max: 8,
-            divisions: 5,
-            onChanged: (value) => setState(
-              () => _options = _options.copyWith(
-                minimumPointsPerSegment: value.round(),
+          if (!_options.manual)
+            _LabeledSlider(
+              label: '期望校准误差',
+              valueText: '${_options.targetError.toStringAsFixed(2)}℃',
+              value: _options.targetError.clamp(0.05, 5),
+              min: 0.05,
+              max: 5,
+              divisions: 99,
+              onChanged: (value) => setState(
+                () => _options = _options.copyWith(targetError: value),
               ),
+              onChangeEnd: (_) => _dataChanged(),
             ),
-            onChangeEnd: (_) => _dataChanged(),
-          ),
           _LabeledSlider(
-            label: '最小分段温跨',
+            label: '建议最小分段温跨',
             valueText: '${_options.minimumSegmentSpan.toStringAsFixed(1)}℃',
             value: _options.minimumSegmentSpan.clamp(0.5, 20),
             min: 0.5,
@@ -1082,6 +1087,13 @@ class _TemperatureCalibrationPageState
 
   Widget _buildResult() {
     final fit = _fit;
+    final supportsV2 = context.watch<AppState>().deviceSupportsCalibrationV2;
+    final validationLabel = switch (fit?.validationMethod) {
+      CalibrationValidationMethod.uncertaintyPenalized => '稀疏数据预测风险',
+      CalibrationValidationMethod.leaveOneOut => '留一验证风险',
+      CalibrationValidationMethod.stratifiedFiveFold => '五折验证风险',
+      null => '模型风险',
+    };
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -1157,7 +1169,7 @@ class _TemperatureCalibrationPageState
                     good: fit.rootMeanSquareError <= 0.5,
                   ),
                   _MetricChip(
-                    label: '验证 RMSE',
+                    label: validationLabel,
                     value: '${fit.validationRmse.toStringAsFixed(3)}℃',
                     good: fit.validationRmse <= 0.5,
                   ),
@@ -1177,7 +1189,21 @@ class _TemperatureCalibrationPageState
               _ModelSelectionSummary(
                 scores: fit.modelScores,
                 selected: fit.curve.segmentCount,
+                title: '段数与$validationLabel',
               ),
+              if (!supportsV2) ...[
+                const SizedBox(height: 12),
+                _Banner(
+                  message:
+                      '当前设备使用单段兼容协议，本次会写入受约束的最佳单直线：'
+                      'T = 原始温度 × ${fit.fallbackLinear.gain.toStringAsFixed(6)} '
+                      '${_signed(fit.fallbackLinear.offset, digits: 3)}℃；'
+                      'RMSE ${fit.fallbackRmse.toStringAsFixed(3)}℃，'
+                      '最大误差 ${fit.fallbackMaximumAbsoluteError.toStringAsFixed(3)}℃。'
+                      '建议及时升级热成像固件，以使用多段校准获得更高精度。',
+                  error: false,
+                ),
+              ],
               if (fit.warnings.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 for (final warning in fit.warnings)
@@ -1193,7 +1219,9 @@ class _TemperatureCalibrationPageState
               ],
               const SizedBox(height: 14),
               FilledButton.icon(
-                onPressed: _applying || !fit.isWithinDeviceLimits
+                onPressed:
+                    _applying ||
+                        !fit.canWriteToDevice(supportsPiecewise: supportsV2)
                     ? null
                     : _applyFit,
                 icon: _applying
@@ -1443,9 +1471,14 @@ class _LabeledSlider extends StatelessWidget {
 }
 
 class _ModelSelectionSummary extends StatelessWidget {
-  const _ModelSelectionSummary({required this.scores, required this.selected});
+  const _ModelSelectionSummary({
+    required this.scores,
+    required this.selected,
+    required this.title,
+  });
   final List<CalibrationModelScore> scores;
   final int selected;
+  final String title;
   @override
   Widget build(BuildContext context) {
     if (scores.isEmpty) return const SizedBox.shrink();
@@ -1458,7 +1491,7 @@ class _ModelSelectionSummary extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text('段数与验证误差', style: TextStyle(fontWeight: FontWeight.w600)),
+        Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 6),
         for (final score in scores.take(12))
           Padding(
