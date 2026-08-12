@@ -1,5 +1,8 @@
 allprojects {
     repositories {
+        // 与插件解析保持一致，避免 Android 构建在国内网络下因 TLS 失败中断。
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/central")
         google()
         mavenCentral()
     }

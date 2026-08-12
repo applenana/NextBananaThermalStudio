@@ -43,6 +43,9 @@ dependencies:
   shared_preferences: ^2.5.5
   package_info_plus: ^9.0.1
 
+  # 本地报警音频：Android / Windows 共用 WAV 资源，支持循环播放与独立音量。
+  audioplayers: ^6.7.1
+
   # 相册导出 (Android MediaStore / iOS Photos). 桌面端不会调用此 API,
   # 仅 Android 分支使用, 桌面构建忽略.
   gal: ^2.3.0
@@ -92,6 +95,7 @@ flutter:
   assets:
     - assets/fonts/
     - assets/icons/
+    - assets/audio/
   fonts:
     - family: SmileySans
       fonts:
