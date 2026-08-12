@@ -5,6 +5,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform, HttpClient;
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -77,8 +78,13 @@ class AppState extends ChangeNotifier {
   bool visibleStreamEnabled = false;
   ThermalViewConfig? thermalViewConfig;
   TemperatureCalibration? deviceCalibration;
+  CalibrationCurve deviceCalibrationCurve = CalibrationCurve.identity;
+  bool deviceSupportsCalibrationV2 = false;
   Completer<TemperatureCalibration>? _calibrationCompleter;
   bool _awaitingLegacyCalibration = false;
+  Completer<Map<String, dynamic>>? _calibrationV2Response;
+  final List<CalibrationKnot> _calibrationV2ReadPoints = [];
+  int? _calibrationV2ReadTransaction;
   TemperatureAlarmConfig? temperatureAlarmConfig;
   Completer<TemperatureAlarmConfig>? _alarmConfigCompleter;
 
@@ -349,6 +355,8 @@ class AppState extends ChangeNotifier {
     thermalWidth = 32;
     thermalHeight = 24;
     deviceCalibration = null;
+    deviceCalibrationCurve = CalibrationCurve.identity;
+    deviceSupportsCalibrationV2 = false;
     temperatureAlarmConfig = null;
     // The thermal source is gone, so clear any latched buzzer state instead of
     // leaving a separately connected module sounding forever on stale data.
@@ -383,6 +391,11 @@ class AppState extends ChangeNotifier {
     _calibrationCompleter = null;
     if (calibrationCompleter != null && !calibrationCompleter.isCompleted) {
       calibrationCompleter.completeError(StateError('设备已断开，温度校准操作已取消'));
+    }
+    final calibrationV2 = _calibrationV2Response;
+    _calibrationV2Response = null;
+    if (calibrationV2 != null && !calibrationV2.isCompleted) {
+      calibrationV2.completeError(StateError('设备已断开，分段校准操作已取消'));
     }
     renderParams = renderParams.copyWith(
       thermalView: const ThermalViewParams(),
@@ -478,6 +491,264 @@ class AppState extends ChangeNotifier {
     final trimmed = line.trim();
     _serial.writeString('$trimmed\n');
     _log('tx', '> $trimmed');
+  }
+
+  Future<Map<String, dynamic>> _sendCalibrationV2Command(
+    String command, {
+    Duration timeout = const Duration(milliseconds: 2500),
+  }) async {
+    if (status != ConnectionStatus.connected || !_serial.isOpen) {
+      throw StateError('请先连接热成像设备');
+    }
+    if (_photoMode) throw StateError('设备图库正在传输，请稍后再试');
+    if (_calibrationV2Response != null || _calibrationCompleter != null) {
+      throw StateError('已有温度校准操作正在进行');
+    }
+    final completer = Completer<Map<String, dynamic>>();
+    _calibrationV2Response = completer;
+    sendCommand(command);
+    try {
+      return await completer.future.timeout(
+        timeout,
+        onTimeout: () => throw TimeoutException('设备未响应分段温度校准命令'),
+      );
+    } finally {
+      if (identical(_calibrationV2Response, completer)) {
+        _calibrationV2Response = null;
+      }
+    }
+  }
+
+  Future<CalibrationCurve> fetchTemperatureCalibrationCurve() async {
+    _calibrationV2ReadPoints.clear();
+    _calibrationV2ReadTransaction = null;
+    try {
+      final response = await _sendCalibrationV2Command(
+        'calibration2 get',
+        timeout: const Duration(milliseconds: 1600),
+      );
+      final state = CalibrationV2State.tryParse(response);
+      if (state == null) throw const FormatException('设备返回了无效的 v2 校准状态');
+      deviceSupportsCalibrationV2 = true;
+      if (state.mode != 2 || state.pointCount == 0) {
+        final curve = CalibrationCurve.linear(
+          gain: state.fallbackGain,
+          offset: state.fallbackOffset,
+          persisted: state.persisted,
+          crc32: state.crc32,
+          generation: state.generation,
+        );
+        deviceCalibration = TemperatureCalibration(
+          gain: state.fallbackGain,
+          offset: state.fallbackOffset,
+          persisted: state.persisted,
+          operation: 'get_v2',
+        );
+        deviceCalibrationCurve = curve;
+        notifyListeners();
+        return curve;
+      }
+      final deadline = DateTime.now().add(const Duration(milliseconds: 2500));
+      while (_calibrationV2ReadTransaction == state.transactionId &&
+          _calibrationV2ReadPoints.length < state.pointCount &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      if (_calibrationV2ReadPoints.length != state.pointCount) {
+        throw StateError(
+          '分段校准回读不完整：收到 ${_calibrationV2ReadPoints.length}/${state.pointCount} 个折点',
+        );
+      }
+      final curve = CalibrationCurve.piecewise(
+        List<CalibrationKnot>.from(_calibrationV2ReadPoints),
+        persisted: state.persisted,
+        crc32: state.crc32,
+        generation: state.generation,
+      );
+      if (curve.crc32 != computeCalibrationCurveCrc32(curve.knots)) {
+        throw StateError('分段校准回读 CRC 校验失败');
+      }
+      final validation = curve.validate();
+      if (!validation.valid) throw StateError(validation.errors.join('；'));
+      deviceCalibrationCurve = curve;
+      deviceCalibration = TemperatureCalibration(
+        gain: state.fallbackGain,
+        offset: state.fallbackOffset,
+        persisted: state.persisted,
+        operation: 'get_v2_piecewise',
+      );
+      notifyListeners();
+      return curve;
+    } on TimeoutException {
+      deviceSupportsCalibrationV2 = false;
+      final legacy = await fetchTemperatureCalibration();
+      final curve = CalibrationCurve.linear(
+        gain: legacy.gain,
+        offset: legacy.offset,
+        persisted: legacy.persisted,
+      );
+      deviceCalibrationCurve = curve;
+      notifyListeners();
+      return curve;
+    }
+  }
+
+  Future<CalibrationCurve> resetTemperatureCalibrationCurve() async {
+    if (deviceSupportsCalibrationV2) {
+      final response = await _sendCalibrationV2Command(
+        'calibration2 reset',
+        timeout: const Duration(seconds: 5),
+      );
+      final state = CalibrationV2State.tryParse(response);
+      if (state == null || !state.persisted) {
+        throw StateError('设备未确认恢复默认校准');
+      }
+      deviceCalibrationCurve = CalibrationCurve.linear(
+        gain: 1,
+        offset: 0,
+        persisted: true,
+        crc32: state.crc32,
+        generation: state.generation,
+      );
+      deviceCalibration = const TemperatureCalibration(
+        gain: 1,
+        offset: 0,
+        persisted: true,
+        operation: 'reset_v2',
+      );
+      notifyListeners();
+      return deviceCalibrationCurve;
+    }
+    final result = await resetTemperatureCalibration();
+    deviceCalibrationCurve = CalibrationCurve.linear(
+      gain: result.gain,
+      offset: result.offset,
+      persisted: result.persisted,
+    );
+    return deviceCalibrationCurve;
+  }
+
+  Future<CalibrationCurve> applyTemperatureCalibrationCurve(
+    CalibrationCurve curve, {
+    required TemperatureCalibration fallbackLinear,
+  }) async {
+    final validation = curve.validate();
+    if (!validation.valid) throw ArgumentError(validation.errors.join('；'));
+    if (curve.kind != CalibrationCurveKind.piecewise) {
+      final result = await applyTemperatureCalibration(
+        gain: curve.gain,
+        offset: curve.offset,
+      );
+      deviceCalibrationCurve = CalibrationCurve.linear(
+        gain: result.gain,
+        offset: result.offset,
+        persisted: result.persisted,
+      );
+      return deviceCalibrationCurve;
+    }
+    if (!fallbackLinear.isWithinDeviceLimits) {
+      throw ArgumentError('最佳全局直线超出设备允许的斜率或偏移范围');
+    }
+    final wireKnots = curve.knots
+        .map(
+          (knot) => CalibrationKnot(
+            raw: knot.rawMilliC / 1000,
+            corrected: knot.correctedMilliC / 1000,
+          ),
+        )
+        .toList(growable: false);
+
+    final hadThermal = thermalStreamEnabled;
+    final hadVisible = visibleStreamEnabled;
+    final originalFusion = renderParams.fusion;
+    if (hadThermal) setThermalStream(false);
+    if (hadVisible) setVisibleStream(false);
+    await Future<void>.delayed(const Duration(milliseconds: 160));
+    final txid = DateTime.now().microsecondsSinceEpoch & 0xffffffff;
+    final crc = computeCalibrationCurveCrc32(wireKnots);
+    try {
+      try {
+        await _sendCalibrationV2Command(
+          'calibration2 begin $txid ${wireKnots.length} $crc '
+          '${fallbackLinear.gain.toStringAsFixed(8)} '
+          '${fallbackLinear.offset.toStringAsFixed(8)}',
+        );
+      } on TimeoutException {
+        _log('warn', '设备不支持分段校准，正在降级写入最佳全局直线');
+        final result = await applyTemperatureCalibration(
+          gain: fallbackLinear.gain,
+          offset: fallbackLinear.offset,
+        );
+        deviceCalibrationCurve = CalibrationCurve.linear(
+          gain: result.gain,
+          offset: result.offset,
+          persisted: result.persisted,
+        );
+        return deviceCalibrationCurve;
+      }
+      for (var start = 0; start < wireKnots.length; start += 8) {
+        final end = math.min(wireKnots.length, start + 8);
+        final values = <String>[];
+        for (var index = start; index < end; index++) {
+          values
+            ..add(wireKnots[index].rawMilliC.toString())
+            ..add(wireKnots[index].correctedMilliC.toString());
+        }
+        Map<String, dynamic>? response;
+        Object? lastError;
+        for (var attempt = 0; attempt < 3; attempt++) {
+          try {
+            response = await _sendCalibrationV2Command(
+              'calibration2 chunk $txid $start ${values.join(' ')}',
+            );
+            break;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        if (response == null) {
+          throw StateError('第 ${start ~/ 8 + 1} 块传输失败：$lastError');
+        }
+        final next = (response['next'] as num?)?.toInt();
+        if (next == null || next < end) {
+          throw StateError('设备未完整确认第 ${start ~/ 8 + 1} 块');
+        }
+      }
+      final committed = await _sendCalibrationV2Command(
+        'calibration2 commit $txid',
+        timeout: const Duration(seconds: 5),
+      );
+      final state = CalibrationV2State.tryParse(committed);
+      if (state == null || !state.persisted || state.crc32 != crc) {
+        throw StateError('设备提交校准曲线后回读校验失败');
+      }
+      deviceCalibrationCurve = CalibrationCurve.piecewise(
+        wireKnots,
+        persisted: true,
+        crc32: state.crc32,
+        generation: state.generation,
+      );
+      deviceCalibration = TemperatureCalibration(
+        gain: fallbackLinear.gain,
+        offset: fallbackLinear.offset,
+        persisted: true,
+        operation: 'piecewise_v2',
+      );
+      notifyListeners();
+      return deviceCalibrationCurve;
+    } catch (_) {
+      if (_calibrationV2Response == null) {
+        sendCommand('calibration2 abort $txid');
+      }
+      rethrow;
+    } finally {
+      if (hadThermal) setThermalStream(true);
+      if (hadVisible) setVisibleStream(true);
+      if (renderParams.fusion != originalFusion) {
+        renderParams = renderParams.copyWith(fusion: originalFusion);
+        notifyListeners();
+      }
+    }
   }
 
   Future<TemperatureCalibration> fetchTemperatureCalibration() async {
@@ -1044,6 +1315,46 @@ class AppState extends ChangeNotifier {
             }
           }
         } else if (j['type'] == TemperatureCalibration.responseType) {
+          if ((j['version'] as num?)?.toInt() == 2) {
+            final operation = j['operation']?.toString();
+            final transaction = (j['tx'] as num?)?.toInt();
+            if (j['error'] != null) {
+              final pending = _calibrationV2Response;
+              if (pending != null && !pending.isCompleted) {
+                pending.completeError(
+                  FormatException(j['error']?.toString() ?? '设备拒绝了分段校准参数'),
+                );
+              }
+            } else if (operation == 'data') {
+              final start = (j['start'] as num?)?.toInt();
+              final values = j['values'];
+              if (transaction == _calibrationV2ReadTransaction &&
+                  start != null &&
+                  values is List &&
+                  values.length.isEven &&
+                  start == _calibrationV2ReadPoints.length) {
+                for (var i = 0; i < values.length; i += 2) {
+                  final raw = values[i];
+                  final corrected = values[i + 1];
+                  if (raw is! num || corrected is! num) break;
+                  _calibrationV2ReadPoints.add(
+                    CalibrationKnot(
+                      raw: raw.toInt() / 1000,
+                      corrected: corrected.toInt() / 1000,
+                    ),
+                  );
+                }
+              }
+            } else {
+              if (operation == 'get' && transaction != null) {
+                _calibrationV2ReadTransaction = transaction;
+                _calibrationV2ReadPoints.clear();
+              }
+              final pending = _calibrationV2Response;
+              if (pending != null && !pending.isCompleted) pending.complete(j);
+            }
+            return;
+          }
           final calibration = TemperatureCalibration.tryParse(j);
           if (calibration != null) {
             deviceCalibration = calibration;
