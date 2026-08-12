@@ -161,6 +161,107 @@ void main() {
       expect(fit.rootMeanSquareError, lessThan(0.2));
     });
 
+    test(
+      'three nonlinear temperatures split when error reduction is large',
+      () {
+        const samples = [
+          CalibrationSample(measured: 0, reference: 0),
+          CalibrationSample(measured: 10, reference: 14),
+          CalibrationSample(measured: 20, reference: 20),
+        ];
+        final fit = fitPiecewiseTemperatureCalibration(
+          currentCurve: CalibrationCurve.identity,
+          samples: samples,
+        );
+
+        expect(fit, isNotNull);
+        expect(
+          fit!.validationMethod,
+          CalibrationValidationMethod.uncertaintyPenalized,
+        );
+        expect(fit.curve.segmentCount, 2);
+        expect(fit.rootMeanSquareError, lessThan(0.01));
+      },
+    );
+
+    test('three nearly linear temperatures remain one segment', () {
+      const samples = [
+        CalibrationSample(measured: 0, reference: 0),
+        CalibrationSample(measured: 10, reference: 10.05),
+        CalibrationSample(measured: 20, reference: 20),
+      ];
+      final fit = fitPiecewiseTemperatureCalibration(
+        currentCurve: CalibrationCurve.identity,
+        samples: samples,
+      );
+
+      expect(fit, isNotNull);
+      expect(fit!.curve.segmentCount, 1);
+    });
+
+    test('target error changes the sparse-data complexity tradeoff', () {
+      const samples = [
+        CalibrationSample(measured: 0, reference: 0),
+        CalibrationSample(measured: 10, reference: 10.8),
+        CalibrationSample(measured: 20, reference: 20),
+      ];
+      final precisionFirst = fitPiecewiseTemperatureCalibration(
+        currentCurve: CalibrationCurve.identity,
+        samples: samples,
+        options: const CalibrationFitOptions(targetError: 0.05),
+      );
+      final simplicityFirst = fitPiecewiseTemperatureCalibration(
+        currentCurve: CalibrationCurve.identity,
+        samples: samples,
+        options: const CalibrationFitOptions(targetError: 2),
+      );
+
+      expect(precisionFirst, isNotNull);
+      expect(simplicityFirst, isNotNull);
+      expect(precisionFirst!.curve.segmentCount, 2);
+      expect(simplicityFirst!.curve.segmentCount, 1);
+    });
+
+    test('short temperature spans are a soft penalty, not a rejection', () {
+      const samples = [
+        CalibrationSample(measured: 0, reference: 0),
+        CalibrationSample(measured: 3, reference: 4.4),
+        CalibrationSample(measured: 6, reference: 6),
+      ];
+      final fit = fitPiecewiseTemperatureCalibration(
+        currentCurve: CalibrationCurve.identity,
+        samples: samples,
+        options: const CalibrationFitOptions(
+          minimumSegmentSpan: 5,
+          targetError: 0.1,
+        ),
+      );
+
+      expect(fit, isNotNull);
+      expect(fit!.curve.segmentCount, 2);
+    });
+
+    test(
+      'old devices receive an optimized line constrained to safe limits',
+      () {
+        const samples = [
+          CalibrationSample(measured: 0, reference: 0),
+          CalibrationSample(measured: 5, reference: 10),
+          CalibrationSample(measured: 8, reference: 12),
+        ];
+        final fit = fitPiecewiseTemperatureCalibration(
+          currentCurve: CalibrationCurve.identity,
+          samples: samples,
+        );
+
+        expect(fit, isNotNull);
+        expect(fit!.fallbackWasConstrained, isTrue);
+        expect(fit.fallbackLinear.gain, inInclusiveRange(0.5, 1.5));
+        expect(fit.fallbackLinear.offset, inInclusiveRange(-100, 100));
+        expect(fit.canWriteToDevice(supportsPiecewise: false), isTrue);
+      },
+    );
+
     test('manual breakpoints remain fixed while coefficients are fitted', () {
       final samples = List.generate(12, (index) {
         final measured = index * 10.0;
@@ -290,6 +391,10 @@ void main() {
           validationStandardError: 0,
           maximumAbsoluteError: 0,
           rSquared: 1,
+          fallbackRmse: 0,
+          fallbackMaximumAbsoluteError: 0,
+          fallbackWasConstrained: false,
+          validationMethod: CalibrationValidationMethod.leaveOneOut,
           residuals: const [],
           outliers: const [],
           modelScores: const [],
@@ -297,6 +402,7 @@ void main() {
           warnings: const [],
         );
         expect(fit.isWithinDeviceLimits, isFalse);
+        expect(fit.canWriteToDevice(supportsPiecewise: false), isFalse);
       },
     );
   });
@@ -350,11 +456,13 @@ void main() {
       expect(restored.fittedCurve!.correct(10), closeTo(11, 1e-9));
     });
 
-    test('draft options never restore fewer than three points per segment', () {
+    test('draft keeps legacy point setting and restores target error', () {
       final options = CalibrationFitOptions.fromJson({
         'minimum_points_per_segment': 1,
+        'target_error_c': 0.2,
       });
       expect(options.minimumPointsPerSegment, 3);
+      expect(options.targetError, 0.2);
     });
 
     test('fit task runs in a cancellable isolate', () async {

@@ -3,11 +3,17 @@ import 'dart:math' as math;
 import '../protocol/temperature_calibration.dart';
 
 class _GroupedPoint {
-  _GroupedPoint({required this.x, required this.y, required this.weight});
+  _GroupedPoint({
+    required this.x,
+    required this.y,
+    required this.weight,
+    required this.uncertainty,
+  });
 
   final double x;
   final double y;
   final double weight;
+  final double uncertainty;
 }
 
 class _Regression {
@@ -53,10 +59,11 @@ class _CandidateModel {
 /// Fits a continuous, robust, piecewise-linear calibration curve.
 ///
 /// Candidate models are nested by greedily adding the breakpoint with the
-/// largest weighted residual reduction. The final segment count is selected by
-/// temperature-stratified cross validation. A sensitivity of 0/50/100 chooses
-/// the smallest model within 1/0.5/0 standard errors of the best validation
-/// score respectively.
+/// largest robust weighted residual reduction, then relocating every retained
+/// breakpoint. Six or more independent temperatures use cross validation.
+/// Sparse data uses an uncertainty-aware predictive risk: a breakpoint is
+/// retained only when its error reduction pays for its complexity and short
+/// temperature span. There is deliberately no points-per-segment rule.
 PiecewiseCalibrationFit? fitPiecewiseTemperatureCalibration({
   required CalibrationCurve currentCurve,
   required List<CalibrationSample> samples,
@@ -86,32 +93,40 @@ PiecewiseCalibrationFit? fitPiecewiseTemperatureCalibration({
     robust: true,
   );
   if (fallbackRegression == null) return null;
-  final fallbackSlope =
+  final unconstrainedFallbackSlope =
       fallbackRegression.coefficients[1] / fallbackRegression.scale;
-  final fallbackOffset =
+  final unconstrainedFallbackOffset =
       fallbackRegression.coefficients[0] -
-      fallbackSlope * fallbackRegression.center;
-  final fallback = TemperatureCalibration(
-    gain: fallbackSlope,
-    offset: fallbackOffset,
+      unconstrainedFallbackSlope * fallbackRegression.center;
+  final unconstrainedFallback = TemperatureCalibration(
+    gain: unconstrainedFallbackSlope,
+    offset: unconstrainedFallbackOffset,
   );
+  final fallback = _fitConstrainedCompatibilityLine(grouped);
+  if (fallback == null) return null;
+  final fallbackWasConstrained = !unconstrainedFallback.isWithinDeviceLimits;
+  final fallbackErrors = _linearErrorMetrics(fallback, normalized);
+  final validationMethod = grouped.length < 6
+      ? CalibrationValidationMethod.uncertaintyPenalized
+      : grouped.length < 10
+      ? CalibrationValidationMethod.leaveOneOut
+      : CalibrationValidationMethod.stratifiedFiveFold;
 
   final candidates = _candidateBreakpoints(grouped);
   final models = <_CandidateModel>[];
   if (options.manual) {
     final manual = options.manualBreakpoints.toSet().toList()..sort();
-    if (!_breakpointsValid(grouped, manual, options)) return null;
+    if (!_breakpointsValid(grouped, manual)) return null;
     final regression = _fitRegression(grouped, manual, robust: options.robust);
     if (regression == null) return null;
     models.add(_buildCandidate(regression, grouped, options));
   } else {
-    final maximumByPoints = math.max(
-      1,
-      grouped.length ~/ options.minimumPointsPerSegment,
-    );
+    // A continuous spline with S segments has S+1 coefficients. Rank, not an
+    // arbitrary count in each interval, is the only hard data-size bound.
+    final maximumByRank = math.max(1, grouped.length - 1);
     final maximum = math.min(
       CalibrationCurve.maximumSegments,
-      math.min(options.maximumSegments, maximumByPoints),
+      math.min(options.maximumSegments, maximumByRank),
     );
     var breakpoints = <double>[];
     for (var segments = 1; segments <= maximum; segments++) {
@@ -122,7 +137,7 @@ PiecewiseCalibrationFit? fitPiecewiseTemperatureCalibration({
       );
       if (regression == null) break;
       models.add(_buildCandidate(regression, grouped, options));
-      if (segments == maximum || grouped.length < 6) break;
+      if (segments == maximum) break;
 
       double? bestBreakpoint;
       var bestSse = double.infinity;
@@ -131,7 +146,7 @@ PiecewiseCalibrationFit? fitPiecewiseTemperatureCalibration({
           continue;
         }
         final trial = [...breakpoints, candidate]..sort();
-        if (!_breakpointsValid(grouped, trial, options)) continue;
+        if (!_breakpointsValid(grouped, trial)) continue;
         final fit = _fitRegression(grouped, trial, robust: options.robust);
         if (fit != null && fit.sse < bestSse) {
           bestSse = fit.sse;
@@ -205,7 +220,9 @@ PiecewiseCalibrationFit? fitPiecewiseTemperatureCalibration({
       .toList(growable: false);
 
   final warnings = <String>[];
-  if (grouped.length < 6) warnings.add('独立温点少于 6 个，自动模式仅使用一段。');
+  if (grouped.length < 6) {
+    warnings.add('独立温点少于 6 个，当前使用测量不确定度、误差收益和复杂度惩罚选择段数；建议继续采集以获得交叉验证证据。');
+  }
   if (grouped.last.x - grouped.first.x < 10) {
     warnings.add('采样温跨小于 10℃，建议增加更高或更低的参考温点。');
   }
@@ -213,8 +230,8 @@ PiecewiseCalibrationFit? fitPiecewiseTemperatureCalibration({
     warnings.add('部分样本被识别为异常点，已降低其拟合权重，请核对。');
   }
   warnings.addAll(best.curve.validate().errors);
-  if (!fallback.isWithinDeviceLimits) {
-    warnings.add('最佳全局直线超出固件限制，无法写入；请检查异常样本或扩大有效温区。');
+  if (fallbackWasConstrained) {
+    warnings.add('兼容单直线已约束到旧设备可写范围；升级固件后可写入当前多段结果以降低误差。');
   }
 
   return PiecewiseCalibrationFit(
@@ -225,6 +242,10 @@ PiecewiseCalibrationFit? fitPiecewiseTemperatureCalibration({
     validationStandardError: best.score.validationStandardError,
     maximumAbsoluteError: maximumAbsoluteError,
     rSquared: rSquared,
+    fallbackRmse: fallbackErrors.$1,
+    fallbackMaximumAbsoluteError: fallbackErrors.$2,
+    fallbackWasConstrained: fallbackWasConstrained,
+    validationMethod: validationMethod,
     residuals: residuals,
     outliers: outliers,
     modelScores: models.map((model) => model.score).toList(growable: false),
@@ -236,15 +257,17 @@ PiecewiseCalibrationFit? fitPiecewiseTemperatureCalibration({
 List<_GroupedPoint> _groupSamples(List<CalibrationSample> samples) {
   final sorted = [...samples]
     ..sort((left, right) => left.rawInput!.compareTo(right.rawInput!));
-  final rawWeights = sorted
+  final uncertainties = sorted
       .map((sample) {
-        if (sample.standardDeviation <= 0) return 1.0;
-        final variance = math.max(
-          0.0025,
-          sample.standardDeviation * sample.standardDeviation,
+        if (sample.standardDeviation <= 0) return 0.1;
+        return math.max(
+          0.01,
+          sample.standardDeviation / math.sqrt(math.max(1, sample.frameCount)),
         );
-        return math.max(1, sample.frameCount) / variance;
       })
+      .toList(growable: false);
+  final rawWeights = uncertainties
+      .map((uncertainty) => 1 / (uncertainty * uncertainty))
       .toList(growable: false);
   final minimumWeight = rawWeights.reduce(math.min);
 
@@ -257,11 +280,13 @@ List<_GroupedPoint> _groupSamples(List<CalibrationSample> samples) {
       end++;
     }
     var sumWeight = 0.0;
+    var sumPrecision = 0.0;
     var sumX = 0.0;
     var sumY = 0.0;
     for (var i = index; i < end; i++) {
       final weight = (rawWeights[i] / minimumWeight).clamp(1.0, 16.0);
       sumWeight += weight;
+      sumPrecision += rawWeights[i];
       sumX += sorted[i].rawInput! * weight;
       sumY += sorted[i].reference * weight;
     }
@@ -270,6 +295,7 @@ List<_GroupedPoint> _groupSamples(List<CalibrationSample> samples) {
         x: sumX / sumWeight,
         y: sumY / sumWeight,
         weight: sumWeight,
+        uncertainty: math.max(0.005, math.sqrt(1 / sumPrecision)),
       ),
     );
     index = end;
@@ -283,6 +309,7 @@ List<_GroupedPoint> _groupSamples(List<CalibrationSample> samples) {
           x: point.x,
           y: point.y,
           weight: (point.weight / minimumGroupedWeight).clamp(1.0, 16.0),
+          uncertainty: point.uncertainty,
         ),
       )
       .toList(growable: false);
@@ -305,26 +332,17 @@ List<double> _candidateBreakpoints(List<_GroupedPoint> points) {
   return result;
 }
 
-bool _breakpointsValid(
-  List<_GroupedPoint> points,
-  List<double> breakpoints,
-  CalibrationFitOptions options,
-) {
+bool _breakpointsValid(List<_GroupedPoint> points, List<double> breakpoints) {
   if (breakpoints.length + 1 > CalibrationCurve.maximumSegments) return false;
-  final boundaries = [points.first.x, ...breakpoints, points.last.x];
-  for (var segment = 0; segment < boundaries.length - 1; segment++) {
-    if (boundaries[segment + 1] - boundaries[segment] <
-        options.minimumSegmentSpan) {
+  if (breakpoints.length > points.length - 2) return false;
+  var previous = points.first.x;
+  for (final breakpoint in breakpoints) {
+    if (!breakpoint.isFinite ||
+        breakpoint <= previous ||
+        breakpoint >= points.last.x) {
       return false;
     }
-    var count = 0;
-    for (final point in points) {
-      final afterLower = segment == 0
-          ? point.x >= boundaries[segment]
-          : point.x > boundaries[segment];
-      if (afterLower && point.x <= boundaries[segment + 1]) count++;
-    }
-    if (count < options.minimumPointsPerSegment) return false;
+    previous = breakpoint;
   }
   return true;
 }
@@ -334,28 +352,24 @@ _CandidateModel _buildCandidate(
   List<_GroupedPoint> points,
   CalibrationFitOptions options,
 ) {
-  final locations = [points.first.x, ...regression.breakpoints, points.last.x];
-  final knots = locations
-      .map(
-        (x) => CalibrationKnot(
-          raw: (x * 1000).round() / 1000,
-          corrected: (regression.predict(x) * 1000).round() / 1000,
-        ),
-      )
-      .toList(growable: false);
-  final curve = CalibrationCurve.piecewise(knots);
+  final curve = _curveFromRegression(regression, points);
   final validation = _crossValidate(points, regression.breakpoints, options);
   final totalWeight = points.fold<double>(
     0,
     (sum, point) => sum + point.weight,
   );
+  var trainingError = 0.0;
+  for (final point in points) {
+    final residual = point.y - curve.correct(point.x);
+    trainingError += point.weight * residual * residual;
+  }
   return _CandidateModel(
     breakpoints: regression.breakpoints,
     regression: regression,
     curve: curve,
     score: CalibrationModelScore(
-      segments: knots.length - 1,
-      trainingRmse: math.sqrt(regression.sse / totalWeight),
+      segments: curve.segmentCount,
+      trainingRmse: math.sqrt(trainingError / totalWeight),
       validationRmse: validation.$1,
       validationStandardError: validation.$2,
     ),
@@ -369,10 +383,10 @@ _CandidateModel _buildCandidate(
 ) {
   if (points.length < 6) {
     final fit = _fitRegression(points, breakpoints, robust: options.robust);
-    return (
-      fit == null ? double.infinity : math.sqrt(fit.sse / points.length),
-      0,
-    );
+    if (fit == null) return (double.infinity, 0);
+    final curve = _curveFromRegression(fit, points);
+    final trainingRmse = _weightedCurveRmse(curve, points);
+    return (_predictionRisk(trainingRmse, points, breakpoints, options), 0);
   }
   final foldCount = points.length < 10 ? points.length : 5;
   final foldErrors = <double>[];
@@ -390,10 +404,11 @@ _CandidateModel _buildCandidate(
     if (fit == null || validation.isEmpty) {
       return (double.infinity, double.infinity);
     }
+    final curve = _curveFromRegression(fit, points);
     var error = 0.0;
     var totalWeight = 0.0;
     for (final point in validation) {
-      final residual = point.y - fit.predict(point.x);
+      final residual = point.y - curve.correct(point.x);
       error += point.weight * residual * residual;
       totalWeight += point.weight;
     }
@@ -401,7 +416,8 @@ _CandidateModel _buildCandidate(
   }
   if (foldErrors.isEmpty) return (double.infinity, double.infinity);
   final mean = foldErrors.reduce((a, b) => a + b) / foldErrors.length;
-  if (foldErrors.length == 1) return (mean, 0);
+  final risk = _predictionRisk(mean, points, breakpoints, options);
+  if (foldErrors.length == 1) return (risk, 0);
   var variance = 0.0;
   for (final value in foldErrors) {
     final delta = value - mean;
@@ -410,7 +426,198 @@ _CandidateModel _buildCandidate(
   final standardError =
       math.sqrt(variance / (foldErrors.length - 1)) /
       math.sqrt(foldErrors.length);
-  return (mean, standardError);
+  return (risk, standardError);
+}
+
+CalibrationCurve _curveFromRegression(
+  _Regression regression,
+  List<_GroupedPoint> domain,
+) {
+  final locations = [domain.first.x, ...regression.breakpoints, domain.last.x];
+  final raw = locations.map((value) => (value * 1000).round()).toList();
+  final desired = locations
+      .map((value) => (regression.predict(value) * 1000).round())
+      .toList();
+  final lower = List<int>.generate(raw.length, (i) => raw[i] - 100000);
+  final upper = List<int>.generate(raw.length, (i) => raw[i] + 100000);
+
+  // Project the unconstrained spline onto the exact integer constraints used
+  // by firmware. The feasible set always contains the identity curve.
+  for (var i = raw.length - 2; i >= 0; i--) {
+    final dx = raw[i + 1] - raw[i];
+    final minimumRise = (dx + 1) ~/ 2;
+    final maximumRise = (3 * dx) ~/ 2;
+    lower[i] = math.max(lower[i], lower[i + 1] - maximumRise);
+    upper[i] = math.min(upper[i], upper[i + 1] - minimumRise);
+  }
+  final corrected = List<int>.filled(raw.length, 0);
+  corrected[0] = desired[0].clamp(lower[0], upper[0]);
+  for (var i = 1; i < raw.length; i++) {
+    final dx = raw[i] - raw[i - 1];
+    final minimumRise = (dx + 1) ~/ 2;
+    final maximumRise = (3 * dx) ~/ 2;
+    final feasibleLower = math.max(lower[i], corrected[i - 1] + minimumRise);
+    final feasibleUpper = math.min(upper[i], corrected[i - 1] + maximumRise);
+    corrected[i] = desired[i].clamp(feasibleLower, feasibleUpper);
+  }
+  return CalibrationCurve.piecewise(
+    List.generate(
+      raw.length,
+      (i) =>
+          CalibrationKnot(raw: raw[i] / 1000, corrected: corrected[i] / 1000),
+    ),
+  );
+}
+
+double _weightedCurveRmse(CalibrationCurve curve, List<_GroupedPoint> points) {
+  var error = 0.0;
+  var totalWeight = 0.0;
+  for (final point in points) {
+    final residual = point.y - curve.correct(point.x);
+    error += point.weight * residual * residual;
+    totalWeight += point.weight;
+  }
+  return math.sqrt(error / totalWeight);
+}
+
+double _predictionRisk(
+  double predictiveRmse,
+  List<_GroupedPoint> points,
+  List<double> breakpoints,
+  CalibrationFitOptions options,
+) {
+  if (breakpoints.isEmpty) return predictiveRmse;
+  var uncertaintySquared = 0.0;
+  var totalWeight = 0.0;
+  for (final point in points) {
+    uncertaintySquared += point.weight * point.uncertainty * point.uncertainty;
+    totalWeight += point.weight;
+  }
+  final noiseFloor = math.sqrt(uncertaintySquared / totalWeight);
+  final sensitivityFactor = 1.25 - options.sensitivity.clamp(0, 100) / 100;
+  final basePenalty = math.max(
+    noiseFloor * 2,
+    options.targetError * sensitivityFactor,
+  );
+  final boundaries = [points.first.x, ...breakpoints, points.last.x];
+  var shortSpanSquared = 0.0;
+  for (var i = 1; i < boundaries.length; i++) {
+    final span = math.max(0.001, boundaries[i] - boundaries[i - 1]);
+    final factor = math.max(1.0, options.minimumSegmentSpan / span);
+    shortSpanSquared += factor * factor;
+  }
+  final shortSpanFactor = math.min(
+    4.0,
+    math.sqrt(shortSpanSquared / (boundaries.length - 1)),
+  );
+  final complexity =
+      basePenalty * math.sqrt(breakpoints.length) * shortSpanFactor;
+  return math.sqrt(predictiveRmse * predictiveRmse + complexity * complexity);
+}
+
+TemperatureCalibration? _fitConstrainedCompatibilityLine(
+  List<_GroupedPoint> points,
+) {
+  if (points.length < 2) return null;
+  const minimum = TemperatureCalibration.minimumGain;
+  const maximum = TemperatureCalibration.maximumGain;
+  const samples = 240;
+  var bestGain = minimum;
+  var best = _compatibilityLineAtGain(points, bestGain);
+  var bestLoss = _robustLineLoss(points, best);
+  for (var i = 1; i <= samples; i++) {
+    final gain = minimum + (maximum - minimum) * i / samples;
+    final line = _compatibilityLineAtGain(points, gain);
+    final loss = _robustLineLoss(points, line);
+    if (loss < bestLoss) {
+      bestGain = gain;
+      best = line;
+      bestLoss = loss;
+    }
+  }
+
+  var left = math.max(minimum, bestGain - (maximum - minimum) / samples);
+  var right = math.min(maximum, bestGain + (maximum - minimum) / samples);
+  for (var iteration = 0; iteration < 36; iteration++) {
+    final first = left + (right - left) / 3;
+    final second = right - (right - left) / 3;
+    final firstLine = _compatibilityLineAtGain(points, first);
+    final secondLine = _compatibilityLineAtGain(points, second);
+    if (_robustLineLoss(points, firstLine) <=
+        _robustLineLoss(points, secondLine)) {
+      right = second;
+      best = firstLine;
+    } else {
+      left = first;
+      best = secondLine;
+    }
+  }
+  return _compatibilityLineAtGain(points, (left + right) / 2);
+}
+
+TemperatureCalibration _compatibilityLineAtGain(
+  List<_GroupedPoint> points,
+  double gain,
+) {
+  var weights = points.map((point) => point.weight).toList(growable: false);
+  var offset = 0.0;
+  for (var iteration = 0; iteration < 5; iteration++) {
+    var sum = 0.0;
+    var total = 0.0;
+    for (var i = 0; i < points.length; i++) {
+      sum += weights[i] * (points[i].y - gain * points[i].x);
+      total += weights[i];
+    }
+    offset = (sum / total).clamp(
+      TemperatureCalibration.minimumOffset,
+      TemperatureCalibration.maximumOffset,
+    );
+    if (iteration == 4) break;
+    final residuals = points
+        .map((point) => point.y - (gain * point.x + offset))
+        .toList(growable: false);
+    final sigma = math.max(0.02, 1.4826 * _medianAbsolute(residuals));
+    final huber = 1.5 * sigma;
+    weights = List.generate(points.length, (i) {
+      final absolute = residuals[i].abs();
+      return points[i].weight * (absolute <= huber ? 1 : huber / absolute);
+    }, growable: false);
+  }
+  return TemperatureCalibration(gain: gain, offset: offset);
+}
+
+double _robustLineLoss(
+  List<_GroupedPoint> points,
+  TemperatureCalibration line,
+) {
+  final residuals = points
+      .map((point) => point.y - line.correct(point.x))
+      .toList(growable: false);
+  final sigma = math.max(0.02, 1.4826 * _medianAbsolute(residuals));
+  final huber = 1.5 * sigma;
+  var loss = 0.0;
+  for (var i = 0; i < points.length; i++) {
+    final absolute = residuals[i].abs();
+    final value = absolute <= huber
+        ? 0.5 * absolute * absolute
+        : huber * (absolute - 0.5 * huber);
+    loss += points[i].weight * value;
+  }
+  return loss;
+}
+
+(double, double) _linearErrorMetrics(
+  TemperatureCalibration line,
+  List<CalibrationSample> samples,
+) {
+  var squared = 0.0;
+  var maximum = 0.0;
+  for (final sample in samples) {
+    final residual = sample.reference - line.correct(sample.rawInput!);
+    squared += residual * residual;
+    maximum = math.max(maximum, residual.abs());
+  }
+  return (math.sqrt(squared / samples.length), maximum);
 }
 
 List<double> _refineBreakpoints(
@@ -429,7 +636,7 @@ List<double> _refineBreakpoints(
         trial[index] = candidate;
         trial.sort();
         if (trial.toSet().length != trial.length ||
-            !_breakpointsValid(points, trial, options)) {
+            !_breakpointsValid(points, trial)) {
           continue;
         }
         final fit = _fitRegression(points, trial, robust: options.robust);

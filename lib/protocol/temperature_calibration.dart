@@ -555,8 +555,19 @@ int computeCalibrationCurveCrc32(List<CalibrationKnot> knots) {
 
 class CalibrationFitOptions {
   final int maximumSegments;
+
+  /// Retained only so v2 drafts written by the first implementation remain
+  /// readable. Automatic model selection no longer rejects a segment because
+  /// of a fixed number of points; error evidence and complexity decide it.
+  @Deprecated('Automatic segmentation is error-driven')
   final int minimumPointsPerSegment;
+
+  /// Preferred temperature width of a segment. This is a soft complexity
+  /// penalty, never a rule that rejects a breakpoint.
   final double minimumSegmentSpan;
+
+  /// Desired predictive error used to balance fit accuracy and model size.
+  final double targetError;
   final double sensitivity;
   final bool robust;
   final bool manualMode;
@@ -566,6 +577,7 @@ class CalibrationFitOptions {
     this.maximumSegments = 16,
     this.minimumPointsPerSegment = 3,
     this.minimumSegmentSpan = 5,
+    this.targetError = 0.5,
     this.sensitivity = 50,
     this.robust = true,
     this.manualMode = false,
@@ -578,6 +590,7 @@ class CalibrationFitOptions {
     int? maximumSegments,
     int? minimumPointsPerSegment,
     double? minimumSegmentSpan,
+    double? targetError,
     double? sensitivity,
     bool? robust,
     bool? manualMode,
@@ -588,6 +601,7 @@ class CalibrationFitOptions {
       minimumPointsPerSegment:
           minimumPointsPerSegment ?? this.minimumPointsPerSegment,
       minimumSegmentSpan: minimumSegmentSpan ?? this.minimumSegmentSpan,
+      targetError: targetError ?? this.targetError,
       sensitivity: sensitivity ?? this.sensitivity,
       robust: robust ?? this.robust,
       manualMode: manualMode ?? this.manualMode,
@@ -599,6 +613,7 @@ class CalibrationFitOptions {
     'maximum_segments': maximumSegments,
     'minimum_points_per_segment': minimumPointsPerSegment,
     'minimum_segment_span': minimumSegmentSpan,
+    'target_error_c': targetError,
     'sensitivity': sensitivity,
     'robust': robust,
     'manual_mode': manualMode,
@@ -620,6 +635,10 @@ class CalibrationFitOptions {
             0.5,
             50,
           ),
+      targetError: ((value['target_error_c'] as num?)?.toDouble() ?? 0.5).clamp(
+        0.05,
+        10,
+      ),
       sensitivity: ((value['sensitivity'] as num?)?.toDouble() ?? 50).clamp(
         0,
         100,
@@ -650,6 +669,12 @@ class CalibrationModelScore {
   });
 }
 
+enum CalibrationValidationMethod {
+  uncertaintyPenalized,
+  leaveOneOut,
+  stratifiedFiveFold,
+}
+
 class PiecewiseCalibrationFit {
   final CalibrationCurve curve;
   final TemperatureCalibration fallbackLinear;
@@ -658,6 +683,10 @@ class PiecewiseCalibrationFit {
   final double validationStandardError;
   final double maximumAbsoluteError;
   final double rSquared;
+  final double fallbackRmse;
+  final double fallbackMaximumAbsoluteError;
+  final bool fallbackWasConstrained;
+  final CalibrationValidationMethod validationMethod;
   final List<double> residuals;
   final List<bool> outliers;
   final List<CalibrationModelScore> modelScores;
@@ -672,6 +701,10 @@ class PiecewiseCalibrationFit {
     required this.validationStandardError,
     required this.maximumAbsoluteError,
     required this.rSquared,
+    required this.fallbackRmse,
+    required this.fallbackMaximumAbsoluteError,
+    required this.fallbackWasConstrained,
+    required this.validationMethod,
     required this.residuals,
     required this.outliers,
     required this.modelScores,
@@ -681,6 +714,10 @@ class PiecewiseCalibrationFit {
 
   bool get isWithinDeviceLimits =>
       curve.validate().valid && fallbackLinear.isWithinDeviceLimits;
+
+  bool canWriteToDevice({required bool supportsPiecewise}) => supportsPiecewise
+      ? isWithinDeviceLimits
+      : fallbackLinear.isWithinDeviceLimits;
 }
 
 class LinearCalibrationFit {
