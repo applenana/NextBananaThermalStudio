@@ -9,10 +9,12 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
+import 'audio/temperature_alarm_audio.dart';
 import 'filters/kalman.dart';
 import 'fusion/fusion.dart';
 import 'protocol/frame_parser.dart';
 import 'protocol/temperature_calibration.dart';
+import 'protocol/temperature_alarm.dart';
 import 'protocol/thermal_view_config.dart';
 import 'render/render_params.dart';
 import 'serial/serial_service.dart';
@@ -32,9 +34,14 @@ class LogEntry {
 
 class AppState extends ChangeNotifier {
   final SerialService _serial = SerialService();
+  final SerialService _alarmModuleSerial = SerialService();
+  final TemperatureAlarmAudioController _temperatureAlarmAudio =
+      TemperatureAlarmAudioController();
   late final FrameParser _parser;
+  bool _disposed = false;
 
   StreamSubscription<Uint8List>? _byteSub;
+  StreamSubscription<Uint8List>? _alarmModuleByteSub;
   Timer? _thermalHeartbeat;
   Timer? _visibleHeartbeat;
 
@@ -72,6 +79,31 @@ class AppState extends ChangeNotifier {
   TemperatureCalibration? deviceCalibration;
   Completer<TemperatureCalibration>? _calibrationCompleter;
   bool _awaitingLegacyCalibration = false;
+  TemperatureAlarmConfig? temperatureAlarmConfig;
+  Completer<TemperatureAlarmConfig>? _alarmConfigCompleter;
+
+  // Alarm event state is kept separately from configuration so the fixed !A
+  // event can update the high-priority UI without waiting for a JSON roundtrip.
+  bool highAlarmActive = false;
+  bool lowAlarmActive = false;
+  double? highAlarmTemperature;
+  double? lowAlarmTemperature;
+  int alarmTransitionSerial = 0;
+
+  // Optional second USB serial port for a very small buzzer MCU. The host
+  // forwards only the fixed !A event line; the module never has to understand
+  // camera frames, JSON, or the configuration protocol.
+  bool alarmModuleConnected = false;
+  String? alarmModulePort;
+  int alarmModuleBaud = 115200;
+  String? alarmModuleLastError;
+
+  bool get anyTemperatureAlarmActive => highAlarmActive || lowAlarmActive;
+  TemperatureAlarmSound get temperatureAlarmSound =>
+      _temperatureAlarmAudio.sound;
+  double get temperatureAlarmVolume => _temperatureAlarmAudio.volume;
+  bool get temperatureAlarmAudioReady => _temperatureAlarmAudio.ready;
+  String? get temperatureAlarmAudioError => _temperatureAlarmAudio.lastError;
 
   // ---------------- 数据 ----------------
   double tMax = 0, tMin = 0, tAvg = 0;
@@ -112,6 +144,8 @@ class AppState extends ChangeNotifier {
 
   // ---------------- 串口缓冲 (供命令行回显) ----------------
   final BytesBuilder _textBuf = BytesBuilder(copy: false);
+  final List<int> _photoAlarmTapBytes = <int>[];
+  bool _photoAlarmTapCapturing = false;
   // JSON 兜底 flush: 当 _textBuf 累计形如 "{..." 但尚未遇到 \n 时, 启一个
   // 100ms 定时器, 超时后强制把 buffer 作为一行送进 _consumeTextLine. 用于
   // 兼容固件 GetSysInfo 响应不带换行 / FrameParser 偶发滞留尾字节的情况.
@@ -130,6 +164,13 @@ class AppState extends ChangeNotifier {
       const Duration(seconds: 60),
       (_) => _refreshLocationCache(),
     );
+    unawaited(_initializeTemperatureAlarmAudio());
+  }
+
+  Future<void> _initializeTemperatureAlarmAudio() async {
+    await _temperatureAlarmAudio.initialize();
+    await _temperatureAlarmAudio.syncAlarm(active: anyTemperatureAlarmActive);
+    if (!_disposed) notifyListeners();
   }
 
   // ---------------- 位置缓存 (供拍摄/录制即时使用) ----------------
@@ -226,6 +267,9 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> connect(String portName, {int baud = 115200}) async {
+    if (alarmModuleConnected && alarmModulePort == portName) {
+      throw StateError('该串口已连接为 USB 蜂鸣器模块，请选择热成像设备端口');
+    }
     // 手动连接优先级最高: 如果正在自动扫描, 立即打断扫描后接手.
     if (status == ConnectionStatus.scanning) {
       _log('info', '手动连接请求, 中断自动搜索');
@@ -268,6 +312,9 @@ class AppState extends ChangeNotifier {
       Future.delayed(const Duration(milliseconds: 300), () {
         sendCommand('GetSysInfo');
       });
+      Future.delayed(const Duration(milliseconds: 450), () {
+        if (status == ConnectionStatus.connected) sendCommand('alarm get');
+      });
       // Android / Windows: 连接成功后自动开启热成像推流，进入实时页即可看到
       // 画面。其它桌面平台继续保持手动开启，避免改变既有调试流程。
       if (Platform.isAndroid || Platform.isWindows) {
@@ -302,6 +349,35 @@ class AppState extends ChangeNotifier {
     thermalWidth = 32;
     thermalHeight = 24;
     deviceCalibration = null;
+    temperatureAlarmConfig = null;
+    // The thermal source is gone, so clear any latched buzzer state instead of
+    // leaving a separately connected module sounding forever on stale data.
+    _forwardTemperatureAlarmEvent(
+      TemperatureAlarmEvent(
+        kind: TemperatureAlarmKind.high,
+        active: false,
+        temperature: highAlarmTemperature ?? tMax,
+      ),
+    );
+    _forwardTemperatureAlarmEvent(
+      TemperatureAlarmEvent(
+        kind: TemperatureAlarmKind.low,
+        active: false,
+        temperature: lowAlarmTemperature ?? tMin,
+      ),
+    );
+    highAlarmActive = false;
+    lowAlarmActive = false;
+    highAlarmTemperature = null;
+    lowAlarmTemperature = null;
+    _syncTemperatureAlarmAudio();
+    _photoAlarmTapBytes.clear();
+    _photoAlarmTapCapturing = false;
+    final alarmCompleter = _alarmConfigCompleter;
+    _alarmConfigCompleter = null;
+    if (alarmCompleter != null && !alarmCompleter.isCompleted) {
+      alarmCompleter.completeError(StateError('设备已断开，温度报警操作已取消'));
+    }
     _awaitingLegacyCalibration = false;
     final calibrationCompleter = _calibrationCompleter;
     _calibrationCompleter = null;
@@ -544,15 +620,282 @@ class AppState extends ChangeNotifier {
   }
 
   // ============================================================
+  // 设备温度报警配置
+  // ============================================================
+
+  Future<TemperatureAlarmConfig> fetchTemperatureAlarmConfig() =>
+      _sendAlarmConfigCommand('alarm get');
+
+  Future<TemperatureAlarmConfig> applyTemperatureAlarmConfig(
+    TemperatureAlarmConfig config,
+  ) async {
+    final error = config.validationError;
+    if (error != null) throw ArgumentError(error);
+    final result = await _sendAlarmConfigCommand(config.toSetCommand());
+    if (!result.persisted) {
+      throw StateError('报警参数已到达设备，但持久化写入失败');
+    }
+    return result;
+  }
+
+  Future<TemperatureAlarmConfig> resetTemperatureAlarmConfig() async {
+    final result = await _sendAlarmConfigCommand('alarm defaults');
+    if (!result.persisted) {
+      throw StateError('设备已恢复报警默认值，但持久化写入失败');
+    }
+    return result;
+  }
+
+  Future<TemperatureAlarmConfig> acknowledgeTemperatureAlarm() =>
+      _sendAlarmConfigCommand('alarm ack');
+
+  Future<void> setTemperatureAlarmSound(TemperatureAlarmSound sound) async {
+    await _temperatureAlarmAudio.setSound(sound);
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> setTemperatureAlarmVolume(
+    double volume, {
+    bool persist = true,
+  }) async {
+    await _temperatureAlarmAudio.setVolume(volume, persist: persist);
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> previewTemperatureAlarmSound() async {
+    await _temperatureAlarmAudio.preview();
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> resetTemperatureAlarmAudioSettings() async {
+    await _temperatureAlarmAudio.resetSettings();
+    if (!_disposed) notifyListeners();
+  }
+
+  void _syncTemperatureAlarmAudio() {
+    unawaited(() async {
+      try {
+        await _temperatureAlarmAudio.syncAlarm(
+          active: anyTemperatureAlarmActive,
+        );
+      } catch (error) {
+        _log('warn', '报警音频状态同步失败: $error');
+      }
+      if (!_disposed) notifyListeners();
+    }());
+  }
+
+  Future<List<SerialPortInfo>> listAlarmModulePorts() async {
+    final ports = await SerialService.listPortsAsync();
+    return ports
+        .where((port) => port.name != currentPort)
+        .toList(growable: false);
+  }
+
+  Future<void> connectAlarmModule(String portName, {int baud = 115200}) async {
+    if (portName == currentPort) {
+      throw StateError('蜂鸣器模块不能与热成像设备使用同一个串口');
+    }
+    await disconnectAlarmModule(clearBeforeClose: true);
+    alarmModuleLastError = null;
+    try {
+      await _alarmModuleSerial.open(portName, baud: baud);
+      _alarmModuleByteSub = _alarmModuleSerial.bytesStream.listen(
+        (_) {},
+        onError: (Object error) => _handleAlarmModuleDisconnect(error),
+        onDone: () => _handleAlarmModuleDisconnect(StateError('串口读取已结束')),
+        cancelOnError: false,
+      );
+      alarmModuleConnected = true;
+      alarmModulePort = portName;
+      alarmModuleBaud = baud;
+      _log('info', 'USB 蜂鸣器模块已连接: $portName @ $baud');
+
+      // A module can be hot-plugged while an alarm is active. Send both
+      // channel snapshots immediately so its buzzer state is deterministic.
+      _forwardTemperatureAlarmEvent(
+        TemperatureAlarmEvent(
+          kind: TemperatureAlarmKind.high,
+          active: highAlarmActive,
+          temperature: highAlarmTemperature ?? tMax,
+        ),
+      );
+      _forwardTemperatureAlarmEvent(
+        TemperatureAlarmEvent(
+          kind: TemperatureAlarmKind.low,
+          active: lowAlarmActive,
+          temperature: lowAlarmTemperature ?? tMin,
+        ),
+      );
+      notifyListeners();
+    } catch (error) {
+      alarmModuleConnected = false;
+      alarmModulePort = null;
+      alarmModuleLastError = error.toString();
+      await _alarmModuleByteSub?.cancel();
+      _alarmModuleByteSub = null;
+      await _alarmModuleSerial.close();
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<void> disconnectAlarmModule({bool clearBeforeClose = true}) async {
+    if (clearBeforeClose && alarmModuleConnected) {
+      _forwardTemperatureAlarmEvent(
+        TemperatureAlarmEvent(
+          kind: TemperatureAlarmKind.high,
+          active: false,
+          temperature: highAlarmTemperature ?? tMax,
+        ),
+      );
+      _forwardTemperatureAlarmEvent(
+        TemperatureAlarmEvent(
+          kind: TemperatureAlarmKind.low,
+          active: false,
+          temperature: lowAlarmTemperature ?? tMin,
+        ),
+      );
+      // Android USB writes are submitted asynchronously. Give the two tiny
+      // clear packets a chance to leave before closing the port.
+      if (Platform.isAndroid) {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+    }
+    await _alarmModuleByteSub?.cancel();
+    _alarmModuleByteSub = null;
+    await _alarmModuleSerial.close();
+    final previous = alarmModulePort;
+    alarmModuleConnected = false;
+    alarmModulePort = null;
+    if (previous != null) _log('info', 'USB 蜂鸣器模块已断开: $previous');
+    notifyListeners();
+  }
+
+  void _handleAlarmModuleDisconnect(Object error) {
+    if (!alarmModuleConnected && alarmModulePort == null) return;
+    final previous = alarmModulePort;
+    alarmModuleConnected = false;
+    alarmModulePort = null;
+    alarmModuleLastError = error.toString();
+    _log('warn', 'USB 蜂鸣器模块连接丢失${previous == null ? '' : ': $previous'}');
+    notifyListeners();
+  }
+
+  void _forwardTemperatureAlarmEvent(TemperatureAlarmEvent event) {
+    if (!alarmModuleConnected || !_alarmModuleSerial.isOpen) return;
+    final line = event.toWireLine();
+    final written = _alarmModuleSerial.writeString(line);
+    if (written != line.length) {
+      alarmModuleLastError = '报警帧写入不完整 ($written/${line.length})';
+      _log('warn', 'USB 蜂鸣器模块报警帧写入不完整');
+    }
+  }
+
+  Future<TemperatureAlarmConfig> _sendAlarmConfigCommand(
+    String command, {
+    Duration timeout = const Duration(milliseconds: 2500),
+  }) async {
+    if (status != ConnectionStatus.connected || !_serial.isOpen) {
+      throw StateError('请先连接热成像设备');
+    }
+    if (_photoMode) throw StateError('设备图库正在传输，请稍后再试');
+    if (_alarmConfigCompleter != null) {
+      throw StateError('已有温度报警参数操作正在进行');
+    }
+    final completer = Completer<TemperatureAlarmConfig>();
+    _alarmConfigCompleter = completer;
+    sendCommand(command);
+    try {
+      return await completer.future.timeout(
+        timeout,
+        onTimeout: () => throw TimeoutException('设备未响应温度报警协议 v1'),
+      );
+    } finally {
+      if (identical(_alarmConfigCompleter, completer)) {
+        _alarmConfigCompleter = null;
+      }
+    }
+  }
+
+  // ============================================================
   // 字节流处理
   // ============================================================
 
   void _onBytes(Uint8List data) {
     if (_photoMode) {
+      // Photo list/download owns the normal parser, but fixed !A lines remain
+      // highest priority. Tap (do not consume) only those exact short lines;
+      // the photo parser safely ignores them outside JSON/hex records.
+      _tapPhotoAlarmEvents(data);
       _onPhotoBytes(data);
       return;
     }
     _parser.feed(data);
+  }
+
+  void _tapPhotoAlarmEvents(Uint8List data) {
+    for (final byte in data) {
+      if (byte == 0x21 /* ! */ ) {
+        _photoAlarmTapBytes
+          ..clear()
+          ..add(byte);
+        _photoAlarmTapCapturing = true;
+        continue;
+      }
+      if (!_photoAlarmTapCapturing) continue;
+      if (byte == 0x0A) {
+        final event = TemperatureAlarmEvent.tryParse(
+          String.fromCharCodes(_photoAlarmTapBytes),
+        );
+        _photoAlarmTapBytes.clear();
+        _photoAlarmTapCapturing = false;
+        if (event != null) _consumeTemperatureAlarmEvent(event);
+      } else if (byte == 0x0D) {
+        continue;
+      } else if (byte >= 0x20 &&
+          byte < 0x7F &&
+          _photoAlarmTapBytes.length < 64) {
+        _photoAlarmTapBytes.add(byte);
+      } else {
+        _photoAlarmTapBytes.clear();
+        _photoAlarmTapCapturing = false;
+      }
+    }
+  }
+
+  void _consumeTemperatureAlarmEvent(TemperatureAlarmEvent event) {
+    // Forward before logging or rebuilding the UI: the external sounder is
+    // the highest-priority host-side consumer.
+    _forwardTemperatureAlarmEvent(event);
+    final wasActive = event.kind == TemperatureAlarmKind.high
+        ? highAlarmActive
+        : lowAlarmActive;
+    if (event.kind == TemperatureAlarmKind.high) {
+      highAlarmActive = event.active;
+      highAlarmTemperature = event.temperature;
+    } else {
+      lowAlarmActive = event.active;
+      lowAlarmTemperature = event.temperature;
+    }
+    temperatureAlarmConfig = temperatureAlarmConfig?.copyWith(
+      highActive: highAlarmActive,
+      lowActive: lowAlarmActive,
+    );
+    _syncTemperatureAlarmAudio();
+
+    // Active packets repeat for hot-plug reliability. Only a real state change
+    // increments the transition serial or emits a log/sound trigger.
+    if (wasActive != event.active) {
+      alarmTransitionSerial++;
+      final label = event.kind == TemperatureAlarmKind.high ? '过热' : '过冷';
+      _log(
+        event.active ? 'err' : 'info',
+        '$label报警${event.active ? "触发" : "解除"}: '
+        '${event.temperature.toStringAsFixed(1)} °C',
+      );
+    }
+    notifyListeners();
   }
 
   /// 接收 FrameParser 认为不属于帧的字节(通常为 ASCII 响应文本).
@@ -634,6 +977,12 @@ class AppState extends ChangeNotifier {
     final text = String.fromCharCodes(asAscii).trimRight();
     if (text.isEmpty) return;
 
+    final alarmEvent = TemperatureAlarmEvent.tryParse(text);
+    if (alarmEvent != null) {
+      _consumeTemperatureAlarmEvent(alarmEvent);
+      return;
+    }
+
     // 推流期间, 帧间夹缝里频繁出现 "伪 ASCII" 二进制残片 (温度场字节恰好
     // 落在 0x20-0x7E), 一秒可达数百条, 直接灌进日志会让 UI 卡顿.
     // 768 个 float 的高字节大量是 0x41 ('A') / 0x42 ('B') / 0x43 ('C'), "含字母"
@@ -656,7 +1005,45 @@ class AppState extends ChangeNotifier {
     if (text.startsWith('{') && text.endsWith('}')) {
       try {
         final j = jsonDecode(text) as Map<String, dynamic>;
-        if (j['type'] == TemperatureCalibration.responseType) {
+        if (j['type'] == TemperatureAlarmConfig.responseType) {
+          if (j['ok'] != true) {
+            final message = j['error']?.toString() ?? '设备拒绝了温度报警参数';
+            final pending = _alarmConfigCompleter;
+            if (pending != null && !pending.isCompleted) {
+              pending.completeError(FormatException(message));
+            }
+            _log('warn', message);
+          } else {
+            final alarmConfig = TemperatureAlarmConfig.tryParse(j);
+            if (alarmConfig == null) {
+              final pending = _alarmConfigCompleter;
+              if (pending != null && !pending.isCompleted) {
+                pending.completeError(const FormatException('设备返回了无效的温度报警参数'));
+              }
+              _log('warn', '设备返回了无效或不兼容的温度报警参数');
+            } else {
+              final activeChanged =
+                  highAlarmActive != alarmConfig.highActive ||
+                  lowAlarmActive != alarmConfig.lowActive;
+              highAlarmActive = alarmConfig.highActive;
+              lowAlarmActive = alarmConfig.lowActive;
+              temperatureAlarmConfig = alarmConfig;
+              _syncTemperatureAlarmAudio();
+              if (activeChanged) alarmTransitionSerial++;
+              final pending = _alarmConfigCompleter;
+              if (pending != null && !pending.isCompleted) {
+                pending.complete(alarmConfig);
+              }
+              _log(
+                'info',
+                '温度报警参数已同步: 总开关=${alarmConfig.masterEnabled ? "开" : "关"}, '
+                    '过热=${alarmConfig.highEnabled ? "${alarmConfig.highThreshold.toStringAsFixed(1)}℃" : "关"}, '
+                    '过冷=${alarmConfig.lowEnabled ? "${alarmConfig.lowThreshold.toStringAsFixed(1)}℃" : "关"}',
+              );
+              notifyListeners();
+            }
+          }
+        } else if (j['type'] == TemperatureCalibration.responseType) {
           final calibration = TemperatureCalibration.tryParse(j);
           if (calibration != null) {
             deviceCalibration = calibration;
@@ -1403,15 +1790,25 @@ class AppState extends ChangeNotifier {
 
   @override
   Future<void> dispose() async {
+    _disposed = true;
     _awaitingLegacyCalibration = false;
     final calibrationCompleter = _calibrationCompleter;
     _calibrationCompleter = null;
     if (calibrationCompleter != null && !calibrationCompleter.isCompleted) {
       calibrationCompleter.completeError(StateError('应用已关闭'));
     }
+    final alarmCompleter = _alarmConfigCompleter;
+    _alarmConfigCompleter = null;
+    if (alarmCompleter != null && !alarmCompleter.isCompleted) {
+      alarmCompleter.completeError(StateError('应用已关闭'));
+    }
     await _byteSub?.cancel();
+    await _alarmModuleByteSub?.cancel();
+    _alarmModuleByteSub = null;
     _stopThermalHeartbeat();
     _stopVisibleHeartbeat();
+    await _temperatureAlarmAudio.dispose();
+    await _alarmModuleSerial.dispose();
     await _serial.dispose();
     super.dispose();
   }

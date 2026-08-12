@@ -30,6 +30,7 @@ import 'gallery_shell.dart';
 import 'photo_download_tab.dart' show photoTabRefreshTrigger;
 import 'realtime_tab.dart';
 import 'temperature_calibration_page.dart';
+import 'temperature_alarm_ui.dart';
 import 'temperature_history_tab.dart';
 import 'widgets/window_title_bar.dart';
 import 'window_size_ffi.dart';
@@ -320,6 +321,10 @@ class _HomeShellState extends State<HomeShell> {
           ),
           const SizedBox(height: 12),
         ],
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: hPad),
+          child: const TemperatureAlarmBanner(),
+        ),
         Expanded(
           child: Padding(
             padding: EdgeInsets.fromLTRB(hPad, 0, hPad, compact ? 8 : 18),
@@ -861,6 +866,13 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
           ),
           const SizedBox(height: 12),
           const _SettingsSection(
+            icon: Icons.notifications_active_outlined,
+            title: '设备温度报警',
+            subtitle: '过热/过冷独立阈值与迟滞、确认延时、锁存和报警模块重复上报；参数持久化在设备端',
+            child: TemperatureAlarmSettingsControl(),
+          ),
+          const SizedBox(height: 12),
+          const _SettingsSection(
             icon: Icons.science_outlined,
             title: '温度线性校准',
             subtitle: '通过两个或更多参考温点自动拟合增益与偏移，并保存到热成像设备',
@@ -1225,6 +1237,7 @@ class _ResetSettingsControl extends StatelessWidget {
           '· 控制台展开状态\n'
           '· 图库下载路径\n'
           '· 软件 / 固件自动检查与已记忆的固件变体\n'
+          '· 上位机报警音效与音量\n'
           '· 窗口尺寸\n\n'
           '已下载的文件不会被删除.',
         ),
@@ -1241,7 +1254,9 @@ class _ResetSettingsControl extends StatelessWidget {
       ),
     );
     if (ok != true || !context.mounted) return;
+    final app = context.read<AppState>();
     await resetAllSettings();
+    await app.resetTemperatureAlarmAudioSettings();
     if (!context.mounted) return;
     BananaToast.show(context, '已恢复出厂设置');
   }

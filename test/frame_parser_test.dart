@@ -163,6 +163,34 @@ void main() {
       expect(decodedLength, 1024);
     });
 
+    test('报警 ASCII 行可在二进制帧之间最高优先级透传', () {
+      int thermalCount = 0;
+      int visibleCount = 0;
+      final passthrough = BytesBuilder();
+      final p = FrameParser(
+        onThermal: (_, _, _, _, _, _) => thermalCount++,
+        onVisible: (_, _, _) => visibleCount++,
+        onPassthrough: passthrough.add,
+      );
+      final stream = _concat([
+        buildThermal(),
+        '!A,1,H,1,+0850\n'.codeUnits,
+        buildVisible(8, 4),
+      ]);
+
+      for (int offset = 0; offset < stream.length; offset += 13) {
+        final end = offset + 13 < stream.length ? offset + 13 : stream.length;
+        p.feed(stream.sublist(offset, end));
+      }
+
+      expect(thermalCount, 1);
+      expect(visibleCount, 1);
+      expect(
+        String.fromCharCodes(passthrough.toBytes()),
+        contains('!A,1,H,1,+0850\n'),
+      );
+    });
+
     test('RGB565 → RGB888 红/绿/蓝色彩近似', () {
       final f = Uint16List.fromList([0xF800, 0x07E0, 0x001F]);
       final rgb = rgb565ToRgb888(f);
