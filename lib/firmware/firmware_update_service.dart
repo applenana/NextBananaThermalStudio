@@ -202,22 +202,36 @@ class FirmwareUpdateService {
           final variant = FirmwareVariant.fromEnvironment(decoded['variant']);
           final targetTag = decoded['targetTag']?.toString();
           final model = decoded['model']?.toString();
+          final requiresProductMigration =
+              decoded['requiresProductMigration'] == true;
+          final migrationFlashBytes = (decoded['migrationFlashBytes'] as num?)
+              ?.toInt();
+          final profile = switch (decoded['hardwareProfile']?.toString()) {
+            'dual' => FirmwareHardwareProfile.dual,
+            'standard' => FirmwareHardwareProfile.standard,
+            _ => null,
+          };
           final now = DateTime.now();
           if (createdAt != null &&
               variant != null &&
               targetTag != null &&
               targetTag.isNotEmpty &&
-              model == bananaDualLightModel &&
+              profile != null &&
+              variant.profile == profile &&
+              (model == bananaDualLightModel || model == bananaStandardModel) &&
               !createdAt.isAfter(now.add(const Duration(minutes: 5))) &&
               now.difference(createdAt) <= _recoverySessionLifetime) {
             recoverySession.value = FirmwareRecoverySession(
               identity: FirmwareDeviceIdentity(
-                family: FirmwareDeviceFamily.bananaDualLight,
+                family: FirmwareDeviceFamily.bananaThermal,
+                hardwareProfile: profile,
                 model: model,
                 currentVersion: decoded['currentVersion']?.toString(),
                 serialNumber: decoded['serialNumber']?.toString(),
                 reportedVariant: variant,
-                reason: '已恢复上次经过串口确认的双光热成像烧录会话',
+                requiresProductMigration: requiresProductMigration,
+                migrationFlashBytes: migrationFlashBytes,
+                reason: '已恢复上次经过串口确认的热成像烧录会话',
               ),
               targetTag: targetTag,
               variant: variant,
@@ -265,8 +279,8 @@ class FirmwareUpdateService {
     FirmwareVariant variant,
   ) async {
     await initialize();
-    if (!identity.canFlash || identity.model != bananaDualLightModel) {
-      throw StateError('只有经过串口确认的双光热成像可以建立恢复烧录会话');
+    if (!identity.canFlash || variant.profile != identity.hardwareProfile) {
+      throw StateError('只有板型匹配且经过串口确认的热成像可以建立恢复烧录会话');
     }
     final session = FirmwareRecoverySession(
       identity: identity,
@@ -279,6 +293,9 @@ class FirmwareUpdateService {
       _recoverySessionKey,
       jsonEncode({
         'model': identity.model,
+        'hardwareProfile': identity.hardwareProfile?.name,
+        'requiresProductMigration': identity.requiresProductMigration,
+        'migrationFlashBytes': identity.migrationFlashBytes,
         'currentVersion': identity.currentVersion,
         'serialNumber': identity.serialNumber,
         'targetTag': release.tagName,
@@ -369,7 +386,9 @@ class FirmwareUpdateService {
       snapshot.value = FirmwareUpdateSnapshot(
         phase: FirmwareUpdatePhase.updateAvailable,
         target: newer,
-        message: '发现设备固件新版本 ${newer.tagName}',
+        message: identity.requiresProductMigration
+            ? '发现统一固件 ${newer.tagName}，可迁移旧普通热成像'
+            : '发现设备固件新版本 ${newer.tagName}',
       );
       return FirmwareUpdateNotice(
         identity: identity,
@@ -395,6 +414,13 @@ class FirmwareUpdateService {
       throw UnsupportedError('自动烧录目前支持 Windows 和 Android');
     }
     if (!identity.canFlash) throw StateError(identity.reason);
+    if (variant.profile != identity.hardwareProfile) {
+      throw StateError('目标固件板型与设备板型不匹配');
+    }
+    if (identity.hardwareProfile == FirmwareHardwareProfile.standard &&
+        release.version.compareTo(AppVersion.tryParse('v1.8.0')!) < 0) {
+      throw StateError('普通热成像只能使用 v1.8.0 或更高版本的 standard 固件');
+    }
     if (snapshot.value.busy) throw StateError('已有固件烧录任务正在进行');
 
     _cancelDownload = false;
@@ -538,6 +564,9 @@ class FirmwareUpdateService {
       );
       final actual = AppVersion.tryParse(updatedIdentity.currentVersion ?? '');
       if (!updatedIdentity.canFlash ||
+          updatedIdentity.hardwareProfile != identity.hardwareProfile ||
+          (release.version.compareTo(AppVersion.tryParse('v1.8.0')!) >= 0 &&
+              updatedIdentity.reportedVariant != variant) ||
           actual == null ||
           actual.compareTo(release.version) != 0) {
         throw StateError(

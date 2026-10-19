@@ -46,7 +46,11 @@ Future<void> showFirmwareUpdateAvailableDialog(
       context: context,
       builder: (dialogContext) => AlertDialog(
         icon: const Icon(Icons.memory_rounded),
-        title: Text('发现设备固件 ${notice.latest.tagName}'),
+        title: Text(
+          notice.identity.requiresProductMigration
+              ? '可迁移到统一固件 ${notice.latest.tagName}'
+              : '发现设备固件 ${notice.latest.tagName}',
+        ),
         content: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 580),
           child: Column(
@@ -59,7 +63,7 @@ Future<void> showFirmwareUpdateAvailableDialog(
               ),
               const SizedBox(height: 12),
               Text(
-                '设备：3.2 寸双光热成像 · ${notice.identity.model}\n'
+                '设备：${notice.identity.productName} · ${notice.identity.model}\n'
                 '版本来源：${notice.catalog.sourceLabel}',
               ),
               if (notice.catalog.singleSourceFallback) ...[
@@ -72,7 +76,9 @@ Future<void> showFirmwareUpdateAvailableDialog(
               ],
               const SizedBox(height: 10),
               Text(
-                _automaticFirmwareFlashSupported
+                notice.identity.requiresProductMigration
+                    ? '这是从旧 v2.2 产品线迁移到统一固件，不按普通升级或降级处理。首次仅提供与原设备容量匹配的 standard 版本。'
+                    : _automaticFirmwareFlashSupported
                     ? '你可以立即自动烧录，也可以在固件管理中选择任意正式版本进行升级、降级或重刷。'
                     : '你可以查看并选择任意正式版本；自动烧录目前支持 Windows 和 Android。',
               ),
@@ -269,7 +275,7 @@ class _FirmwareUpdateSettingsControlState
                         canRecover
                             ? '已检测到 RP2040 USB 磁盘 · 可恢复烧录'
                             : identity.canFlash
-                            ? '3.2 寸双光热成像 · ${identity.currentVersion ?? '版本未知'}'
+                            ? '${identity.productName} · ${identity.currentVersion ?? '版本未知'}'
                             : connected
                             ? '当前设备不允许使用此固件源'
                             : '连接设备后识别型号与固件版本',
@@ -354,7 +360,9 @@ class _FirmwareUpdateSettingsControlState
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
               title: const Text('连接后自动检查固件更新'),
-              subtitle: const Text('仅对明确识别为官方双光型号的设备查询；未知型号不会匹配或烧录'),
+              subtitle: const Text(
+                '仅对明确识别为官方 dual / standard 型号的设备查询；未知型号不会匹配或烧录',
+              ),
               value: _service.automaticCheckEnabled.value,
               onChanged: _service.setAutomaticCheckEnabled,
             ),
@@ -906,18 +914,23 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
   }
 
   void _selectDefaultRelease(FirmwareCatalog catalog) {
-    if (_selectedRelease != null || catalog.releases.isEmpty) return;
+    final compatible = _compatibleReleases(catalog.releases);
+    if (_selectedRelease != null && compatible.contains(_selectedRelease)) {
+      return;
+    }
+    _selectedRelease = null;
+    if (compatible.isEmpty) return;
     final recovery = _service.recoverySession.value;
     if (recovery != null &&
         recovery.identity.deviceKey == widget.identity.deviceKey) {
-      for (final release in catalog.releases) {
+      for (final release in compatible) {
         if (release.tagName == recovery.targetTag) {
           _selectedRelease = release;
           return;
         }
       }
     }
-    _selectedRelease = catalog.releases.first;
+    _selectedRelease = compatible.first;
   }
 
   Future<void> _probeAndroidUsb() async {
@@ -990,10 +1003,29 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
   }
 
   List<FirmwareVariant> get _availableVariants {
-    final reported = widget.identity.reportedVariant;
-    if (reported == null) return FirmwareVariant.values;
-    return FirmwareVariant.values
-        .where((variant) => variant.flashBytes == reported.flashBytes)
+    final profile = widget.identity.hardwareProfile;
+    if (profile == null) return const [];
+    final profileVariants = FirmwareVariant.values
+        .where((variant) => variant.profile == profile)
+        .toList();
+    if (!widget.identity.requiresProductMigration) return profileVariants;
+    final migrationFlashBytes = widget.identity.migrationFlashBytes;
+    if (migrationFlashBytes == null) return const [];
+    return profileVariants
+        .where((variant) => variant.flashBytes == migrationFlashBytes)
+        .toList();
+  }
+
+  List<FirmwareRelease> _compatibleReleases(List<FirmwareRelease> releases) {
+    if (widget.identity.hardwareProfile == FirmwareHardwareProfile.dual &&
+        !widget.identity.requiresProductMigration) {
+      return releases;
+    }
+    return releases
+        .where(
+          (release) =>
+              release.version.compareTo(AppVersion.tryParse('v1.8.0')!) >= 0,
+        )
         .toList();
   }
 
@@ -1065,7 +1097,9 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
   ) {
     var backedUp = false;
     final current = AppVersion.tryParse(widget.identity.currentVersion ?? '');
-    final relation = current == null
+    final relation = widget.identity.requiresProductMigration
+        ? '迁移'
+        : current == null
         ? '烧录'
         : release.version.compareTo(current) > 0
         ? '升级'
@@ -1095,9 +1129,12 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
                 Text('固件变体：${variant.label}'),
                 const SizedBox(height: 8),
                 _WarningBox(
-                  text: capacityChanged
+                  text: widget.identity.requiresProductMigration
+                      ? '首次迁移会格式化整个 LittleFS，清除旧照片、配置和校准；仅在旧分区可挂载且激活信息有效时尝试恢复激活。请先完成备份。'
+                      : capacityChanged
                       ? '你正在切换 2 MB / 8 MB Flash 分区。旧照片、配置或 LittleFS '
-                            '可能无法读取；必须确认真实 Flash 容量后再继续。'
+                            '可能无法读取，激活信息也可能无法自动恢复并需要重新激活；'
+                            '必须确认真实 Flash 容量后再继续。'
                       : '固件切换可能迁移配置或使旧照片不可读。请先下载设备照片，并记录温度校准、'
                             '触摸校准和双光对齐参数。',
                 ),
@@ -1134,7 +1171,9 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
   @override
   Widget build(BuildContext context) {
     final state = _service.snapshot.value;
-    final releases = _catalog?.releases ?? const <FirmwareRelease>[];
+    final releases = _compatibleReleases(
+      _catalog?.releases ?? const <FirmwareRelease>[],
+    );
     final busy = _running || state.busy;
     final scheme = Theme.of(context).colorScheme;
     final serialConnected =
@@ -1166,7 +1205,9 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
               ),
               const SizedBox(height: 4),
               Text(
-                '当前发布源仅包含 3.2 寸双光热成像；其他设备即使协议兼容也不会放行。',
+                widget.identity.requiresProductMigration
+                    ? '该设备将迁移到普通热成像统一固件；旧 v2.2 不参与普通版本升降级比较。'
+                    : '固件选择已锁定为 ${widget.identity.hardwareProfile?.name ?? '未知'} 板型，不能跨板型烧录。',
                 style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
               ),
               if (Platform.isAndroid) ...[

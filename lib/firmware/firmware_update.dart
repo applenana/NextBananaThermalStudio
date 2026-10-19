@@ -5,48 +5,111 @@ import '../update/app_update.dart' show AppVersion;
 const firmwareRepositoryOwner = 'applenana';
 const firmwareRepositoryName = 'BananaThermalFirmware';
 const bananaDualLightModel = 'HEIMAN-NSP';
+const bananaStandardModel = 'HEIMAN-NSP-STANDARD';
 
 final _sha256Pattern = RegExp(r'^[0-9a-fA-F]{64}$');
 final _assetDigestPattern = RegExp(r'^sha256:([0-9a-fA-F]{64})$');
-final _legacyIdentityPattern = RegExp(
-  r'^(HEIMAN-NSP)-(v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)-(32)$',
+final _unifiedIdentityPattern = RegExp(
+  r'^(HEIMAN-NSP(?:-STANDARD)?)-(v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)-(32)$',
   caseSensitive: false,
 );
+final _standardMigrationIdentityPattern = RegExp(
+  r'^(HEIMAN)-(v\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)-(3inch2|2in4&8)$',
+  caseSensitive: false,
+);
+final _unifiedFirmwareCutover = AppVersion.tryParse('v1.8.0')!;
 
-enum FirmwareDeviceFamily { bananaDualLight, unsupported }
+enum FirmwareDeviceFamily { bananaThermal, unsupported }
+
+enum FirmwareHardwareProfile { dual, standard }
 
 enum FirmwareVariant {
   flash8MbPerformance(
-    environment: 'sketch3m_fs5m',
-    label: '8 MB 性能版（300 MHz）',
+    environment: 'dual_sketch3m_fs5m',
+    label: '双光 · 8 MB 性能版（300 MHz）',
+    profile: FirmwareHardwareProfile.dual,
     flashBytes: 8 * 1024 * 1024,
+    filesystemBytes: 5 * 1024 * 1024,
+    cpuHz: 300000000,
+    stabilityProfile: 'performance',
+    historicalEnvironment: 'sketch3m_fs5m',
   ),
   flash8MbStable(
-    environment: 'sketch3m_fs5m_stable',
-    label: '8 MB 稳定版（220 MHz）',
+    environment: 'dual_sketch3m_fs5m_stable',
+    label: '双光 · 8 MB 稳定版（220 MHz）',
+    profile: FirmwareHardwareProfile.dual,
     flashBytes: 8 * 1024 * 1024,
+    filesystemBytes: 5 * 1024 * 1024,
+    cpuHz: 220000000,
+    stabilityProfile: 'stable',
+    historicalEnvironment: 'sketch3m_fs5m_stable',
   ),
   flash2Mb(
-    environment: 'sketch1m_fs1m',
-    label: '2 MB 兼容版',
+    environment: 'dual_sketch1m_fs1m',
+    label: '双光 · 2 MB 兼容版（300 MHz）',
+    profile: FirmwareHardwareProfile.dual,
     flashBytes: 2 * 1024 * 1024,
+    filesystemBytes: 1 * 1024 * 1024,
+    cpuHz: 300000000,
+    stabilityProfile: 'performance',
+    historicalEnvironment: 'sketch1m_fs1m',
+  ),
+  standardFlash8MbPerformance(
+    environment: 'standard_sketch3m_fs5m',
+    label: '普通热成像 · 8 MB 性能版（300 MHz）',
+    profile: FirmwareHardwareProfile.standard,
+    flashBytes: 8 * 1024 * 1024,
+    filesystemBytes: 5 * 1024 * 1024,
+    cpuHz: 300000000,
+    stabilityProfile: 'performance',
+  ),
+  standardFlash8MbStable(
+    environment: 'standard_sketch3m_fs5m_stable',
+    label: '普通热成像 · 8 MB 稳定版（220 MHz）',
+    profile: FirmwareHardwareProfile.standard,
+    flashBytes: 8 * 1024 * 1024,
+    filesystemBytes: 5 * 1024 * 1024,
+    cpuHz: 220000000,
+    stabilityProfile: 'stable',
+  ),
+  standardFlash2Mb(
+    environment: 'standard_sketch1m_fs1m',
+    label: '普通热成像 · 2 MB 兼容版（300 MHz）',
+    profile: FirmwareHardwareProfile.standard,
+    flashBytes: 2 * 1024 * 1024,
+    filesystemBytes: 1 * 1024 * 1024,
+    cpuHz: 300000000,
+    stabilityProfile: 'performance',
   );
 
   const FirmwareVariant({
     required this.environment,
     required this.label,
+    required this.profile,
     required this.flashBytes,
+    required this.filesystemBytes,
+    required this.cpuHz,
+    required this.stabilityProfile,
+    this.historicalEnvironment,
   });
 
   final String environment;
   final String label;
+  final FirmwareHardwareProfile profile;
   final int flashBytes;
+  final int filesystemBytes;
+  final int cpuHz;
+  final String stabilityProfile;
+  final String? historicalEnvironment;
 
   static FirmwareVariant? fromEnvironment(Object? value) {
     final normalized = value?.toString().trim().toLowerCase();
     if (normalized == null || normalized.isEmpty) return null;
     for (final variant in values) {
-      if (variant.environment == normalized) return variant;
+      if (variant.environment == normalized ||
+          variant.historicalEnvironment == normalized) {
+        return variant;
+      }
     }
     return null;
   }
@@ -59,37 +122,53 @@ enum FirmwareVariant {
 class FirmwareDeviceIdentity {
   const FirmwareDeviceIdentity({
     required this.family,
+    required this.hardwareProfile,
     required this.model,
     required this.currentVersion,
     required this.serialNumber,
     required this.reportedVariant,
+    required this.requiresProductMigration,
+    required this.migrationFlashBytes,
     required this.reason,
   });
 
   final FirmwareDeviceFamily family;
+  final FirmwareHardwareProfile? hardwareProfile;
   final String? model;
   final String? currentVersion;
   final String? serialNumber;
   final FirmwareVariant? reportedVariant;
+  final bool requiresProductMigration;
+  final int? migrationFlashBytes;
   final String reason;
 
-  bool get canFlash => family == FirmwareDeviceFamily.bananaDualLight;
+  bool get canFlash => family == FirmwareDeviceFamily.bananaThermal;
+
+  String get productName => switch (hardwareProfile) {
+    FirmwareHardwareProfile.dual => '双光热成像',
+    FirmwareHardwareProfile.standard => '普通热成像',
+    null => '未知热成像',
+  };
 
   String get deviceKey {
     final serial = serialNumber?.trim();
+    final profile = hardwareProfile?.name ?? 'unknown';
     return serial == null || serial.isEmpty
-        ? '${model ?? 'unknown'}:anonymous'
-        : '${model ?? 'unknown'}:$serial';
+        ? '$profile:${model ?? 'unknown'}:anonymous'
+        : '$profile:${model ?? 'unknown'}:$serial';
   }
 
   static FirmwareDeviceIdentity fromDeviceInfo(Map<String, dynamic>? info) {
     if (info == null) {
       return const FirmwareDeviceIdentity(
         family: FirmwareDeviceFamily.unsupported,
+        hardwareProfile: null,
         model: null,
         currentVersion: null,
         serialNumber: null,
         reportedVariant: null,
+        requiresProductMigration: false,
+        migrationFlashBytes: null,
         reason: '设备尚未返回 GetSysInfo，不能确认固件兼容性',
       );
     }
@@ -103,10 +182,15 @@ class FirmwareDeviceIdentity {
     }
 
     final composite = firstString(const ['version', 'Version']);
-    final compositeMatch = _legacyIdentityPattern.firstMatch(composite ?? '');
-    final compositeModel = compositeMatch?.group(1)?.toUpperCase();
-    final compositeVersion = compositeMatch?.group(2);
-    final compositeSensorClass = compositeMatch?.group(3);
+    final unifiedMatch = _unifiedIdentityPattern.firstMatch(composite ?? '');
+    final migrationMatch = _standardMigrationIdentityPattern.firstMatch(
+      composite ?? '',
+    );
+    final compositeModel = unifiedMatch?.group(1)?.toUpperCase();
+    final compositeVersion = unifiedMatch?.group(2) ?? migrationMatch?.group(2);
+    final compositeSensorClass = unifiedMatch?.group(3);
+    final migrationKind = migrationMatch?.group(3)?.toLowerCase();
+    final requiresMigration = migrationMatch != null;
 
     final explicitModel = firstString(const [
       'deviceModel',
@@ -116,7 +200,7 @@ class FirmwareDeviceIdentity {
       'model',
       'Model',
     ])?.toUpperCase();
-    final model = explicitModel ?? compositeModel;
+    final model = explicitModel ?? compositeModel ?? migrationMatch?.group(1);
     final explicitSensorClass = firstString(const [
       'sensorClass',
       'SensorClass',
@@ -128,6 +212,21 @@ class FirmwareDeviceIdentity {
     final currentVersion = AppVersion.tryParse(versionCandidate ?? '') == null
         ? null
         : versionCandidate;
+    final explicitProfile = firstString(const [
+      'hardwareProfile',
+      'HardwareProfile',
+    ])?.toLowerCase();
+    FirmwareHardwareProfile? hardwareProfile;
+    if (requiresMigration || model == bananaStandardModel) {
+      hardwareProfile = FirmwareHardwareProfile.standard;
+    } else if (model == bananaDualLightModel) {
+      hardwareProfile = FirmwareHardwareProfile.dual;
+    }
+    if (explicitProfile == 'dual') {
+      hardwareProfile = FirmwareHardwareProfile.dual;
+    } else if (explicitProfile == 'standard') {
+      hardwareProfile = FirmwareHardwareProfile.standard;
+    }
 
     FirmwareVariant? reportedVariant = FirmwareVariant.fromEnvironment(
       firstString(const [
@@ -136,9 +235,21 @@ class FirmwareDeviceIdentity {
         'platformioEnvironment',
       ]),
     );
-    reportedVariant ??= _variantFromFlashSize(
-      info['flashSizeBytes'] ?? info['FlashSizeBytes'] ?? info['flashSizeMb'],
-    );
+    final rawFlashSize =
+        info['flashSizeBytes'] ?? info['FlashSizeBytes'] ?? info['flashSizeMb'];
+    final flashVariant = _variantFromFlashSize(rawFlashSize, hardwareProfile);
+    final flashFieldsConflict =
+        reportedVariant != null &&
+        flashVariant != null &&
+        reportedVariant.flashBytes != flashVariant.flashBytes;
+    reportedVariant ??= flashVariant;
+    final rawCpuHz = num.tryParse(
+      (info['cpuFrequencyHz'] ?? info['CpuFrequencyHz'] ?? '').toString(),
+    )?.toInt();
+    final cpuFieldsConflict =
+        reportedVariant != null &&
+        rawCpuHz != null &&
+        reportedVariant.cpuHz != rawCpuHz;
 
     final serial = firstString(const ['SerialNum', 'Serial']);
     if (explicitModel != null &&
@@ -146,41 +257,81 @@ class FirmwareDeviceIdentity {
         explicitModel != compositeModel) {
       return FirmwareDeviceIdentity(
         family: FirmwareDeviceFamily.unsupported,
+        hardwareProfile: hardwareProfile,
         model: explicitModel,
         currentVersion: currentVersion,
         serialNumber: serial,
         reportedVariant: reportedVariant,
+        requiresProductMigration: requiresMigration,
+        migrationFlashBytes: null,
         reason: '设备上报的型号字段互相冲突，已拒绝自动刷写',
       );
     }
-    if (model != bananaDualLightModel ||
+    final expectedModel = hardwareProfile == FirmwareHardwareProfile.standard
+        ? bananaStandardModel
+        : bananaDualLightModel;
+    final profileConflicts =
+        (explicitProfile != null &&
+            explicitProfile != 'dual' &&
+            explicitProfile != 'standard') ||
+        (reportedVariant != null &&
+            reportedVariant.profile != hardwareProfile) ||
+        flashFieldsConflict ||
+        cpuFieldsConflict;
+    if (hardwareProfile == null ||
+        profileConflicts ||
+        (!requiresMigration && model != expectedModel) ||
         (sensorClass != null && sensorClass != '32')) {
       return FirmwareDeviceIdentity(
         family: FirmwareDeviceFamily.unsupported,
+        hardwareProfile: hardwareProfile,
         model: model,
         currentVersion: currentVersion,
         serialNumber: serial,
         reportedVariant: reportedVariant,
+        requiresProductMigration: requiresMigration,
+        migrationFlashBytes: null,
         reason: model == null
-            ? '无法确认设备型号；当前固件源只支持 3.2 寸双光热成像'
-            : '型号 $model 不属于当前固件源，已禁止自动刷写',
+            ? '无法确认设备型号和硬件板型'
+            : '设备身份字段冲突或型号 $model 不属于当前固件源，已禁止自动刷写',
       );
     }
 
+    final migrationFlashBytes = migrationKind == '3inch2'
+        ? 8 * 1024 * 1024
+        : migrationKind == '2in4&8'
+        ? 2 * 1024 * 1024
+        : null;
+    if (requiresMigration) {
+      reportedVariant = migrationFlashBytes == 8 * 1024 * 1024
+          ? FirmwareVariant.standardFlash8MbPerformance
+          : FirmwareVariant.standardFlash2Mb;
+    }
+
     return FirmwareDeviceIdentity(
-      family: FirmwareDeviceFamily.bananaDualLight,
-      model: model,
+      family: FirmwareDeviceFamily.bananaThermal,
+      hardwareProfile: hardwareProfile,
+      model: requiresMigration ? bananaStandardModel : model,
       currentVersion: currentVersion,
       serialNumber: serial,
       reportedVariant: reportedVariant,
-      reason: currentVersion == null
-          ? '已识别 3.2 寸双光设备，但当前固件没有可比较的版本号'
-          : '已识别 3.2 寸双光热成像',
+      requiresProductMigration: requiresMigration,
+      migrationFlashBytes: migrationFlashBytes,
+      reason: requiresMigration
+          ? '已识别旧普通热成像，需要迁移到统一固件'
+          : currentVersion == null
+          ? '已识别 ${hardwareProfile.name} 设备，但当前固件没有可比较的版本号'
+          : hardwareProfile == FirmwareHardwareProfile.dual
+          ? '已识别双光热成像'
+          : '已识别普通热成像',
     );
   }
 
-  static FirmwareVariant? _variantFromFlashSize(Object? raw) {
-    if (raw == null) return null;
+  static FirmwareVariant? _variantFromFlashSize(
+    Object? raw,
+    FirmwareHardwareProfile? profile,
+  ) {
+    if (raw == null || profile == null) return null;
     final text = raw.toString().trim().toLowerCase();
     final number = num.tryParse(text.replaceAll(RegExp(r'[^0-9.]'), ''));
     if (number == null) return null;
@@ -188,10 +339,14 @@ class FirmwareDeviceIdentity {
         ? (number * 1024 * 1024).round()
         : number.round();
     if (bytes >= 7 * 1024 * 1024) {
-      return FirmwareVariant.flash8MbPerformance;
+      return profile == FirmwareHardwareProfile.dual
+          ? FirmwareVariant.flash8MbPerformance
+          : FirmwareVariant.standardFlash8MbPerformance;
     }
     if (bytes >= 2 * 1024 * 1024 && bytes < 3 * 1024 * 1024) {
-      return FirmwareVariant.flash2Mb;
+      return profile == FirmwareHardwareProfile.dual
+          ? FirmwareVariant.flash2Mb
+          : FirmwareVariant.standardFlash2Mb;
     }
     return null;
   }
@@ -263,8 +418,13 @@ class FirmwareRelease {
     return null;
   }
 
-  FirmwareReleaseAsset? assetFor(FirmwareVariant variant) =>
-      assetNamed('banana-thermal-$tagName-${variant.environment}.uf2');
+  FirmwareReleaseAsset? assetFor(FirmwareVariant variant) {
+    final environment = version.compareTo(_unifiedFirmwareCutover) < 0
+        ? variant.historicalEnvironment
+        : variant.environment;
+    if (environment == null) return null;
+    return assetNamed('banana-thermal-$tagName-$environment.uf2');
+  }
 
   String get verificationIdentity {
     final assetIdentity =
@@ -348,23 +508,46 @@ class FirmwareArtifact {
     required this.size,
     required this.sha256,
     required this.environment,
+    required this.hardwareProfile,
+    required this.flashBytes,
+    required this.filesystemBytes,
+    required this.cpuHz,
+    required this.stabilityProfile,
   });
 
   final String file;
   final int size;
   final String sha256;
   final String environment;
+  final FirmwareHardwareProfile? hardwareProfile;
+  final int? flashBytes;
+  final int? filesystemBytes;
+  final int? cpuHz;
+  final String? stabilityProfile;
 }
 
 class FirmwareManifest {
-  const FirmwareManifest({required this.tagName, required this.artifacts});
+  const FirmwareManifest({
+    required this.schemaVersion,
+    required this.tagName,
+    required this.artifacts,
+  });
 
+  final int schemaVersion;
   final String tagName;
   final List<FirmwareArtifact> artifacts;
 
-  FirmwareArtifact artifactFor(FirmwareVariant variant) => artifacts.firstWhere(
-    (artifact) => artifact.environment == variant.environment,
-  );
+  FirmwareArtifact artifactFor(FirmwareVariant variant) {
+    final environment = schemaVersion == 1
+        ? variant.historicalEnvironment
+        : variant.environment;
+    if (environment == null) {
+      throw StateError('当前历史 manifest 不包含 ${variant.label}');
+    }
+    return artifacts.firstWhere(
+      (artifact) => artifact.environment == environment,
+    );
+  }
 
   factory FirmwareManifest.fromJsonString(
     String source, {
@@ -373,7 +556,15 @@ class FirmwareManifest {
     final decoded = jsonDecode(source);
     if (decoded is! Map) throw const FormatException('manifest 不是 JSON 对象');
     final json = Map<String, dynamic>.from(decoded);
-    if (json['schema_version'] != 1 || json['firmware_tag'] != expectedTag) {
+    final schemaVersion = (json['schema_version'] as num?)?.toInt();
+    final expectedVersion = AppVersion.tryParse(expectedTag);
+    final expectedSchema =
+        expectedVersion != null &&
+            expectedVersion.compareTo(_unifiedFirmwareCutover) >= 0
+        ? 2
+        : 1;
+    if (schemaVersion != expectedSchema ||
+        json['firmware_tag'] != expectedTag) {
       throw const FormatException('manifest schema 或版本不匹配');
     }
     final builder = json['builder'];
@@ -391,6 +582,16 @@ class FirmwareManifest {
       final environment = raw['platformio_environment']?.toString() ?? '';
       final size = (raw['size'] as num?)?.toInt() ?? 0;
       final digest = raw['sha256']?.toString().toLowerCase() ?? '';
+      final profileText = raw['hardware_profile']?.toString().toLowerCase();
+      final profile = profileText == 'dual'
+          ? FirmwareHardwareProfile.dual
+          : profileText == 'standard'
+          ? FirmwareHardwareProfile.standard
+          : null;
+      final flashBytes = (raw['flash_bytes'] as num?)?.toInt();
+      final filesystemBytes = (raw['filesystem_bytes'] as num?)?.toInt();
+      final cpuHz = (raw['cpu_hz'] as num?)?.toInt();
+      final stabilityProfile = raw['stability_profile']?.toString();
       if (file.isEmpty ||
           file.contains('/') ||
           file.contains('\\') ||
@@ -399,18 +600,40 @@ class FirmwareManifest {
           environment.isEmpty) {
         throw const FormatException('manifest 固件附件字段无效');
       }
+      if (schemaVersion == 2 &&
+          (profile == null ||
+              flashBytes == null ||
+              filesystemBytes == null ||
+              cpuHz == null ||
+              stabilityProfile == null)) {
+        throw const FormatException('schema v2 固件附件缺少板型元数据');
+      }
       artifacts.add(
         FirmwareArtifact(
           file: file,
           size: size,
           sha256: digest,
           environment: environment,
+          hardwareProfile: profile,
+          flashBytes: flashBytes,
+          filesystemBytes: filesystemBytes,
+          cpuHz: cpuHz,
+          stabilityProfile: stabilityProfile,
         ),
       );
     }
 
-    final expectedEnvironments = FirmwareVariant.values
-        .map((variant) => variant.environment)
+    final variants = schemaVersion == 1
+        ? FirmwareVariant.values
+              .where((variant) => variant.historicalEnvironment != null)
+              .toList()
+        : FirmwareVariant.values;
+    final expectedEnvironments = variants
+        .map(
+          (variant) => schemaVersion == 1
+              ? variant.historicalEnvironment!
+              : variant.environment,
+        )
         .toSet();
     final actualEnvironments = artifacts.map((a) => a.environment).toSet();
     if (artifacts.length != expectedEnvironments.length ||
@@ -424,8 +647,20 @@ class FirmwareManifest {
       if (artifact.file != expectedFile) {
         throw FormatException('manifest 固件文件名不匹配：${artifact.file}');
       }
+      if (schemaVersion == 2) {
+        final variant = FirmwareVariant.fromEnvironment(artifact.environment);
+        if (variant == null ||
+            artifact.hardwareProfile != variant.profile ||
+            artifact.flashBytes != variant.flashBytes ||
+            artifact.filesystemBytes != variant.filesystemBytes ||
+            artifact.cpuHz != variant.cpuHz ||
+            artifact.stabilityProfile != variant.stabilityProfile) {
+          throw FormatException('manifest 固件元数据冲突：${artifact.environment}');
+        }
+      }
     }
     return FirmwareManifest(
+      schemaVersion: schemaVersion!,
       tagName: expectedTag,
       artifacts: List.unmodifiable(artifacts),
     );
@@ -436,7 +671,16 @@ FirmwareRelease? findNewerFirmware(
   FirmwareDeviceIdentity identity,
   List<FirmwareRelease> releases,
 ) {
-  if (!identity.canFlash || identity.currentVersion == null) return null;
+  if (!identity.canFlash) return null;
+  if (identity.requiresProductMigration) {
+    for (final release in releases) {
+      if (release.version.compareTo(_unifiedFirmwareCutover) >= 0) {
+        return release;
+      }
+    }
+    return null;
+  }
+  if (identity.currentVersion == null) return null;
   final current = AppVersion.tryParse(identity.currentVersion!);
   if (current == null) return null;
   for (final release in releases) {

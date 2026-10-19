@@ -52,6 +52,15 @@ void main() {
       );
       expect(
         FirmwareDeviceIdentity.fromDeviceInfo(const {
+          'version': 'HEIMAN-NSP-STANDARD-v1.8.0-32',
+          'hardwareProfile': 'standard',
+          'firmwareVariant': 'standard_sketch1m_fs1m',
+          'flashSizeBytes': 8 * 1024 * 1024,
+        }).canFlash,
+        isFalse,
+      );
+      expect(
+        FirmwareDeviceIdentity.fromDeviceInfo(const {
           'version': 'HEIMAN-NSP-PRO-v1.7.0-32',
         }).canFlash,
         isFalse,
@@ -63,6 +72,40 @@ void main() {
         }).canFlash,
         isFalse,
       );
+    });
+
+    test('识别统一普通热成像并锁定 standard 板型', () {
+      final identity = FirmwareDeviceIdentity.fromDeviceInfo(const {
+        'version': 'HEIMAN-NSP-STANDARD-v1.8.0-32',
+        'deviceModel': 'HEIMAN-NSP-STANDARD',
+        'hardwareProfile': 'standard',
+        'firmwareVariant': 'standard_sketch3m_fs5m_stable',
+      });
+
+      expect(identity.canFlash, isTrue);
+      expect(identity.hardwareProfile, FirmwareHardwareProfile.standard);
+      expect(identity.reportedVariant, FirmwareVariant.standardFlash8MbStable);
+      expect(identity.requiresProductMigration, isFalse);
+    });
+
+    test('旧普通热成像进入特殊迁移流程并限制首次容量', () {
+      final old8Mb = FirmwareDeviceIdentity.fromDeviceInfo(const {
+        'version': 'HEIMAN-v2.2-3inch2',
+        'SerialNum': 'OLD8',
+      });
+      final old2Mb = FirmwareDeviceIdentity.fromDeviceInfo(const {
+        'version': 'HEIMAN-v2.2-2in4&8',
+        'SerialNum': 'OLD2',
+      });
+
+      expect(old8Mb.requiresProductMigration, isTrue);
+      expect(old8Mb.migrationFlashBytes, 8 * 1024 * 1024);
+      expect(
+        old8Mb.reportedVariant,
+        FirmwareVariant.standardFlash8MbPerformance,
+      );
+      expect(old2Mb.migrationFlashBytes, 2 * 1024 * 1024);
+      expect(old2Mb.reportedVariant, FirmwareVariant.standardFlash2Mb);
     });
   });
 
@@ -137,6 +180,10 @@ void main() {
         releases.last.assetFor(FirmwareVariant.flash2Mb)?.name,
         'banana-thermal-v1.7.0-sketch1m_fs1m.uf2',
       );
+      final migration = FirmwareDeviceIdentity.fromDeviceInfo(const {
+        'version': 'HEIMAN-v2.2-3inch2',
+      });
+      expect(findNewerFirmware(migration, releases)?.tagName, 'v1.9.0');
     });
 
     test('拒绝伪造仓库路径的附件', () {
@@ -161,6 +208,57 @@ void main() {
       final stable = manifest.artifactFor(FirmwareVariant.flash8MbStable);
       expect(stable.environment, 'sketch3m_fs5m_stable');
       expect(stable.sha256, _digestC);
+    });
+
+    test('严格校验 schema v2 六变体及板型元数据', () {
+      final manifest = FirmwareManifest.fromJsonString(
+        jsonEncode(_manifestV2Json()),
+        expectedTag: 'v1.8.0',
+      );
+      expect(manifest.schemaVersion, 2);
+      expect(manifest.artifacts, hasLength(6));
+      expect(
+        manifest
+            .artifactFor(FirmwareVariant.standardFlash8MbStable)
+            .hardwareProfile,
+        FirmwareHardwareProfile.standard,
+      );
+
+      final conflict = _manifestV2Json();
+      (conflict['artifacts']
+              as List<Map<String, dynamic>>)[0]['hardware_profile'] =
+          'standard';
+      expect(
+        () => FirmwareManifest.fromJsonString(
+          jsonEncode(conflict),
+          expectedTag: 'v1.8.0',
+        ),
+        throwsFormatException,
+      );
+
+      final duplicate = _manifestV2Json();
+      final duplicateArtifacts =
+          duplicate['artifacts'] as List<Map<String, dynamic>>;
+      duplicateArtifacts.last['platformio_environment'] =
+          duplicateArtifacts.first['platformio_environment'];
+      expect(
+        () => FirmwareManifest.fromJsonString(
+          jsonEncode(duplicate),
+          expectedTag: 'v1.8.0',
+        ),
+        throwsFormatException,
+      );
+
+      final invalidDigest = _manifestV2Json();
+      (invalidDigest['artifacts'] as List<Map<String, dynamic>>)[0]['sha256'] =
+          'not-a-sha256';
+      expect(
+        () => FirmwareManifest.fromJsonString(
+          jsonEncode(invalidDigest),
+          expectedTag: 'v1.8.0',
+        ),
+        throwsFormatException,
+      );
     });
 
     test('拒绝错误仓库、遗漏变体和路径型文件名', () {
@@ -378,5 +476,29 @@ Map<String, dynamic> _manifestJson() => {
           'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
       'platformio_environment': 'sketch3m_fs5m_stable',
     },
+  ],
+};
+
+Map<String, dynamic> _manifestV2Json() => {
+  'schema_version': 2,
+  'firmware_tag': 'v1.8.0',
+  'source_revision_sha256': _digestC,
+  'builder': {
+    'platformio_core': '6.1.19',
+    'workflow_repository': 'applenana/BananaThermalFirmware',
+  },
+  'artifacts': [
+    for (final variant in FirmwareVariant.values)
+      {
+        'file': 'banana-thermal-v1.8.0-${variant.environment}.uf2',
+        'size': 1630208,
+        'sha256': _digestA,
+        'platformio_environment': variant.environment,
+        'hardware_profile': variant.profile.name,
+        'flash_bytes': variant.flashBytes,
+        'filesystem_bytes': variant.filesystemBytes,
+        'cpu_hz': variant.cpuHz,
+        'stability_profile': variant.stabilityProfile,
+      },
   ],
 };
