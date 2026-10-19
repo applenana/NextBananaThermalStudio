@@ -77,7 +77,7 @@ Future<void> showFirmwareUpdateAvailableDialog(
               const SizedBox(height: 10),
               Text(
                 notice.identity.requiresProductMigration
-                    ? '这是从旧 v2.2 产品线迁移到统一固件，不按普通升级或降级处理。首次仅提供与原设备容量匹配的 standard 版本。'
+                    ? '这是从旧 v2.2 产品线迁移到统一固件，属于产品线迁移，不是普通版本更新。首次仅提供与原设备容量匹配的 standard 版本。'
                     : _automaticFirmwareFlashSupported
                     ? '你可以立即自动烧录，也可以在固件管理中选择任意正式版本进行升级、降级或重刷。'
                     : '你可以查看并选择任意正式版本；自动烧录目前支持 Windows 和 Android。',
@@ -1206,7 +1206,7 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
               const SizedBox(height: 4),
               Text(
                 widget.identity.requiresProductMigration
-                    ? '该设备将迁移到普通热成像统一固件；旧 v2.2 不参与普通版本升降级比较。'
+                    ? '该设备将迁移到普通热成像统一固件；旧 v2.2 仅作为迁移来源，不参与统一版本排序。'
                     : '固件选择已锁定为 ${widget.identity.hardwareProfile?.name ?? '未知'} 板型，不能跨板型烧录。',
                 style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
               ),
@@ -1242,8 +1242,10 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
                   initialValue: releases.contains(_selectedRelease)
                       ? _selectedRelease
                       : null,
-                  decoration: const InputDecoration(
-                    labelText: '目标正式版本（可自由升级 / 降级）',
+                  decoration: InputDecoration(
+                    labelText: widget.identity.requiresProductMigration
+                        ? '目标统一固件版本（首次迁移）'
+                        : '目标正式版本（可自由升级 / 降级）',
                     prefixIcon: Icon(Icons.new_releases_rounded),
                   ),
                   items: [
@@ -1391,6 +1393,9 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
   }
 
   String _releaseLabel(FirmwareRelease release) {
+    if (widget.identity.requiresProductMigration) {
+      return '${release.tagName} · 迁移';
+    }
     final current = AppVersion.tryParse(widget.identity.currentVersion ?? '');
     if (current == null) return release.tagName;
     final compared = release.version.compareTo(current);
@@ -1401,6 +1406,7 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
 
   String _actionLabel(FirmwareRelease? release) {
     if (release == null) return '选择版本';
+    if (widget.identity.requiresProductMigration) return '自动迁移';
     final current = AppVersion.tryParse(widget.identity.currentVersion ?? '');
     if (current == null) return '自动烧录';
     final compared = release.version.compareTo(current);
