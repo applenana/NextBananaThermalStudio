@@ -1008,12 +1008,9 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
     final profileVariants = FirmwareVariant.values
         .where((variant) => variant.profile == profile)
         .toList();
-    if (!widget.identity.requiresProductMigration) return profileVariants;
-    final migrationFlashBytes = widget.identity.migrationFlashBytes;
-    if (migrationFlashBytes == null) return const [];
-    return profileVariants
-        .where((variant) => variant.flashBytes == migrationFlashBytes)
-        .toList();
+    // 迁移设备按原屏幕尺寸预选推荐变体，但不限制用户选择其它
+    // standard 变体；容量变化的风险在确认对话框中明确提示。
+    return profileVariants;
   }
 
   List<FirmwareRelease> _compatibleReleases(List<FirmwareRelease> releases) {
@@ -1109,6 +1106,10 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
     final remembered = _service.variantFor(widget.identity);
     final capacityChanged =
         remembered != null && remembered.flashBytes != variant.flashBytes;
+    final migrationCapacityChanged =
+        widget.identity.requiresProductMigration &&
+        widget.identity.migrationFlashBytes != null &&
+        widget.identity.migrationFlashBytes != variant.flashBytes;
     return showDialog<bool>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
@@ -1130,7 +1131,9 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
                 const SizedBox(height: 8),
                 _WarningBox(
                   text: widget.identity.requiresProductMigration
-                      ? '首次迁移会格式化整个 LittleFS，清除旧照片、配置和校准；仅在旧分区可挂载且激活信息有效时尝试恢复激活。请先完成备份。'
+                      ? migrationCapacityChanged
+                            ? '首次迁移会格式化整个 LittleFS，清除旧照片、配置和校准；你选择的容量与原设备推荐容量不同，旧分区可能无法挂载，激活信息也可能无法自动恢复。请先完成备份。'
+                            : '首次迁移会格式化整个 LittleFS，清除旧照片、配置和校准；仅在旧分区可挂载且激活信息有效时尝试恢复激活。请先完成备份。'
                       : capacityChanged
                       ? '你正在切换 2 MB / 8 MB Flash 分区。旧照片、配置或 LittleFS '
                             '可能无法读取，激活信息也可能无法自动恢复并需要重新激活；'
@@ -1264,10 +1267,12 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
                   initialValue: _availableVariants.contains(_selectedVariant)
                       ? _selectedVariant
                       : null,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Flash / 运行变体',
                     prefixIcon: Icon(Icons.memory_rounded),
-                    helperText: '旧固件未上报容量时必须由用户确认一次；选择会按设备序列号记住',
+                    helperText: widget.identity.requiresProductMigration
+                        ? '已按原设备屏幕尺寸预选推荐变体，仍可手动选择另外两个 standard 变体'
+                        : '旧固件未上报容量时必须由用户确认一次；选择会按设备序列号记住',
                   ),
                   hint: const Text('请选择真实硬件对应的变体'),
                   items: [
