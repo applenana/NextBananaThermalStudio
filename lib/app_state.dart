@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 
 import 'audio/temperature_alarm_audio.dart';
 import 'filters/kalman.dart';
+import 'firmware/firmware_update.dart';
 import 'fusion/fusion.dart';
 import 'protocol/frame_parser.dart';
 import 'protocol/temperature_calibration.dart';
@@ -72,6 +73,20 @@ class AppState extends ChangeNotifier {
 
   /// 保修截止时间 (设备 GetSysInfo 返回的 WarrantyTime).
   String? warrantyTime;
+
+  /// 当前连接设备的统一身份。设备信息尚未回读时返回未知身份。
+  FirmwareDeviceIdentity get firmwareIdentity =>
+      FirmwareDeviceIdentity.fromDeviceInfo(deviceInfo);
+
+  /// standard 设备没有摄像头 / 可见光链路。
+  ///
+  /// 未知设备暂不主动隐藏功能，保持旧版 Studio 的兼容行为；只有明确
+  /// 识别为 standard 后才启用限制。
+  bool get isStandardThermalDevice =>
+      status == ConnectionStatus.connected &&
+      firmwareIdentity.hardwareProfile == FirmwareHardwareProfile.standard;
+
+  bool get supportsVisibleLight => !isStandardThermalDevice;
 
   // ---------------- 推流 ----------------
   bool thermalStreamEnabled = false;
@@ -410,6 +425,9 @@ class AppState extends ChangeNotifier {
     currentPort = null;
     thermalFrame = null;
     visibleFrame = null;
+    visibleRgb888 = null;
+    visibleWidth = 0;
+    visibleHeight = 0;
     isActivated = false;
     deviceInfo = null;
     deviceSerial = null;
@@ -489,6 +507,12 @@ class AppState extends ChangeNotifier {
       return;
     }
     final trimmed = line.trim();
+    final normalized = trimmed.toLowerCase();
+    if (isStandardThermalDevice &&
+        (normalized == 'vstream' || normalized == 'vstream stoped')) {
+      _log('warn', '普通热成像不支持可见光推流, 忽略: $trimmed');
+      return;
+    }
     _serial.writeString('$trimmed\n');
     _log('tx', '> $trimmed');
   }
@@ -1461,6 +1485,7 @@ class AppState extends ChangeNotifier {
   /// 统一吸收 GetSysInfo 返回的 JSON 字段, 兼容 Python/固件两套 key 命名.
   void _absorbDeviceInfo(Map<String, dynamic> j) {
     deviceInfo = j;
+    _enforceStandardCapabilities();
     deviceSerial = (j['Serial'] ?? j['SerialNum'])?.toString() ?? deviceSerial;
     final actField = j['Activated'] ?? j['isActivated'];
     isActivated =
@@ -1469,6 +1494,25 @@ class AppState extends ChangeNotifier {
     if (at != null && at.isNotEmpty) activateTime = at;
     final wt = j['WarrantyTime']?.toString();
     if (wt != null && wt.isNotEmpty) warrantyTime = wt;
+  }
+
+  /// 设备身份回读后，立即清理不属于 standard 硬件的运行态。
+  ///
+  /// 这一步不仅服务于 UI；它也防止从双光设备切换到普通热成像后，旧的
+  /// 可见光缓存或融合状态继续被实时渲染、拍摄和录制路径消费。
+  void _enforceStandardCapabilities() {
+    if (!isStandardThermalDevice) return;
+    _stopVisibleHeartbeat();
+    visibleStreamEnabled = false;
+    visibleFrame = null;
+    visibleRgb888 = null;
+    visibleWidth = 0;
+    visibleHeight = 0;
+    if (renderParams.fusion.mode != FusionMode.off) {
+      renderParams = renderParams.copyWith(
+        fusion: _fusionWithMode(FusionMode.off),
+      );
+    }
   }
 
   // ============================================================
@@ -1647,6 +1691,12 @@ class AppState extends ChangeNotifier {
   }
 
   void setVisibleStream(bool on) {
+    if (isStandardThermalDevice) {
+      _enforceStandardCapabilities();
+      if (on) _log('warn', '普通热成像不支持可见光推流');
+      notifyListeners();
+      return;
+    }
     visibleStreamEnabled = on;
     if (on) {
       sendCommand('vstream');
@@ -1729,7 +1779,7 @@ class AppState extends ChangeNotifier {
       sendCommand('stream');
       _startThermalHeartbeat();
     }
-    if (visibleStreamEnabled) {
+    if (visibleStreamEnabled && supportsVisibleLight) {
       sendCommand('vstream');
       _startVisibleHeartbeat();
     }
@@ -2160,7 +2210,8 @@ class AppState extends ChangeNotifier {
   Future<String> capturePhoto({String note = ''}) async {
     final tf = thermalFrame;
     final hasThermal = tf != null && tf.isNotEmpty;
-    final hasVisible = visibleRgb888 != null && visibleWidth > 0;
+    final hasVisible =
+        supportsVisibleLight && visibleRgb888 != null && visibleWidth > 0;
     // 触发后台刷新, 不阻塞.
     unawaited(_refreshLocationCache());
     final path = await CaptureService.instance.takePhoto(
@@ -2191,8 +2242,8 @@ class AppState extends ChangeNotifier {
     final path = await CaptureService.instance.startRecording(
       thermalW: thermalWidth,
       thermalH: thermalHeight,
-      visibleW: visibleWidth,
-      visibleH: visibleHeight,
+      visibleW: supportsVisibleLight ? visibleWidth : 0,
+      visibleH: supportsVisibleLight ? visibleHeight : 0,
       lat: _cachedLat,
       lng: _cachedLng,
       alt: _cachedAlt,
@@ -2225,7 +2276,8 @@ class AppState extends ChangeNotifier {
       if (!isRecording) return;
       final tf = thermalFrame;
       final hasThermal = tf != null && tf.isNotEmpty;
-      final hasVisible = visibleRgb888 != null && visibleWidth > 0;
+      final hasVisible =
+          supportsVisibleLight && visibleRgb888 != null && visibleWidth > 0;
       CaptureService.instance.pushFrame(
         thermal: hasThermal ? tf : null,
         visibleRgb888: hasVisible ? visibleRgb888 : null,

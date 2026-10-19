@@ -430,6 +430,7 @@ class _ThermalCardState extends State<_ThermalCard> {
     final isAndroid = Platform.isAndroid;
     final isWindows = Platform.isWindows;
     final supportsViewTools = isAndroid || isWindows;
+    final supportsVisibleLight = app.supportsVisibleLight;
     final edge = widget.edgeToEdge;
 
     RenderedFrame? frame;
@@ -439,9 +440,9 @@ class _ThermalCardState extends State<_ThermalCard> {
         srcW: app.thermalWidth,
         srcH: app.thermalHeight,
         params: app.renderParams,
-        visibleRgb: app.visibleRgb888,
-        visibleW: app.visibleWidth,
-        visibleH: app.visibleHeight,
+        visibleRgb: supportsVisibleLight ? app.visibleRgb888 : null,
+        visibleW: supportsVisibleLight ? app.visibleWidth : 0,
+        visibleH: supportsVisibleLight ? app.visibleHeight : 0,
       );
     }
 
@@ -463,26 +464,30 @@ class _ThermalCardState extends State<_ThermalCard> {
             style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
           ),
           const Spacer(),
-          if (isAndroid) ...const [
-            _StreamToggleIcon(
+          if (isAndroid) ...[
+            const _StreamToggleIcon(
               icon: Icons.thermostat_rounded,
               tooltip: '热成像推流',
               channel: _StreamChannel.thermal,
             ),
-            SizedBox(width: 8),
-            _StreamToggleIcon(
-              icon: Icons.photo_camera_rounded,
-              tooltip: '可见光推流',
-              channel: _StreamChannel.visible,
-            ),
-            SizedBox(width: 8),
-            _VisibleFloatingLauncher(iconOnly: true),
-          ] else ...const [
-            _ThermalStreamSwitch(),
-            SizedBox(width: 14),
-            _VisibleStreamSwitch(),
-            SizedBox(width: 14),
-            _VisibleFloatingLauncher(),
+            if (supportsVisibleLight) ...const [
+              SizedBox(width: 8),
+              _StreamToggleIcon(
+                icon: Icons.photo_camera_rounded,
+                tooltip: '可见光推流',
+                channel: _StreamChannel.visible,
+              ),
+              SizedBox(width: 8),
+              _VisibleFloatingLauncher(iconOnly: true),
+            ],
+          ] else ...[
+            const _ThermalStreamSwitch(),
+            if (supportsVisibleLight) ...const [
+              SizedBox(width: 14),
+              _VisibleStreamSwitch(),
+              SizedBox(width: 14),
+              _VisibleFloatingLauncher(),
+            ],
           ],
         ],
       ),
@@ -494,7 +499,8 @@ class _ThermalCardState extends State<_ThermalCard> {
     final cursorMode = _store.cursorMode;
     // 仅可见光路径: 用户只开了 vstream, 此时 frame 为 null, 直接走 RgbImageView
     // 显示纯可见光画面, 不走热像渲染管线 (避免假装等待热像数据).
-    final visibleOnly = frame == null && app.visibleRgb888 != null;
+    final visibleOnly =
+        supportsVisibleLight && frame == null && app.visibleRgb888 != null;
     Widget canvas = visibleOnly
         ? RgbImageView(
             rgb: app.visibleRgb888,
@@ -686,7 +692,9 @@ class _StreamToggleIcon extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final scheme = Theme.of(context).colorScheme;
-    final enabled = app.status == ConnectionStatus.connected;
+    final supported =
+        channel == _StreamChannel.thermal || app.supportsVisibleLight;
+    final enabled = app.status == ConnectionStatus.connected && supported;
     final on = channel == _StreamChannel.thermal
         ? app.thermalStreamEnabled
         : app.visibleStreamEnabled;
@@ -781,6 +789,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
+    final supportsVisibleLight = app.supportsVisibleLight;
     final cursorMode = _store.cursorMode;
     RenderedFrame? frame;
     if (app.thermalFrame != null) {
@@ -789,9 +798,9 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
         srcW: app.thermalWidth,
         srcH: app.thermalHeight,
         params: app.renderParams,
-        visibleRgb: app.visibleRgb888,
-        visibleW: app.visibleWidth,
-        visibleH: app.visibleHeight,
+        visibleRgb: supportsVisibleLight ? app.visibleRgb888 : null,
+        visibleW: supportsVisibleLight ? app.visibleWidth : 0,
+        visibleH: supportsVisibleLight ? app.visibleHeight : 0,
       );
     }
     final liveMarkers = (frame == null || cursorMode)
@@ -824,7 +833,8 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
             frame.temperatureField[singlePoint.y * frame.width + singlePoint.x],
           );
     // 仅可见光路径: 当无热像但有可见光数据时, 用 RgbImageView 替代 ThermalCanvas.
-    final visibleOnly = frame == null && app.visibleRgb888 != null;
+    final visibleOnly =
+        supportsVisibleLight && frame == null && app.visibleRgb888 != null;
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () =>
@@ -978,6 +988,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                             child: _FullscreenRightPanel(
                               onDrag: dragRight,
                               collapsed: _rightCollapsed,
+                              showVisibleLight: supportsVisibleLight,
                               onToggleCollapsed: () => setState(
                                 () => _rightCollapsed = !_rightCollapsed,
                               ),
@@ -1578,10 +1589,12 @@ class _GlassKpi extends StatelessWidget {
 class _FullscreenRightPanel extends StatelessWidget {
   final ValueChanged<Offset>? onDrag;
   final bool collapsed;
+  final bool showVisibleLight;
   final VoidCallback? onToggleCollapsed;
   const _FullscreenRightPanel({
     this.onDrag,
     this.collapsed = false,
+    this.showVisibleLight = true,
     this.onToggleCollapsed,
   });
 
@@ -1637,134 +1650,138 @@ class _FullscreenRightPanel extends StatelessWidget {
                     onChanged: (v) => app.setThermalStream(v),
                   ),
                 ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: _GlassStreamRow(
-                    icon: Icons.photo_camera_outlined,
-                    label: '可见光',
-                    value: app.visibleStreamEnabled,
-                    onChanged: (v) => app.setVisibleStream(v),
+                if (showVisibleLight) ...[
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: _GlassStreamRow(
+                      icon: Icons.photo_camera_outlined,
+                      label: '可见光',
+                      value: app.visibleStreamEnabled,
+                      onChanged: (v) => app.setVisibleStream(v),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            if (showVisibleLight) ...[
+              const SizedBox(height: 10),
+              Container(height: 1, color: Colors.white.withValues(alpha: 0.08)),
+              const SizedBox(height: 8),
+              Row(
+                children: const [
+                  Icon(Icons.tune_rounded, size: 14, color: Colors.white70),
+                  SizedBox(width: 6),
+                  Text(
+                    '融合参数',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              _GlassModeChips(
+                value: fp.mode,
+                onChanged: (m) => setFusion(
+                  (p) => FusionParams(
+                    mode: m,
+                    gamma: p.gamma,
+                    alpha: p.alpha,
+                    edgeStrength: p.edgeStrength,
+                    edgeThresh: p.edgeThresh,
+                    edgeWidth: p.edgeWidth,
+                    edgeColor: p.edgeColor,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              if (fp.mode == FusionMode.blend) ...[
+                _GlassSlider(
+                  label: 'Alpha',
+                  value: fp.alpha,
+                  onChanged: (v) => setFusion(
+                    (p) => FusionParams(
+                      mode: p.mode,
+                      alpha: v,
+                      gamma: p.gamma,
+                      edgeStrength: p.edgeStrength,
+                      edgeThresh: p.edgeThresh,
+                      edgeWidth: p.edgeWidth,
+                      edgeColor: p.edgeColor,
+                    ),
+                  ),
+                ),
+                _GlassSlider(
+                  label: 'Gamma',
+                  value: fp.gamma,
+                  min: 0.2,
+                  max: 3.0,
+                  onChanged: (v) => setFusion(
+                    (p) => FusionParams(
+                      mode: p.mode,
+                      alpha: p.alpha,
+                      gamma: v,
+                      edgeStrength: p.edgeStrength,
+                      edgeThresh: p.edgeThresh,
+                      edgeWidth: p.edgeWidth,
+                      edgeColor: p.edgeColor,
+                    ),
+                  ),
+                ),
+              ] else if (fp.mode == FusionMode.edge) ...[
+                _GlassSlider(
+                  label: '强度',
+                  value: fp.edgeStrength,
+                  onChanged: (v) => setFusion(
+                    (p) => FusionParams(
+                      mode: p.mode,
+                      alpha: p.alpha,
+                      gamma: p.gamma,
+                      edgeStrength: v,
+                      edgeThresh: p.edgeThresh,
+                      edgeWidth: p.edgeWidth,
+                      edgeColor: p.edgeColor,
+                    ),
+                  ),
+                ),
+                _GlassSlider(
+                  label: '阈值',
+                  value: fp.edgeThresh,
+                  max: 0.5,
+                  onChanged: (v) => setFusion(
+                    (p) => FusionParams(
+                      mode: p.mode,
+                      alpha: p.alpha,
+                      gamma: p.gamma,
+                      edgeStrength: p.edgeStrength,
+                      edgeThresh: v,
+                      edgeWidth: p.edgeWidth,
+                      edgeColor: p.edgeColor,
+                    ),
+                  ),
+                ),
+                _GlassSlider(
+                  label: '粗细',
+                  value: fp.edgeWidth.clamp(1.0, 6.0),
+                  min: 1,
+                  max: 6,
+                  divisions: 20,
+                  valueLabel: '${fp.edgeWidth.toStringAsFixed(1)}px',
+                  onChanged: (v) => setFusion(
+                    (p) => FusionParams(
+                      mode: p.mode,
+                      alpha: p.alpha,
+                      gamma: p.gamma,
+                      edgeStrength: p.edgeStrength,
+                      edgeThresh: p.edgeThresh,
+                      edgeWidth: v,
+                      edgeColor: p.edgeColor,
+                    ),
                   ),
                 ),
               ],
-            ),
-            const SizedBox(height: 10),
-            Container(height: 1, color: Colors.white.withValues(alpha: 0.08)),
-            const SizedBox(height: 8),
-            Row(
-              children: const [
-                Icon(Icons.tune_rounded, size: 14, color: Colors.white70),
-                SizedBox(width: 6),
-                Text(
-                  '融合参数',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            _GlassModeChips(
-              value: fp.mode,
-              onChanged: (m) => setFusion(
-                (p) => FusionParams(
-                  mode: m,
-                  gamma: p.gamma,
-                  alpha: p.alpha,
-                  edgeStrength: p.edgeStrength,
-                  edgeThresh: p.edgeThresh,
-                  edgeWidth: p.edgeWidth,
-                  edgeColor: p.edgeColor,
-                ),
-              ),
-            ),
-            const SizedBox(height: 6),
-            if (fp.mode == FusionMode.blend) ...[
-              _GlassSlider(
-                label: 'Alpha',
-                value: fp.alpha,
-                onChanged: (v) => setFusion(
-                  (p) => FusionParams(
-                    mode: p.mode,
-                    alpha: v,
-                    gamma: p.gamma,
-                    edgeStrength: p.edgeStrength,
-                    edgeThresh: p.edgeThresh,
-                    edgeWidth: p.edgeWidth,
-                    edgeColor: p.edgeColor,
-                  ),
-                ),
-              ),
-              _GlassSlider(
-                label: 'Gamma',
-                value: fp.gamma,
-                min: 0.2,
-                max: 3.0,
-                onChanged: (v) => setFusion(
-                  (p) => FusionParams(
-                    mode: p.mode,
-                    alpha: p.alpha,
-                    gamma: v,
-                    edgeStrength: p.edgeStrength,
-                    edgeThresh: p.edgeThresh,
-                    edgeWidth: p.edgeWidth,
-                    edgeColor: p.edgeColor,
-                  ),
-                ),
-              ),
-            ] else if (fp.mode == FusionMode.edge) ...[
-              _GlassSlider(
-                label: '强度',
-                value: fp.edgeStrength,
-                onChanged: (v) => setFusion(
-                  (p) => FusionParams(
-                    mode: p.mode,
-                    alpha: p.alpha,
-                    gamma: p.gamma,
-                    edgeStrength: v,
-                    edgeThresh: p.edgeThresh,
-                    edgeWidth: p.edgeWidth,
-                    edgeColor: p.edgeColor,
-                  ),
-                ),
-              ),
-              _GlassSlider(
-                label: '阈值',
-                value: fp.edgeThresh,
-                max: 0.5,
-                onChanged: (v) => setFusion(
-                  (p) => FusionParams(
-                    mode: p.mode,
-                    alpha: p.alpha,
-                    gamma: p.gamma,
-                    edgeStrength: p.edgeStrength,
-                    edgeThresh: v,
-                    edgeWidth: p.edgeWidth,
-                    edgeColor: p.edgeColor,
-                  ),
-                ),
-              ),
-              _GlassSlider(
-                label: '粗细',
-                value: fp.edgeWidth.clamp(1.0, 6.0),
-                min: 1,
-                max: 6,
-                divisions: 20,
-                valueLabel: '${fp.edgeWidth.toStringAsFixed(1)}px',
-                onChanged: (v) => setFusion(
-                  (p) => FusionParams(
-                    mode: p.mode,
-                    alpha: p.alpha,
-                    gamma: p.gamma,
-                    edgeStrength: p.edgeStrength,
-                    edgeThresh: p.edgeThresh,
-                    edgeWidth: v,
-                    edgeColor: p.edgeColor,
-                  ),
-                ),
-              ),
             ],
           ],
         ),
@@ -1920,7 +1937,8 @@ class _VisibleStreamSwitch extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
-    final enabled = app.status == ConnectionStatus.connected;
+    final enabled =
+        app.status == ConnectionStatus.connected && app.supportsVisibleLight;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -2215,6 +2233,7 @@ class _VisibleCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
+    if (!app.supportsVisibleLight) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
 
     Uint8List? rgb;
@@ -2315,16 +2334,17 @@ class _ControlsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final showFusion = context.watch<AppState>().supportsVisibleLight;
     // 现代化布局: 常用项 (颜色 / 曲线 / 融合模式) 一行下拉直显;
     // 进阶项 (上采样, 滤波, 卡尔曼, 融合参数) 折叠收纳, 默认收起.
     return Card(
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: const [
+        children: [
           Padding(
             padding: EdgeInsets.fromLTRB(16, 14, 16, 4),
-            child: _QuickPanel(),
+            child: _QuickPanel(showFusion: showFusion),
           ),
           Divider(height: 1),
           _CollapseSection(
@@ -2343,14 +2363,15 @@ class _ControlsCard extends StatelessWidget {
               child: _FilterSection(),
             ),
           ),
-          _CollapseSection(
-            icon: Icons.tune_rounded,
-            title: '融合参数',
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
-              child: _FusionSliders(),
+          if (showFusion)
+            _CollapseSection(
+              icon: Icons.tune_rounded,
+              title: '融合参数',
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                child: const _FusionSliders(),
+              ),
             ),
-          ),
           _CollapseSection(
             icon: Icons.visibility_outlined,
             title: '显示',
@@ -2506,18 +2527,22 @@ class _DisplaySection extends StatelessWidget {
 
 /// 常驻面板: 颜色映射 / 映射曲线 / 融合模式 一行三下拉, 等宽自适应.
 class _QuickPanel extends StatelessWidget {
-  const _QuickPanel();
+  const _QuickPanel({required this.showFusion});
+
+  final bool showFusion;
 
   @override
   Widget build(BuildContext context) {
-    return const Row(
+    return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Expanded(child: _ColormapDropdown()),
         SizedBox(width: 8),
         Expanded(child: _CurveDropdown()),
-        SizedBox(width: 8),
-        Expanded(child: _FusionModeDropdown()),
+        if (showFusion) ...[
+          SizedBox(width: 8),
+          Expanded(child: _FusionModeDropdown()),
+        ],
       ],
     );
   }
@@ -3705,14 +3730,19 @@ class _CaptureBarState extends State<_CaptureBar> {
 
   Future<bool> _confirmEmpty(String action) async {
     if (!mounted) return false;
+    final supportsVisibleLight = context.read<AppState>().supportsVisibleLight;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('两路推流均已关闭'),
+        title: Text(supportsVisibleLight ? '两路推流均已关闭' : '热成像推流未开启'),
         content: Text(
-          '当前热成像与可见光推流都未开启, 本次$action将得到一个空帧 '
-          '(仅时间戳, 无任何画面). \n\n'
-          '确认继续? 或先在实时画面打开任意一路推流后再$action.',
+          supportsVisibleLight
+              ? '当前热成像与可见光推流都未开启, 本次$action将得到一个空帧 '
+                    '(仅时间戳, 无任何画面). \n\n'
+                    '确认继续? 或先在实时画面打开任意一路推流后再$action.'
+              : '当前热成像推流未开启, 本次$action将得到一个空帧 '
+                    '(仅时间戳, 无任何画面). \n\n'
+                    '确认继续? 或先在实时画面打开热成像推流后再$action.',
         ),
         actions: [
           TextButton(
@@ -3733,7 +3763,7 @@ class _CaptureBarState extends State<_CaptureBar> {
     if (_busy) return;
     final app = context.read<AppState>();
     final hasT = app.thermalFrame != null;
-    final hasV = app.visibleWidth > 0;
+    final hasV = app.supportsVisibleLight && app.visibleWidth > 0;
     if (!hasT && !hasV) {
       final go = await _confirmEmpty('拍摄');
       if (!go) return;
@@ -3763,7 +3793,7 @@ class _CaptureBarState extends State<_CaptureBar> {
         }
       } else {
         final hasT = app.thermalFrame != null;
-        final hasV = app.visibleWidth > 0;
+        final hasV = app.supportsVisibleLight && app.visibleWidth > 0;
         if (!hasT && !hasV) {
           final go = await _confirmEmpty('录制');
           if (!go) return;
@@ -3789,7 +3819,8 @@ class _CaptureBarState extends State<_CaptureBar> {
     final scheme = Theme.of(context).colorScheme;
     final recording = app.isRecording;
     final hasThermal = app.thermalFrame != null;
-    final hasVisible = app.visibleWidth > 0;
+    final hasVisible = app.supportsVisibleLight && app.visibleWidth > 0;
+    final showVisibleSlot = app.supportsVisibleLight;
     final embedded = widget.embedded;
     final compact = widget.compact;
     // 嵌入式胶囊 (Material LightBlue 系): 与画面边缘留 12px 嵌入主画面 box 右下角.
@@ -3847,11 +3878,12 @@ class _CaptureBarState extends State<_CaptureBar> {
               tooltip: hasThermal ? '热成像槽位: 推流中' : '热成像槽位: 关闭',
             ),
             SizedBox(width: embedded ? 2 : 3),
-            _SlotDot(
-              active: hasVisible,
-              color: const Color(0xFF4DD0E1),
-              tooltip: hasVisible ? '可见光槽位: 推流中' : '可见光槽位: 关闭',
-            ),
+            if (showVisibleSlot)
+              _SlotDot(
+                active: hasVisible,
+                color: const Color(0xFF4DD0E1),
+                tooltip: hasVisible ? '可见光槽位: 推流中' : '可见光槽位: 关闭',
+              ),
             SizedBox(width: gap),
             if (recording) ...[
               Icon(

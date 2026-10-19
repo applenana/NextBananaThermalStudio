@@ -527,7 +527,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       _photoParams = _photoParams.copyWith(thermalView: dec.thermalView);
       _photoThermalViewApplied = true;
     }
-    if (dec.visibleRgb != null && _photoParams.fusion.mode == FusionMode.off) {
+    if (context.read<AppState>().supportsVisibleLight &&
+        dec.visibleRgb != null &&
+        _photoParams.fusion.mode == FusionMode.off) {
       _photoParams = _photoParams.copyWith(
         fusion: const FusionParams(mode: FusionMode.blend),
       );
@@ -740,6 +742,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   }
 
   Widget _buildDetailCard({bool phone = false}) {
+    final allowVisible = context.watch<AppState>().supportsVisibleLight;
     final scheme = Theme.of(context).colorScheme;
     final sel = _selected;
     return Card(
@@ -766,7 +769,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 ),
                 const Spacer(),
                 if (_decoded?.thermal != null) ...[
-                  if (_decoded?.visibleRgb != null)
+                  if (allowVisible && _decoded?.visibleRgb != null)
                     IconButton(
                       tooltip: _showVisible ? '隐藏可见光小窗' : '显示可见光小窗',
                       onPressed: () =>
@@ -819,27 +822,40 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 ),
               )
             else
-              Expanded(child: _buildDetailBody(sel, phone: phone)),
+              Expanded(
+                child: _buildDetailBody(
+                  sel,
+                  phone: phone,
+                  allowVisible: allowVisible,
+                ),
+              ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildDetailBody(PhotoMeta sel, {bool phone = false}) {
+  Widget _buildDetailBody(
+    PhotoMeta sel, {
+    bool phone = false,
+    bool allowVisible = true,
+  }) {
     final scheme = Theme.of(context).colorScheme;
     // 实时根据参数重新渲染 (点下拉后预览立即变化).
     final dec = _decoded;
+    final renderParams = allowVisible
+        ? _photoParams
+        : _photoParams.copyWith(fusion: const FusionParams());
     RenderedFrame? rendered;
     if (dec?.thermal != null) {
       rendered = renderPipeline(
         thermalFrame: dec!.thermal!,
         srcW: dec.srcW,
         srcH: dec.srcH,
-        params: _photoParams,
-        visibleRgb: dec.visibleRgb,
-        visibleW: dec.visW,
-        visibleH: dec.visH,
+        params: renderParams,
+        visibleRgb: allowVisible ? dec.visibleRgb : null,
+        visibleW: allowVisible ? dec.visW : 0,
+        visibleH: allowVisible ? dec.visH : 0,
         minOverride: dec.tMin,
         maxOverride: dec.tMax,
       );
@@ -851,7 +867,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         if (rendered != null) ...[
           const SizedBox(height: 10),
           _ParamsRow(
-            hasVisible: dec?.visibleRgb != null,
+            hasVisible: allowVisible && dec?.visibleRgb != null,
             phone: phone,
             params: _photoParams,
             onParamsChanged: (v) => setState(() => _photoParams = v),
@@ -916,7 +932,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
             ),
             child: Stack(
               children: [
-                Positioned.fill(child: _buildPreview(rendered)),
+                Positioned.fill(
+                  child: _buildPreview(rendered, allowVisible: allowVisible),
+                ),
                 // 右上角: 叠加开关按钮 (只在能显示叠加时出现).
                 // 注意: TempOverlay 已移动到 _buildPreview 内部, 贴在真实
                 // 画面 rect 左上角 (与导出图保持一致); 这里仅保留控制按钮.
@@ -955,7 +973,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     );
   }
 
-  Widget _buildPreview(RenderedFrame? r) {
+  Widget _buildPreview(RenderedFrame? r, {bool allowVisible = true}) {
     final scheme = Theme.of(context).colorScheme;
     if (_raw == null) {
       if (!_busy) {
@@ -1041,7 +1059,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       );
     }
     if (r != null) {
-      final showVis = _showVisible && dec?.visibleRgb != null;
+      final showVis = allowVisible && _showVisible && dec?.visibleRgb != null;
       // 计算左上角温度叠加 (与导出图保持视觉一致: 叠加贴在真实画面 rect
       // 左上角, 而不是外层 Container 左上). 仅在用户开启时显示.
       Widget? tempBadge;
@@ -1305,6 +1323,10 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     final dec = _decoded;
     final sel = _selected;
     if (dec == null || sel == null) return;
+    final allowVisible = context.read<AppState>().supportsVisibleLight;
+    final exportParams = allowVisible
+        ? _photoParams
+        : _photoParams.copyWith(fusion: const FusionParams());
     setState(() => _statusText = '导出中 ...');
     try {
       // JPEG 直接落盘 .jpg
@@ -1341,10 +1363,10 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         thermalFrame: dec.thermal!,
         srcW: dec.srcW,
         srcH: dec.srcH,
-        params: _photoParams,
-        visibleRgb: dec.visibleRgb,
-        visibleW: dec.visW,
-        visibleH: dec.visH,
+        params: exportParams,
+        visibleRgb: allowVisible ? dec.visibleRgb : null,
+        visibleW: allowVisible ? dec.visW : 0,
+        visibleH: allowVisible ? dec.visH : 0,
         minOverride: dec.tMin,
         maxOverride: dec.tMax,
       );
