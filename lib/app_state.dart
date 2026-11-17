@@ -7,6 +7,9 @@ import 'dart:convert';
 import 'dart:io' show Platform, HttpClient;
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'cb360/controller.dart';
+import 'cb360/protocol.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter/foundation.dart';
 
@@ -36,6 +39,12 @@ class LogEntry {
 
 class AppState extends ChangeNotifier {
   final SerialService _serial = SerialService();
+  Cb360Controller? cb360;
+  bool get isCb360 => cb360 != null;
+  bool get requiresActivation => !isCb360;
+  IdentityProbe? _identityProbe;
+  Completer<Map<String, dynamic>>? _identityResult;
+
   final SerialService _alarmModuleSerial = SerialService();
   final TemperatureAlarmAudioController _temperatureAlarmAudio =
       TemperatureAlarmAudioController();
@@ -60,6 +69,7 @@ class AppState extends ChangeNotifier {
   /// 上次成功连接的端口 / 波特率, 用于重连优先尝试同一个端口.
   String? _lastPort;
   int _lastBaud = 115200;
+  int get currentBaud => cb360?.client.baud ?? _lastBaud;
 
   // ---------------- 连接 ----------------
   ConnectionStatus status = ConnectionStatus.disconnected;
@@ -86,7 +96,7 @@ class AppState extends ChangeNotifier {
       status == ConnectionStatus.connected &&
       firmwareIdentity.hardwareProfile == FirmwareHardwareProfile.standard;
 
-  bool get supportsVisibleLight => !isStandardThermalDevice;
+  bool get supportsVisibleLight => !isStandardThermalDevice && !isCb360;
 
   // ---------------- 推流 ----------------
   bool thermalStreamEnabled = false;
@@ -251,13 +261,32 @@ class AppState extends ChangeNotifier {
     _log('info', '开始自动搜索热成像设备...');
     notifyListeners();
 
-    final found = await SerialService.searchTargetDevice(
-      baud: baud,
-      onProbe: (p) {
-        _log('info', '探测 $p ...');
-        notifyListeners();
-      },
+    final preferences = await SharedPreferences.getInstance();
+    ({String? port, Map<String, dynamic>? info}) found = (
+      port: null,
+      info: null,
     );
+    var foundBaud = baud;
+    for (final speed in {
+      preferences.getInt('cb360.lastBaud') ?? baud,
+      baud,
+      115200,
+      2000000,
+      921600,
+    }) {
+      if (status != ConnectionStatus.scanning) return false;
+      found = await SerialService.searchTargetDevice(
+        baud: speed,
+        onProbe: (p) {
+          _log('info', '探测 $p @ $speed ...');
+          notifyListeners();
+        },
+      );
+      if (found.port != null) {
+        foundBaud = speed;
+        break;
+      }
+    }
 
     if (found.port == null) {
       status = ConnectionStatus.disconnected;
@@ -278,9 +307,9 @@ class AppState extends ChangeNotifier {
       }
       return status == ConnectionStatus.connected;
     }
-    await connect(found.port!, baud: baud);
+    await connect(found.port!, baud: foundBaud);
     // 探测阶段已经拿到 JSON, 直接消化, 不必等连接后再 GetSysInfo
-    if (found.info != null) {
+    if (found.info != null && !isCb360) {
       _absorbDeviceInfo(found.info!);
       notifyListeners();
     }
@@ -314,7 +343,7 @@ class AppState extends ChangeNotifier {
       _lastBaud = baud;
       _userDisconnect = false;
       _stopReconnectLoop();
-      status = ConnectionStatus.connected;
+
       _byteSub = _serial.bytesStream.listen(
         _onBytes,
         onError: (e) {
@@ -327,28 +356,83 @@ class AppState extends ChangeNotifier {
         },
         cancelOnError: false,
       );
-      _startPortWatchdog();
-      _log('info', '已打开 $portName @ $baud');
-      // 自动探测设备
-      Future.delayed(const Duration(milliseconds: 300), () {
-        sendCommand('GetSysInfo');
-      });
-      Future.delayed(const Duration(milliseconds: 450), () {
-        if (status == ConnectionStatus.connected) sendCommand('alarm get');
-      });
-      // Android / Windows: 连接成功后自动开启热成像推流，进入实时页即可看到
-      // 画面。其它桌面平台继续保持手动开启，避免改变既有调试流程。
-      if (Platform.isAndroid || Platform.isWindows) {
-        Future.delayed(const Duration(milliseconds: 600), () {
-          if (status == ConnectionStatus.connected && !thermalStreamEnabled) {
-            setThermalStream(true);
-          }
-        });
+      Map<String, dynamic>? identity;
+      for (final speed in {baud, 115200, 2000000, 921600}) {
+        await _serial.setBaud(speed);
+        _identityProbe = IdentityProbe();
+        final result = _identityResult = Completer<Map<String, dynamic>>();
+        await _serial.writeAll(Uint8List.fromList('GetSysInfo\n'.codeUnits));
+        try {
+          identity = await result.future.timeout(const Duration(seconds: 3));
+        } on TimeoutException {
+          continue;
+        }
+        _lastBaud = speed;
+        break;
       }
+      _identityProbe = null;
+      _identityResult = null;
+      if (identity == null) throw StateError('未收到有效设备信息');
+      status = ConnectionStatus.connected;
+      if (isCb360Info(identity)) {
+        final controller = Cb360Controller(
+          info: identity,
+          onInfo: (value) {
+            _absorbDeviceInfo(value);
+            notifyListeners();
+          },
+          onTemperature: (temperatures, max, min, avg) {
+            if (cb360 == null) return;
+            thermalStreamEnabled = true;
+            _onThermalFrame(max, min, avg, 120, 90, temperatures);
+          },
+          write: (line) => _serial.writeAll(Uint8List.fromList(line.codeUnits)),
+          setBaud: (value) async {
+            await _serial.setBaud(value);
+            _lastBaud = value;
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setInt('cb360.lastBaud', value);
+          },
+          baud: _lastBaud,
+        );
+        cb360 = controller;
+        thermalWidth = 120;
+        thermalHeight = 90;
+        renderParams = renderParams.copyWith(
+          upsampleScale: 2,
+          thermalView: const ThermalViewParams(),
+        );
+        kalmanScalarEnabled = false;
+        controller.addListener(_onCb360Changed);
+        _absorbDeviceInfo(identity);
+        _startPortWatchdog();
+        notifyListeners();
+        try {
+          await controller.initialize();
+        } catch (e) {
+          _log('err', 'CB360: $e');
+        }
+      } else {
+        _absorbDeviceInfo(identity);
+        _startPortWatchdog();
+        sendCommand('alarm get');
+        if (Platform.isAndroid || Platform.isWindows) setThermalStream(true);
+      }
+      _log('info', '已连接 $portName @ $_lastBaud');
     } catch (e) {
-      status = ConnectionStatus.disconnected;
+      _identityProbe = null;
+      _identityResult = null;
+      await _teardownConnection(reason: '连接失败');
       _log('err', '打开失败: $e');
     }
+    notifyListeners();
+  }
+
+  void _onCb360Changed() {
+    if (cb360 == null || _disposed) return;
+    thermalStreamEnabled = cb360!.active;
+    if (!thermalStreamEnabled) thermalFrame = null;
+    _lastBaud = cb360!.client.baud;
     notifyListeners();
   }
 
@@ -361,6 +445,17 @@ class AppState extends ChangeNotifier {
   /// 内部: 拆除当前连接资源 (不改 _userDisconnect / 不动重连逻辑).
   Future<void> _teardownConnection({required String reason}) async {
     _stopPortWatchdog();
+    final cb = cb360;
+    cb360 = null;
+    if (cb != null) {
+      cb.removeListener(_onCb360Changed);
+      try {
+        await _serial.writeAll(
+          Uint8List.fromList('StopY16Stream\nEndTransfer\n'.codeUnits),
+        );
+      } catch (_) {}
+      cb.dispose();
+    }
     _stopThermalHeartbeat();
     _stopVisibleHeartbeat();
     // 同步关闭推流开关, 避免下次连接后 UI 仍显示打开状态造成困惑.
@@ -504,6 +599,10 @@ class AppState extends ChangeNotifier {
   void sendCommand(String line) {
     if (!_serial.isOpen) {
       _log('warn', '串口未连接, 忽略: $line');
+      return;
+    }
+    if (isCb360) {
+      _log('warn', 'CB360 请使用设备控制入口');
       return;
     }
     final trimmed = line.trim();
@@ -1138,6 +1237,19 @@ class AppState extends ChangeNotifier {
   // ============================================================
 
   void _onBytes(Uint8List data) {
+    if (_identityProbe != null) {
+      final info = _identityProbe!.add(data);
+      if (info != null &&
+          _identityResult != null &&
+          !_identityResult!.isCompleted) {
+        _identityResult!.complete(info);
+      }
+      return;
+    }
+    if (cb360 != null) {
+      cb360!.client.feed(data);
+      return;
+    }
     if (_photoMode) {
       // Photo list/download owns the normal parser, but fixed !A lines remain
       // highest priority. Tap (do not consume) only those exact short lines;
@@ -1486,7 +1598,10 @@ class AppState extends ChangeNotifier {
   void _absorbDeviceInfo(Map<String, dynamic> j) {
     deviceInfo = j;
     _enforceStandardCapabilities();
-    deviceSerial = (j['Serial'] ?? j['SerialNum'])?.toString() ?? deviceSerial;
+    deviceSerial =
+        (j['thermalModuleSerialNumber'] ?? j['Serial'] ?? j['SerialNum'])
+            ?.toString() ??
+        deviceSerial;
     final actField = j['Activated'] ?? j['isActivated'];
     isActivated =
         (actField == true) || (actField?.toString().toLowerCase() == 'true');
@@ -1551,7 +1666,7 @@ class AppState extends ChangeNotifier {
       }
     }
     // 异常剔除: 平均温度偶发大跳变, 用滚动中位数过滤.
-    if (_avgRecent.length >= 3) {
+    if (!isCb360 && _avgRecent.length >= 3) {
       final sorted = List<double>.from(_avgRecent)..sort();
       final median = sorted[sorted.length >> 1];
       if ((av - median).abs() > avgOutlierThreshold) {
@@ -1570,7 +1685,7 @@ class AppState extends ChangeNotifier {
     // 垂直翻转 (上下镜像): 设备热像与显示方向上下相反.
     final mirrored = Float32List(width * height);
     for (int y = 0; y < height; y++) {
-      final srcOff = (height - 1 - y) * width;
+      final srcOff = (isCb360 ? y : height - 1 - y) * width;
       final dstOff = y * width;
       for (int x = 0; x < width; x++) {
         mirrored[dstOff + x] = pix[srcOff + x];
@@ -1653,6 +1768,20 @@ class AppState extends ChangeNotifier {
   // ============================================================
 
   void setThermalStream(bool on) {
+    if (cb360 != null) {
+      final device = cb360!;
+      unawaited(
+        () async {
+          await device.whenIdle();
+          if (identical(cb360, device) && on != device.active) {
+            await device.toggleStream();
+          }
+        }().catchError((Object e) {
+          _log('err', '$e');
+        }),
+      );
+      return;
+    }
     thermalStreamEnabled = on;
     if (on) {
       // 每次开启都重新查询，避免设备端在上次关闭期间通过菜单修改参数后，
@@ -1691,7 +1820,7 @@ class AppState extends ChangeNotifier {
   }
 
   void setVisibleStream(bool on) {
-    if (isStandardThermalDevice) {
+    if (!supportsVisibleLight) {
       _enforceStandardCapabilities();
       if (on) _log('warn', '普通热成像不支持可见光推流');
       notifyListeners();
@@ -2060,6 +2189,7 @@ class AppState extends ChangeNotifier {
   Future<List<PhotoMeta>> fetchPhotoList({
     Duration timeout = const Duration(seconds: 4),
   }) async {
+    if (isCb360) throw StateError('请使用 CB360 设备入口');
     if (!_serial.isOpen) throw StateError('串口未连接');
     if (_photoMode) throw StateError('图库忙, 请稍候');
     // 暂停推流以减少干扰.
@@ -2129,6 +2259,7 @@ class AppState extends ChangeNotifier {
     void Function(Uint8List headBytes)? onEarlyBytes,
     Duration timeout = const Duration(seconds: 30),
   }) async {
+    if (isCb360) throw StateError('请使用 CB360 设备入口');
     if (!_serial.isOpen) throw StateError('串口未连接');
     if (_photoMode) throw StateError('图库忙, 请稍候');
     final hadTherm = thermalStreamEnabled;
@@ -2190,6 +2321,9 @@ class AppState extends ChangeNotifier {
     _stopVisibleHeartbeat();
     await _temperatureAlarmAudio.dispose();
     await _alarmModuleSerial.dispose();
+    cb360?.removeListener(_onCb360Changed);
+    cb360?.dispose();
+    cb360 = null;
     await _serial.dispose();
     super.dispose();
   }
@@ -2392,6 +2526,9 @@ class PhotoMeta {
   final double? tempMax;
   final double? tempMin;
 
+  /// Optional verified local CB360 resource, displayed in the device gallery.
+  final String? localPath;
+
   const PhotoMeta({
     required this.index,
     required this.filename,
@@ -2400,6 +2537,7 @@ class PhotoMeta {
     this.dataFormat,
     this.tempMax,
     this.tempMin,
+    this.localPath,
   });
 
   factory PhotoMeta.fromJson(Map<String, dynamic> j) => PhotoMeta(

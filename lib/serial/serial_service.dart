@@ -26,6 +26,9 @@ import 'package:flutter_libserialport/flutter_libserialport.dart';
 
 import 'android_serial_impl.dart';
 import 'serial_port_info.dart';
+import 'windows_rx_buffer.dart';
+import 'desktop_serial_reader.dart';
+import '../cb360/protocol.dart';
 
 export 'serial_port_info.dart';
 
@@ -44,12 +47,12 @@ class SerialService {
   AndroidSerialImpl? _android;
 
   SerialPort? _port;
-  SerialPortReader? _reader;
+  DesktopSerialReader? _reader;
   StreamSubscription<Uint8List>? _sub;
   final StreamController<Uint8List> _byteCtrl =
       StreamController<Uint8List>.broadcast();
 
-  /// 字节流: 桌面来自 SerialPortReader, Android 来自 usb_serial inputStream.
+  /// 字节流: 桌面来自 DesktopSerialReader, Android 来自 usb_serial inputStream.
   Stream<Uint8List> get bytesStream => _byteCtrl.stream;
 
   bool get isOpen => Platform.isAndroid
@@ -140,12 +143,43 @@ class SerialService {
     // 不调 cfg.dispose(): flutter_libserialport 在 Windows 上手动 dispose 后
     // GC finalizer 会二次释放同一 native handle, 造成闪退. 交给 GC.
 
+    configureWindowsRxBuffer(p.address);
     _port = p;
-    _reader = SerialPortReader(p);
+    _reader = await DesktopSerialReader.open(p.address);
     _sub = _reader!.stream.listen(
       _byteCtrl.add,
       onError: (e) => _byteCtrl.addError(e),
     );
+  }
+
+  Future<void> setBaud(int baud) async {
+    if (Platform.isAndroid) return _android!.setBaud(baud);
+    final port = _port;
+    if (port == null || !port.isOpen) throw StateError('串口未打开');
+    if (port.config.baudRate == baud) return;
+    // Wait for the cooperative RX isolate to exit before reconfiguring the
+    // handle: libserialport can otherwise report a negative read length from
+    // the in-flight operation and terminate its reader isolate silently.
+    await _sub?.cancel();
+    await _reader?.close();
+    final config = port.config;
+    config.baudRate = baud;
+    port.config = config;
+    _reader = await DesktopSerialReader.open(port.address);
+    _sub = _reader!.stream.listen(
+      _byteCtrl.add,
+      onError: (e) => _byteCtrl.addError(e),
+    );
+  }
+
+  Future<void> writeAll(Uint8List bytes) async {
+    if (Platform.isAndroid) return _android!.writeAll(bytes);
+    var offset = 0;
+    while (offset < bytes.length) {
+      final n = writeBytes(Uint8List.sublistView(bytes, offset));
+      if (n <= 0) throw StateError('串口写入失败');
+      offset += n;
+    }
   }
 
   Future<void> close() async {
@@ -160,7 +194,7 @@ class SerialService {
     } catch (_) {}
     _sub = null;
     try {
-      _reader?.close();
+      await _reader?.close();
     } catch (_) {}
     _reader = null;
     final p = _port;
@@ -426,6 +460,7 @@ class SerialService {
     StreamSubscription<Uint8List>? sub;
     final completer = Completer<Map<String, dynamic>?>();
     final buf = BytesBuilder(copy: false);
+    final identityProbe = IdentityProbe();
     try {
       port = SerialPort(name);
       if (!port.openReadWrite()) {
@@ -446,6 +481,11 @@ class SerialService {
       sub = reader.stream.listen(
         (data) {
           if (completer.isCompleted) return;
+          final identity = identityProbe.add(data);
+          if (identity != null) {
+            completer.complete(identity);
+            return;
+          }
           buf.add(data);
           final all = buf.toBytes();
           int last = 0;

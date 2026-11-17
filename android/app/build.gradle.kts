@@ -51,6 +51,10 @@ android {
         }
     }
 
+    externalNativeBuild {
+        cmake { path = file("../../native/cb360/CMakeLists.txt") }
+    }
+
     buildTypes {
         release {
             // 本地未配置 key.properties 时保留 debug 回退，方便开发构建；

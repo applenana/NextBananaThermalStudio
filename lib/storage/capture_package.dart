@@ -77,7 +77,7 @@ class CaptureMeta {
   /// 设备序列号 (来自激活信息), 用于区分多台设备.
   final String? deviceSn;
 
-  /// 热成像分辨率, 当前固定 32x24, 写进去方便日后改尺寸.
+  /// 热成像源分辨率，包括 32×24、32×32 和 CB360 的 120×90。
   final int thermalW;
   final int thermalH;
 
@@ -116,40 +116,40 @@ class CaptureMeta {
   bool get hasAnyVisible => (slotsUsedMask & FrameSlot.visible) != 0;
 
   Map<String, dynamic> toJson() => {
-        'createdAt': createdAt.toUtc().toIso8601String(),
-        if (lat != null) 'lat': lat,
-        if (lng != null) 'lng': lng,
-        if (alt != null) 'alt': alt,
-        if (place != null) 'place': place,
-        'note': note,
-        if (deviceSn != null) 'deviceSn': deviceSn,
-        'thermalW': thermalW,
-        'thermalH': thermalH,
-        'visibleW': visibleW,
-        'visibleH': visibleH,
-        'frameCount': frameCount,
-        'slotsUsedMask': slotsUsedMask,
-        if (renderParams != null) 'renderParams': renderParams,
-      };
+    'createdAt': createdAt.toUtc().toIso8601String(),
+    if (lat != null) 'lat': lat,
+    if (lng != null) 'lng': lng,
+    if (alt != null) 'alt': alt,
+    if (place != null) 'place': place,
+    'note': note,
+    if (deviceSn != null) 'deviceSn': deviceSn,
+    'thermalW': thermalW,
+    'thermalH': thermalH,
+    'visibleW': visibleW,
+    'visibleH': visibleH,
+    'frameCount': frameCount,
+    'slotsUsedMask': slotsUsedMask,
+    if (renderParams != null) 'renderParams': renderParams,
+  };
 
   factory CaptureMeta.fromJson(Map<String, dynamic> j) => CaptureMeta(
-        createdAt: DateTime.parse(j['createdAt'] as String).toUtc(),
-        lat: (j['lat'] as num?)?.toDouble(),
-        lng: (j['lng'] as num?)?.toDouble(),
-        alt: (j['alt'] as num?)?.toDouble(),
-        place: j['place'] as String?,
-        note: (j['note'] as String?) ?? '',
-        deviceSn: j['deviceSn'] as String?,
-        thermalW: (j['thermalW'] as num?)?.toInt() ?? 32,
-        thermalH: (j['thermalH'] as num?)?.toInt() ?? 24,
-        visibleW: (j['visibleW'] as num?)?.toInt() ?? 0,
-        visibleH: (j['visibleH'] as num?)?.toInt() ?? 0,
-        frameCount: (j['frameCount'] as num?)?.toInt() ?? 1,
-        renderParams: j['renderParams'] is Map<String, dynamic>
-            ? j['renderParams'] as Map<String, dynamic>
-            : null,
-        slotsUsedMask: (j['slotsUsedMask'] as num?)?.toInt() ?? 0,
-      );
+    createdAt: DateTime.parse(j['createdAt'] as String).toUtc(),
+    lat: (j['lat'] as num?)?.toDouble(),
+    lng: (j['lng'] as num?)?.toDouble(),
+    alt: (j['alt'] as num?)?.toDouble(),
+    place: j['place'] as String?,
+    note: (j['note'] as String?) ?? '',
+    deviceSn: j['deviceSn'] as String?,
+    thermalW: (j['thermalW'] as num?)?.toInt() ?? 32,
+    thermalH: (j['thermalH'] as num?)?.toInt() ?? 24,
+    visibleW: (j['visibleW'] as num?)?.toInt() ?? 0,
+    visibleH: (j['visibleH'] as num?)?.toInt() ?? 0,
+    frameCount: (j['frameCount'] as num?)?.toInt() ?? 1,
+    renderParams: j['renderParams'] is Map<String, dynamic>
+        ? j['renderParams'] as Map<String, dynamic>
+        : null,
+    slotsUsedMask: (j['slotsUsedMask'] as num?)?.toInt() ?? 0,
+  );
 
   CaptureMeta copyWith({
     DateTime? createdAt,
@@ -166,23 +166,22 @@ class CaptureMeta {
     int? frameCount,
     Map<String, dynamic>? renderParams,
     int? slotsUsedMask,
-  }) =>
-      CaptureMeta(
-        createdAt: createdAt ?? this.createdAt,
-        lat: lat ?? this.lat,
-        lng: lng ?? this.lng,
-        alt: alt ?? this.alt,
-        place: place ?? this.place,
-        note: note ?? this.note,
-        deviceSn: deviceSn ?? this.deviceSn,
-        thermalW: thermalW ?? this.thermalW,
-        thermalH: thermalH ?? this.thermalH,
-        visibleW: visibleW ?? this.visibleW,
-        visibleH: visibleH ?? this.visibleH,
-        frameCount: frameCount ?? this.frameCount,
-        renderParams: renderParams ?? this.renderParams,
-        slotsUsedMask: slotsUsedMask ?? this.slotsUsedMask,
-      );
+  }) => CaptureMeta(
+    createdAt: createdAt ?? this.createdAt,
+    lat: lat ?? this.lat,
+    lng: lng ?? this.lng,
+    alt: alt ?? this.alt,
+    place: place ?? this.place,
+    note: note ?? this.note,
+    deviceSn: deviceSn ?? this.deviceSn,
+    thermalW: thermalW ?? this.thermalW,
+    thermalH: thermalH ?? this.thermalH,
+    visibleW: visibleW ?? this.visibleW,
+    visibleH: visibleH ?? this.visibleH,
+    frameCount: frameCount ?? this.frameCount,
+    renderParams: renderParams ?? this.renderParams,
+    slotsUsedMask: slotsUsedMask ?? this.slotsUsedMask,
+  );
 }
 
 /// 单帧 (内存表示). 任一槽位可为 null = 该帧此槽位缺席.
@@ -196,11 +195,7 @@ class CaptureFrame {
   /// 可见光 PNG 字节. null 或长度 0 = 缺席.
   final Uint8List? visiblePng;
 
-  const CaptureFrame({
-    required this.tsMs,
-    this.thermal,
-    this.visiblePng,
-  });
+  const CaptureFrame({required this.tsMs, this.thermal, this.visiblePng});
 
   /// 本帧槽位 bitmap.
   int get slotMask {
@@ -232,10 +227,10 @@ class CapturePackageWriter {
   int _metaBytesOffset = 0;
 
   CapturePackageWriter._(this._raf, this._type, this._meta)
-      : _thermalW = _meta.thermalW,
-        _thermalH = _meta.thermalH,
-        _visibleW = _meta.visibleW,
-        _visibleH = _meta.visibleH;
+    : _thermalW = _meta.thermalW,
+      _thermalH = _meta.thermalH,
+      _visibleW = _meta.visibleW,
+      _visibleH = _meta.visibleH;
 
   static Future<CapturePackageWriter> create({
     required String path,
@@ -276,6 +271,27 @@ class CapturePackageWriter {
   /// 全 null 也允许 (空帧, 仅占用 10B = 2(mask)+8(ts)).
   Future<void> appendFrame(CaptureFrame frame) async {
     if (_closed) throw StateError('writer already closed');
+    final thermal = frame.thermal;
+    if (thermal != null && thermal.isNotEmpty) {
+      if (_thermalW == 0 || _thermalH == 0) {
+        switch (thermal.length) {
+          case 768:
+            _thermalW = 32;
+            _thermalH = 24;
+          case 1024:
+            _thermalW = 32;
+            _thermalH = 32;
+          case 10800:
+            _thermalW = 120;
+            _thermalH = 90;
+          default:
+            throw ArgumentError('必须声明热成像源分辨率');
+        }
+      }
+      if (thermal.length != _thermalW * _thermalH) {
+        throw ArgumentError('录制中的热成像分辨率发生改变');
+      }
+    }
     final mask = frame.slotMask;
     _slotsUsedMask |= mask;
     // 帧头: slotMask u16 + tsMs u64.
@@ -285,16 +301,12 @@ class CapturePackageWriter {
     await _raf.writeFrom(fh.buffer.asUint8List());
     if ((mask & FrameSlot.thermal) != 0) {
       final th = frame.thermal!;
-      // 首帧记录分辨率: 实际尺寸通过 thermal.length 推算 (默认 32x24, length 应=768).
-      if (_thermalW == 0 || _thermalH == 0) {
-        _thermalW = 32;
-        _thermalH = 24;
-      }
       final lenBd = ByteData(4)..setUint32(0, th.lengthInBytes, Endian.little);
       await _raf.writeFrom(lenBd.buffer.asUint8List());
       if (Endian.host == Endian.little) {
         await _raf.writeFrom(
-            th.buffer.asUint8List(th.offsetInBytes, th.lengthInBytes));
+          th.buffer.asUint8List(th.offsetInBytes, th.lengthInBytes),
+        );
       } else {
         final tmp = ByteData(th.lengthInBytes);
         for (int i = 0; i < th.length; i++) {
@@ -375,7 +387,12 @@ class CapturePackageReader {
   final List<int> _frameSlotMasks;
 
   CapturePackageReader._(
-      this.file, this.type, this.meta, this._frameOffsets, this._frameSlotMasks);
+    this.file,
+    this.type,
+    this.meta,
+    this._frameOffsets,
+    this._frameSlotMasks,
+  );
 
   int get frameCount => _frameOffsets.length;
   List<int> get frameSlotMasks => List.unmodifiable(_frameSlotMasks);
@@ -396,15 +413,17 @@ class CapturePackageReader {
       final version = ByteData.sublistView(hdr).getUint16(0, Endian.little);
       if (version != CapturePackageHeader.version) {
         throw FormatException(
-            'unsupported BTPK version: $version (expected ${CapturePackageHeader.version})');
+          'unsupported BTPK version: $version (expected ${CapturePackageHeader.version})',
+        );
       }
       final type = hdr[2];
       final lenBuf = await raf.read(4);
-      final metaLen =
-          ByteData.sublistView(lenBuf).getUint32(0, Endian.little);
+      final metaLen = ByteData.sublistView(lenBuf).getUint32(0, Endian.little);
       final metaBuf = await raf.read(metaLen);
       final raw = String.fromCharCodes(metaBuf).trimRight();
-      final meta = CaptureMeta.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      final meta = CaptureMeta.fromJson(
+        jsonDecode(raw) as Map<String, dynamic>,
+      );
       // 扫描 frames.
       final offsets = <int>[];
       final masks = <int>[];
@@ -414,8 +433,7 @@ class CapturePackageReader {
         final fh = await raf.read(10);
         if (fh.length < 10) break;
         offsets.add(p);
-        final slotMask =
-            ByteData.sublistView(fh).getUint16(0, Endian.little);
+        final slotMask = ByteData.sublistView(fh).getUint16(0, Endian.little);
         masks.add(slotMask);
         if ((slotMask & FrameSlot.thermal) != 0) {
           final lb = await raf.read(4);
@@ -481,12 +499,13 @@ class CapturePackageReader {
       }
       await raf.setPosition(8);
       final lenBuf = await raf.read(4);
-      final metaLen =
-          ByteData.sublistView(lenBuf).getUint32(0, Endian.little);
+      final metaLen = ByteData.sublistView(lenBuf).getUint32(0, Endian.little);
       final metaStart = await raf.position();
       final metaBuf = await raf.read(metaLen);
       final raw = String.fromCharCodes(metaBuf).trimRight();
-      final meta = CaptureMeta.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      final meta = CaptureMeta.fromJson(
+        jsonDecode(raw) as Map<String, dynamic>,
+      );
       final updated = meta.copyWith(note: newNote);
       final newJson = utf8.encode(jsonEncode(updated.toJson()));
       if (newJson.length > metaLen) {

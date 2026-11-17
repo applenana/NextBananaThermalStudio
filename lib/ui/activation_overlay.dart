@@ -43,6 +43,7 @@ class ActivationOverlay extends StatelessWidget {
             final show =
                 app.status == ConnectionStatus.connected &&
                 app.deviceInfo != null &&
+                app.requiresActivation &&
                 !app.isActivated;
             if (!show) return const SizedBox.shrink();
             return Positioned.fill(

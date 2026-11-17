@@ -30,6 +30,7 @@ import '../storage/capture_package.dart';
 import '../storage/capture_service.dart';
 import 'widgets/temp_overlay.dart';
 import 'widgets/thermal_canvas.dart';
+import 'widgets/photo_filter_controls.dart';
 import 'app_font.dart';
 import 'banana_toast.dart';
 
@@ -765,7 +766,7 @@ class _TileThumb extends StatelessWidget {
                 fit: BoxFit.cover,
                 gaplessPlayback: true,
                 filterQuality: FilterQuality.low,
-                errorBuilder: (_, __, ___) => fallbackIcon,
+                errorBuilder: (_, _, _) => fallbackIcon,
               );
             }
             return fallbackIcon;
@@ -1967,7 +1968,7 @@ class _DetailBodyState extends State<_DetailBody> {
     return null;
   }
 
-  /// Windows/Linux 桌面回退: 逐帧 PNG 写入 exports/<base>/ 子目录.
+  /// Windows/Linux 桌面回退: 逐帧 PNG 写入 `exports/<base>/` 子目录.
   Future<void> _exportAllFramesAsPngBatch({
     bool setExportingFlag = true,
   }) async {
@@ -2204,6 +2205,13 @@ class _DetailBodyState extends State<_DetailBody> {
           params: params,
           onParamsChanged: (v) => setState(() => _params = v),
         ),
+        if (hasThermalInPkg) ...[
+          const SizedBox(height: 6),
+          PhotoFilterControls(
+            params: params,
+            onChanged: (v) => setState(() => _params = v),
+          ),
+        ],
         if (isVideo && hasThermalInPkg) ...[
           const SizedBox(height: 8),
           Container(
@@ -2681,29 +2689,6 @@ class _ParamsRow extends StatelessWidget {
           params.copyWith(colormapName: v, useCustomColors: false),
         ),
         labelOf: (v) => _colormapZh[v] ?? v,
-      ),
-      const SizedBox(width: 14),
-      label('上采样'),
-      _Dropdown<int>(
-        value: const [1, 2, 4, 8, 16].contains(params.upsampleScale)
-            ? params.upsampleScale
-            : 8,
-        items: const [1, 2, 4, 8, 16],
-        onChanged: (v) => onParamsChanged(params.copyWith(upsampleScale: v)),
-        labelOf: (v) => '${v}x',
-      ),
-      const SizedBox(width: 14),
-      // 双边滤波: 紧凑 FilterChip, 避免大 Switch 显得不协调.
-      FilterChip(
-        label: const Text('双边滤波', style: TextStyle(fontSize: 11)),
-        selected: params.bilateralEnabled,
-        showCheckmark: true,
-        visualDensity: const VisualDensity(horizontal: -2, vertical: -3),
-        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: -2),
-        labelPadding: const EdgeInsets.symmetric(horizontal: 2),
-        onSelected: (v) =>
-            onParamsChanged(params.copyWith(bilateralEnabled: v)),
       ),
       if (hasVisible) ...[
         const SizedBox(width: 14),

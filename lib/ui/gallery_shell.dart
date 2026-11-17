@@ -97,9 +97,7 @@ class _GalleryShellState extends State<GalleryShell> {
                 return scheme.surfaceContainerHigh;
               }),
               shape: WidgetStatePropertyAll(
-                RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               ),
             ),
           ),
@@ -125,10 +123,7 @@ class _GalleryShellState extends State<GalleryShell> {
                 )
               : IndexedStack(
                   index: _sub,
-                  children: const [
-                    PhotoDownloadTab(),
-                    SoftwareGalleryTab(),
-                  ],
+                  children: const [PhotoDownloadTab(), SoftwareGalleryTab()],
                 ),
         ),
       ],

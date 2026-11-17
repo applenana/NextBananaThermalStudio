@@ -228,6 +228,7 @@ class _FirmwareUpdateSettingsControlState
   Widget build(BuildContext context) {
     return Consumer<AppState>(
       builder: (context, app, _) {
+        if (app.isCb360) return const Text('CB360 使用串口 OTA 协议；此处的旧设备 UF2 升级不适用。');
         final connected = app.status == ConnectionStatus.connected;
         final liveIdentity = FirmwareDeviceIdentity.fromDeviceInfo(
           app.deviceInfo,

@@ -17,6 +17,7 @@ import 'dart:typed_data';
 import 'package:usb_serial/usb_serial.dart';
 
 import 'serial_port_info.dart';
+import '../cb360/protocol.dart';
 
 class AndroidSerialImpl {
   UsbPort? _port;
@@ -166,6 +167,23 @@ class AndroidSerialImpl {
     });
   }
 
+  Future<void> setBaud(int baud) async {
+    final port = _port;
+    if (port == null) throw StateError('串口未打开');
+    await port.setPortParameters(
+      baud,
+      UsbPort.DATABITS_8,
+      UsbPort.STOPBITS_1,
+      UsbPort.PARITY_NONE,
+    );
+  }
+
+  Future<void> writeAll(Uint8List bytes) async {
+    final port = _port;
+    if (port == null) throw StateError('串口未打开');
+    await port.write(bytes);
+  }
+
   Future<void> close() async {
     try {
       await _sub?.cancel();
@@ -222,6 +240,7 @@ class AndroidSerialImpl {
     StreamSubscription<Uint8List>? sub;
     final completer = Completer<Map<String, dynamic>?>();
     final buf = BytesBuilder(copy: false);
+    final identityProbe = IdentityProbe();
     try {
       port = await device.create();
       if (port == null) return null;
@@ -237,6 +256,11 @@ class AndroidSerialImpl {
       sub = port.inputStream?.listen(
         (data) {
           if (completer.isCompleted) return;
+          final identity = identityProbe.add(data);
+          if (identity != null) {
+            completer.complete(identity);
+            return;
+          }
           buf.add(data);
           final all = buf.toBytes();
           int last = 0;

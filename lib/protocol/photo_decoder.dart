@@ -20,7 +20,7 @@ import 'dart:typed_data';
 import '../app_state.dart' show PhotoMeta;
 import '../render/render_params.dart' show ThermalViewParams;
 
-enum PhotoFormat { jpegLike, v1Simple, v1Full, v2Htph, unknown }
+enum PhotoFormat { cb360Y16, jpegLike, v1Simple, v1Full, v2Htph, unknown }
 
 class PhotoDecoded {
   final PhotoFormat format;
@@ -196,7 +196,7 @@ class PhotoDecoder {
     final viewSummary = thermalView == null
         ? 'thermalView=legacy'
         : 'thermalView=${thermalView.scale.toStringAsFixed(1)}x/'
-            '${thermalView.xOffset}/${thermalView.yOffset}';
+              '${thermalView.xOffset}/${thermalView.yOffset}';
     return PhotoDecoded(
       format: PhotoFormat.v2Htph,
       thermal: mirrored,
@@ -208,7 +208,8 @@ class PhotoDecoder {
       visW: finalVisW,
       visH: finalVisH,
       thermalView: thermalView,
-      summary: 'v2 HTPH v$ver ${h}x$w '
+      summary:
+          'v2 HTPH v$ver ${h}x$w '
           '${fullScreen ? "full" : "square"} '
           'fusion=${fusionNames[fusionMode] ?? "?"} '
           'visible=${hasVisible ? "${visW}x$visH" : "no"} '

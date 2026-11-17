@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../main.dart' show appConnectionBarExpanded;
 import '../serial/serial_service.dart';
+import 'cb360_controls.dart';
 
 class ConnectionBar extends StatefulWidget {
   const ConnectionBar({super.key});
@@ -68,6 +69,55 @@ class _ConnectionBarState extends State<ConnectionBar> {
     }
   }
 
+  Widget _baudSelector(AppState app) {
+    final device = app.cb360;
+    final connected = app.status == ConnectionStatus.connected;
+    return DropdownButton<int>(
+      value: connected ? app.currentBaud : _baud,
+      isDense: true,
+      items:
+          (device != null
+                  ? const [115200, 921600, 2000000]
+                  : const [
+                      9600,
+                      19200,
+                      38400,
+                      57600,
+                      115200,
+                      230400,
+                      460800,
+                      921600,
+                      1000000,
+                      2000000,
+                    ])
+              .map((b) => DropdownMenuItem(value: b, child: Text('$b')))
+              .toList(),
+      onChanged:
+          (device != null
+              ? device.busy
+              : connected ||
+                    app.status == ConnectionStatus.connecting ||
+                    app.status == ConnectionStatus.scanning)
+          ? null
+          : (value) async {
+              if (value == null) return;
+              if (device == null) {
+                setState(() => _baud = value);
+                return;
+              }
+              try {
+                await device.changeBaud(value);
+              } catch (error) {
+                if (mounted) {
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('$error')));
+                }
+              }
+            },
+    );
+  }
+
   /// 设备信息行折叠状态 (Android 默认折叠以节省垂直空间).
   bool _deviceInfoExpanded = false;
 
@@ -119,13 +169,9 @@ class _ConnectionBarState extends State<ConnectionBar> {
         child: Row(
           children: [
             Icon(
-              connected
-                  ? Icons.usb_rounded
-                  : Icons.usb_off_rounded,
+              connected ? Icons.usb_rounded : Icons.usb_off_rounded,
               size: 16,
-              color: connected
-                  ? Colors.green
-                  : scheme.onSurfaceVariant,
+              color: connected ? Colors.green : scheme.onSurfaceVariant,
             ),
             const SizedBox(width: 8),
             Text(
@@ -192,11 +238,13 @@ class _ConnectionBarState extends State<ConnectionBar> {
     final app = context.watch<AppState>();
     final scheme = Theme.of(context).colorScheme;
     final connected = app.status == ConnectionStatus.connected;
-    final hasDeviceInfo = app.deviceSerial != null ||
+    final hasDeviceInfo =
+        app.deviceSerial != null ||
         app.deviceInfo != null ||
         app.activateTime != null ||
         app.warrantyTime != null;
-    final isBusy = app.status == ConnectionStatus.scanning ||
+    final isBusy =
+        app.status == ConnectionStatus.scanning ||
         app.status == ConnectionStatus.connecting;
 
     return Card(
@@ -209,8 +257,11 @@ class _ConnectionBarState extends State<ConnectionBar> {
             // 行 1: USB 图标 + 端口下拉 (撑满) + 状态徽章
             Row(
               children: [
-                Icon(Icons.usb_rounded,
-                    size: 16, color: scheme.onSurfaceVariant),
+                Icon(
+                  Icons.usb_rounded,
+                  size: 16,
+                  color: scheme.onSurfaceVariant,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Container(
@@ -224,19 +275,23 @@ class _ConnectionBarState extends State<ConnectionBar> {
                         isExpanded: true,
                         isDense: true,
                         value: _selected,
-                        hint: const Text('点「自动」搜索设备',
-                            style: TextStyle(fontSize: 12)),
+                        hint: const Text(
+                          '点「自动」搜索设备',
+                          style: TextStyle(fontSize: 12),
+                        ),
                         items: _ports
-                            .map((p) => DropdownMenuItem(
-                                  value: p.name,
-                                  child: Text(
-                                    p.description.isEmpty
-                                        ? p.name
-                                        : '${p.name} · ${p.description}',
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 12),
-                                  ),
-                                ))
+                            .map(
+                              (p) => DropdownMenuItem(
+                                value: p.name,
+                                child: Text(
+                                  p.description.isEmpty
+                                      ? p.name
+                                      : '${p.name} · ${p.description}',
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                              ),
+                            )
                             .toList(),
                         onChanged: connected
                             ? null
@@ -264,8 +319,9 @@ class _ConnectionBarState extends State<ConnectionBar> {
                     onPressed: (connected || isBusy)
                         ? null
                         : () async {
-                            final ok =
-                                await app.autoSearchAndConnect(baud: _baud);
+                            final ok = await app.autoSearchAndConnect(
+                              baud: _baud,
+                            );
                             if (ok && mounted) {
                               setState(() => _selected = app.currentPort);
                             }
@@ -277,12 +333,14 @@ class _ConnectionBarState extends State<ConnectionBar> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.auto_awesome_rounded, size: 16),
-                    label: Text(app.status == ConnectionStatus.scanning
-                        ? '搜索中…'
-                        : '自动'),
+                    label: Text(
+                      app.status == ConnectionStatus.scanning ? '搜索中…' : '自动',
+                    ),
                     style: FilledButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 10),
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
                     ),
                   ),
                 ),
@@ -315,23 +373,39 @@ class _ConnectionBarState extends State<ConnectionBar> {
                             ? scheme.onErrorContainer
                             : scheme.onPrimary,
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 10),
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
                       ),
                     ),
                   ),
                 ),
               ],
             ),
+            if (app.cb360 != null) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 12,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _baudSelector(app),
+                  Cb360Controls(device: app.cb360!),
+                ],
+              ),
+            ],
             // 设备信息行 (默认折叠, 已连接且有信息时显示展开按钮)
             if (hasDeviceInfo) ...[
               const SizedBox(height: 6),
               InkWell(
-                onTap: () => setState(
-                    () => _deviceInfoExpanded = !_deviceInfoExpanded),
+                onTap: () =>
+                    setState(() => _deviceInfoExpanded = !_deviceInfoExpanded),
                 borderRadius: BorderRadius.circular(8),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
-                      horizontal: 4, vertical: 4),
+                    horizontal: 4,
+                    vertical: 4,
+                  ),
                   child: Row(
                     children: [
                       Icon(
@@ -356,8 +430,9 @@ class _ConnectionBarState extends State<ConnectionBar> {
                           'SN ${app.deviceSerial!}',
                           style: TextStyle(
                             fontSize: 10,
-                            color: scheme.onSurfaceVariant
-                                .withValues(alpha: 0.7),
+                            color: scheme.onSurfaceVariant.withValues(
+                              alpha: 0.7,
+                            ),
                             fontFamily: 'monospace',
                           ),
                           overflow: TextOverflow.ellipsis,
@@ -386,7 +461,11 @@ class _ConnectionBarState extends State<ConnectionBar> {
                             ? Icons.check_circle_rounded
                             : Icons.lock_outline_rounded,
                         label: '激活',
-                        value: app.isActivated ? '已激活' : '未激活',
+                        value: !app.requiresActivation
+                            ? '无需激活'
+                            : app.isActivated
+                            ? '已激活'
+                            : '未激活',
                         color: app.isActivated ? Colors.green : Colors.orange,
                       ),
                     if (app.activateTime != null &&
@@ -436,12 +515,17 @@ class _ConnectionBarState extends State<ConnectionBar> {
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.usb_rounded,
-                          size: 18, color: scheme.onSurfaceVariant),
+                      Icon(
+                        Icons.usb_rounded,
+                        size: 18,
+                        color: scheme.onSurfaceVariant,
+                      ),
                       const SizedBox(width: 8),
                       Container(
                         constraints: const BoxConstraints(
-                            maxWidth: 320, minWidth: 140),
+                          maxWidth: 320,
+                          minWidth: 140,
+                        ),
                         padding: const EdgeInsets.symmetric(horizontal: 12),
                         decoration: BoxDecoration(
                           color: scheme.surfaceContainerHigh,
@@ -454,16 +538,18 @@ class _ConnectionBarState extends State<ConnectionBar> {
                             value: _selected,
                             hint: const Text('选择端口'),
                             items: _ports
-                                .map((p) => DropdownMenuItem(
-                                      value: p.name,
-                                      child: Text(
-                                        p.description.isEmpty
-                                            ? p.name
-                                            : '${p.name} · ${p.description}',
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 13),
-                                      ),
-                                    ))
+                                .map(
+                                  (p) => DropdownMenuItem(
+                                    value: p.name,
+                                    child: Text(
+                                      p.description.isEmpty
+                                          ? p.name
+                                          : '${p.name} · ${p.description}',
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                )
                                 .toList(),
                             onChanged: connected
                                 ? null
@@ -479,13 +565,15 @@ class _ConnectionBarState extends State<ConnectionBar> {
                     tooltip: '刷新端口列表',
                   ),
                   FilledButton.tonalIcon(
-                    onPressed: (connected ||
+                    onPressed:
+                        (connected ||
                             app.status == ConnectionStatus.scanning ||
                             app.status == ConnectionStatus.connecting)
                         ? null
                         : () async {
-                            final ok =
-                                await app.autoSearchAndConnect(baud: _baud);
+                            final ok = await app.autoSearchAndConnect(
+                              baud: _baud,
+                            );
                             if (ok && mounted) {
                               setState(() => _selected = app.currentPort);
                             }
@@ -497,22 +585,26 @@ class _ConnectionBarState extends State<ConnectionBar> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.auto_awesome_rounded, size: 16),
-                    label: Text(app.status == ConnectionStatus.scanning
-                        ? '搜索中…'
-                        : '自动'),
+                    label: Text(
+                      app.status == ConnectionStatus.scanning ? '搜索中…' : '自动',
+                    ),
                     style: FilledButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 10),
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
                     ),
                   ),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text('波特率',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: scheme.onSurfaceVariant,
-                          )),
+                      Text(
+                        '波特率',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
                       const SizedBox(width: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -521,27 +613,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: DropdownButtonHideUnderline(
-                          child: DropdownButton<int>(
-                            value: _baud,
-                            isDense: true,
-                            items: const [
-                              9600,
-                              19200,
-                              38400,
-                              57600,
-                              115200,
-                              230400,
-                              460800,
-                              921600,
-                              1000000,
-                            ]
-                                .map((b) => DropdownMenuItem(
-                                    value: b, child: Text('$b')))
-                                .toList(),
-                            onChanged: connected
-                                ? null
-                                : (v) => setState(() => _baud = v!),
-                          ),
+                          child: _baudSelector(app),
                         ),
                       ),
                     ],
@@ -555,9 +627,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
                       }
                     },
                     icon: Icon(
-                      connected
-                          ? Icons.link_off_rounded
-                          : Icons.bolt_rounded,
+                      connected ? Icons.link_off_rounded : Icons.bolt_rounded,
                       size: 18,
                     ),
                     label: Text(connected ? '断开' : '连接'),
@@ -571,6 +641,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
                     ),
                   ),
                   _StatusBadge(status: app.status),
+                  if (app.cb360 != null) Cb360Controls(device: app.cb360!),
                 ],
               ),
 
@@ -581,7 +652,9 @@ class _ConnectionBarState extends State<ConnectionBar> {
                   app.warrantyTime != null) ...[
                 const SizedBox(height: 10),
                 Divider(
-                    height: 1, color: scheme.outlineVariant.withValues(alpha: 0.4)),
+                  height: 1,
+                  color: scheme.outlineVariant.withValues(alpha: 0.4),
+                ),
                 const SizedBox(height: 10),
                 Wrap(
                   crossAxisAlignment: WrapCrossAlignment.center,
@@ -601,7 +674,11 @@ class _ConnectionBarState extends State<ConnectionBar> {
                             ? Icons.check_circle_rounded
                             : Icons.lock_outline_rounded,
                         label: '激活状态',
-                        value: app.isActivated ? '已激活' : '未激活',
+                        value: !app.requiresActivation
+                            ? '无需激活'
+                            : app.isActivated
+                            ? '已激活'
+                            : '未激活',
                         color: app.isActivated ? Colors.green : Colors.orange,
                       ),
                     if (app.activateTime != null &&
@@ -706,12 +783,14 @@ class _StatusBadge extends StatelessWidget {
         children: [
           Icon(icon, size: 14, color: color),
           const SizedBox(width: 5),
-          Text(label,
-              style: TextStyle(
-                color: color,
-                fontWeight: FontWeight.w600,
-                fontSize: 12,
-              )),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
+            ),
+          ),
         ],
       ),
     );
@@ -750,20 +829,24 @@ class _InfoPill extends StatelessWidget {
         children: [
           Icon(icon, size: 14, color: fg),
           const SizedBox(width: 5),
-          Text('$label:',
-              style: TextStyle(
-                fontSize: 11,
-                color: muted,
-                fontWeight: FontWeight.w500,
-              )),
+          Text(
+            '$label:',
+            style: TextStyle(
+              fontSize: 11,
+              color: muted,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
           const SizedBox(width: 4),
-          Text(value,
-              style: TextStyle(
-                fontSize: 12,
-                color: fg,
-                fontWeight: FontWeight.w600,
-                fontFamily: mono ? 'monospace' : null,
-              )),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 12,
+              color: fg,
+              fontWeight: FontWeight.w600,
+              fontFamily: mono ? 'monospace' : null,
+            ),
+          ),
         ],
       ),
     );

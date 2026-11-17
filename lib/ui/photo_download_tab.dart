@@ -13,13 +13,13 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:gal/gal.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../cb360/controller.dart';
 import '../fusion/fusion.dart';
 import 'banana_toast.dart';
 import 'app_font.dart';
@@ -36,6 +36,7 @@ import '../render/render_pipeline.dart';
 import 'widgets/rgb_image_view.dart';
 import 'widgets/temp_overlay.dart';
 import 'widgets/thermal_canvas.dart';
+import 'widgets/photo_filter_controls.dart';
 
 /// 外部触发图库刷新的通道. 每次 value++ 表示请求一次刷新,
 /// 由 [_PhotoDownloadTabState] 监听并在已连接 / 非忙时执行.
@@ -50,6 +51,26 @@ class PhotoDownloadTab extends StatefulWidget {
 
 class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   List<PhotoMeta> _list = const [];
+  Object? _deviceOwner;
+  String? _ownerSerial;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final app = context.watch<AppState>();
+    final owner = app.cb360;
+    if (!identical(owner, _deviceOwner) || app.deviceSerial != _ownerSerial) {
+      _deviceOwner = owner;
+      _ownerSerial = app.deviceSerial;
+      _clearSession();
+      _list = const [];
+      _selected = null;
+      _raw = null;
+      _decoded = null;
+      _pendingDownload = null;
+    }
+  }
+
   PhotoMeta? _selected;
   bool _busy = false;
   String? _statusText;
@@ -167,6 +188,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         // 但每张照片必须使用自己随文件保存的热像视图, 不能被当前选中图片污染.
         final thumbParams = _photoParams.copyWith(
           thermalView: dec.thermalView ?? const ThermalViewParams(),
+          upsampleScale: 1,
         );
         final r = renderPipeline(
           thermalFrame: dec.thermal!,
@@ -194,7 +216,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       }
       // tab dispose 之后 _session 已 clear, 这里写入会变成野指针, 守一下:
       final cur = _session[key];
-      if (cur == null) {
+      if (cur == null || !identical(cur, entry)) {
         img.dispose();
         return;
       }
@@ -251,6 +273,29 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     const retryWait = Duration(seconds: 1);
     Object? lastErr;
     try {
+      if (app.cb360 != null) {
+        final cb = app.cb360!;
+        await cb.whenIdle();
+        await cb.refreshList();
+        if (!mounted || !identical(cb, app.cb360)) return;
+        setState(() {
+          _list = [
+            for (var i = 0; i < cb.photoIds.length; i++)
+              PhotoMeta(
+                index: i,
+                filename: cb.photoIds[i],
+                size: 21600,
+                mode: 'thermal',
+                dataFormat: 'CB360-Y16',
+              ),
+          ];
+          _selected = null;
+          _raw = null;
+          _decoded = null;
+          _statusText = '共 ${_list.length} 张 · 点击下载，已查看照片缓存秒开';
+        });
+        return;
+      }
       for (int attempt = 1; attempt <= maxAttempts; attempt++) {
         if (!mounted) return;
         // 用户已经切走图库 tab: 立即放弃, 让 HomeShell 的"恢复推流"逻辑生效.
@@ -300,6 +345,95 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _statusText = '失败: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _downloadAllCb360() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      for (final photo in List<PhotoMeta>.of(_list)) {
+        if (!mounted || !appPhotoTabActive.value) break;
+        if (_session.containsKey(photo.filename)) continue;
+        await _doDownload(photo);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _showDownloaded() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final photos = await listSavedPhotos();
+      if (!mounted) return;
+      setState(() {
+        _clearSession();
+        _selected = null;
+        _raw = null;
+        _decoded = null;
+        _list = [
+          for (var i = 0; i < photos.length; i++)
+            PhotoMeta(
+              index: i,
+              filename: '${photos[i].serial}_${photos[i].id}_$i',
+              size: 21600,
+              mode: 'thermal',
+              dataFormat: 'CB360-Y16',
+              localPath: photos[i].path,
+            ),
+        ];
+        _statusText = '已下载 ${photos.length} 张 · 使用各自保存的参数，支持离线查看';
+      });
+    } catch (e) {
+      if (mounted) setState(() => _statusText = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _deleteCb360() async {
+    final photo = _selected;
+    final device = context.read<AppState>().cb360;
+    if (photo == null || photo.localPath != null || device == null || _busy) {
+      return;
+    }
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('删除设备照片 ${photo.filename}？'),
+        content: const Text('设备文件删除后无法撤销，已下载的本地副本保留。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      await device.whenIdle();
+      await device.deletePhotos([photo.filename]);
+      if (!mounted) return;
+      setState(() {
+        _list = _list.where((p) => p.filename != photo.filename).toList();
+        _session.remove(photo.filename)?.thumb?.dispose();
+        _selected = null;
+        _raw = null;
+        _decoded = null;
+        _statusText = '已删除 ${photo.filename}';
+      });
+    } catch (e) {
+      if (mounted) setState(() => _statusText = '删除失败: $e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -381,6 +515,59 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       // 点击新图: 重置预览参数为默认值, 不使用上一张图、也不使用实时面板的任何状态.
       _resetPhotoParams();
     });
+    if (sel.dataFormat == 'CB360-Y16') {
+      final device = app.cb360;
+      if (device == null && sel.localPath == null) {
+        setState(() => _statusText = '设备已断开');
+        return;
+      }
+      try {
+        final CbGalleryPhoto photo;
+        if (sel.localPath != null) {
+          photo = await loadSavedGalleryPhoto(sel.localPath!);
+        } else {
+          await device!.whenIdle();
+          photo = await device.fetchGalleryPhoto(sel.filename);
+        }
+        if (!mounted ||
+            (sel.localPath == null && !identical(device, app.cb360))) {
+          return;
+        }
+        var min = double.infinity, max = double.negativeInfinity;
+        for (final value in photo.temperatures) {
+          if (value < min) min = value;
+          if (value > max) max = value;
+        }
+        final decoded = PhotoDecoded(
+          format: PhotoFormat.cb360Y16,
+          thermal: photo.temperatures,
+          srcW: 120,
+          srcH: 90,
+          tMin: min,
+          tMax: max,
+          summary: 'CB360 120×90 · 下载时配置 · 全域温度',
+        );
+        setState(() {
+          _raw = photo.raw;
+          _decoded = decoded;
+          _stage = '完成';
+          _progress = 21600;
+          _progressTotal = 21600;
+          _applyDecodedPhotoParams(decoded);
+          _statusText =
+              '${photo.restoredFromCache ? "命中还原缓存" : "已下载并还原"} · ${photo.saved.path}';
+        });
+        _storeSession(sel, photo.raw, decoded);
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _stage = '失败';
+            _statusText = '下载失败: $e';
+          });
+        }
+      }
+      return;
+    }
     // 缓存指纹联动: onEarlyBytes 累计到 ~4 KB 时算 sha256 查 index,
     // 命中即调 abortPhotoDownload, 主流程 catch PhotoDownloadAbortedException
     // 后读 raw/ 缓存秒开. shaC 用于完成后补写 index.
@@ -514,7 +701,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   /// 划到一张新图时调用: 重置 _photoParams 为默认值 (不读任何实时面板状态).
   /// 解码完成后可再调 [_applyDecodedPhotoParams] 合入照片自带的热像视图.
   void _resetPhotoParams() {
-    _photoParams = const RenderParams();
+    _photoParams = RenderParams(
+      upsampleScale: context.read<AppState>().isCb360 ? 2 : 8,
+    );
     _photoThermalViewApplied = false;
   }
 
@@ -523,6 +712,10 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   /// 仅首次合入，避免分块下载的多次部分解码覆盖用户随后在详情页做的调整。
   /// v1/v2 没有该元数据时维持旧行为；它们不会借用实时页当前激活的参数。
   void _applyDecodedPhotoParams(PhotoDecoded dec) {
+    if (dec.format == PhotoFormat.cb360Y16 && !_photoThermalViewApplied) {
+      _photoParams = _photoParams.copyWith(upsampleScale: 2);
+      _photoThermalViewApplied = true;
+    }
     if (!_photoThermalViewApplied && dec.thermalView != null) {
       _photoParams = _photoParams.copyWith(thermalView: dec.thermalView);
       _photoThermalViewApplied = true;
@@ -668,6 +861,11 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                   style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
                 ),
                 const Spacer(),
+                IconButton(
+                  onPressed: _busy ? null : _showDownloaded,
+                  tooltip: '查看已下载的 CB360 设备照片',
+                  icon: const Icon(Icons.folder_open_outlined, size: 18),
+                ),
                 FilledButton.icon(
                   onPressed: _busy ? null : _refresh,
                   icon: const Icon(Icons.refresh_rounded, size: 16),
@@ -681,6 +879,29 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 ),
               ],
             ),
+            if (context.watch<AppState>().isCb360)
+              Wrap(
+                spacing: 8,
+                children: [
+                  TextButton.icon(
+                    onPressed: _busy || _list.isEmpty
+                        ? null
+                        : _downloadAllCb360,
+                    icon: const Icon(Icons.download, size: 16),
+                    label: const Text('下载全部'),
+                  ),
+                  TextButton.icon(
+                    onPressed:
+                        _busy ||
+                            _selected == null ||
+                            _selected!.localPath != null
+                        ? null
+                        : _deleteCb360,
+                    icon: const Icon(Icons.delete_outline, size: 16),
+                    label: const Text('删除选中'),
+                  ),
+                ],
+              ),
             const SizedBox(height: 10),
             if (_statusText != null)
               Padding(
@@ -706,7 +927,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                     )
                   : ListView.separated(
                       itemCount: _list.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 6),
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
                       itemBuilder: (_, i) {
                         final e = _list[i];
                         final isSel = _selected?.filename == e.filename;
@@ -871,6 +1092,11 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
             phone: phone,
             params: _photoParams,
             onParamsChanged: (v) => setState(() => _photoParams = v),
+          ),
+          const SizedBox(height: 6),
+          PhotoFilterControls(
+            params: _photoParams,
+            onChanged: (v) => setState(() => _photoParams = v),
           ),
         ],
         const SizedBox(height: 10),

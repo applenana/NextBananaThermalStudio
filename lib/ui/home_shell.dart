@@ -90,6 +90,7 @@ class _HomeShellState extends State<HomeShell> {
     if (app == null ||
         app.status != ConnectionStatus.connected ||
         app.deviceInfo == null ||
+        app.isCb360 ||
         _firmwareCheckRunning ||
         FirmwareUpdateService.instance.snapshot.value.busy ||
         FirmwareUpdateService.instance.snapshot.value.phase ==
