@@ -53,11 +53,11 @@ class PhotoDownloadTab extends StatefulWidget {
 
 class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   final _ai = PhotoAiSession();
-  bool _aiWasEnabled = false;
+  int _previousAiScale = 0;
   void _onAiChanged() {
     if (!mounted) return;
-    if (_aiWasEnabled != _ai.enabled) _markers.clear();
-    _aiWasEnabled = _ai.enabled;
+    if (_previousAiScale != _ai.scale) _markers.clear();
+    _previousAiScale = _ai.scale;
     setState(() {});
   }
 
@@ -1115,6 +1115,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           const SizedBox(height: 6),
           PhotoFilterControls(
             ai: _ai,
+            sourceWidth: dec!.srcW,
+            sourceHeight: dec.srcH,
             params: _photoParams,
             onChanged: (v) => setState(() => _photoParams = v),
           ),
@@ -1566,7 +1568,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   }
 
   Future<void> _exportPng() async {
-    final enhancedExport = _ai.enabled;
+    final exportAiScale = _ai.scale;
     final dec = _decoded;
     final sel = _selected;
     if (dec == null || sel == null) return;
@@ -1618,7 +1620,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           min: dec.tMin,
           max: dec.tMax,
         ),
-        enabled: enhancedExport,
+        scale: exportAiScale,
       );
       final pngBytes = await _renderToPng(
         r,
@@ -1633,7 +1635,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       final f = File(
         p.join(
           out.path,
-          '${p.basenameWithoutExtension(sel.filename)}${enhancedExport ? "_ai2x" : ""}.png',
+          '${p.basenameWithoutExtension(sel.filename)}${exportAiScale != 0 ? "_ai${exportAiScale}x" : ""}.png',
         ),
       );
       await f.writeAsBytes(pngBytes);

@@ -9,6 +9,33 @@ import 'render_pipeline.dart';
 typedef _Native = Int32 Function(Pointer<Float>, Int32, Int32, Pointer<Float>);
 typedef _Infer = int Function(Pointer<Float>, int, int, Pointer<Float>);
 
+const photoAiScales = [2, 4, 8];
+
+/// Each native 2x pass accepts at most 512 pixels per input axis.
+bool supportsPhotoAiScale(int width, int height, int scale) =>
+    photoAiScales.contains(scale) &&
+    width > 0 &&
+    height > 0 &&
+    width * (scale ~/ 2) <= 512 &&
+    height * (scale ~/ 2) <= 512;
+
+/// 4x/8x are repeated applications of the same trained 2x model.
+Float32List espcnUpscale(
+  Float32List normalized,
+  int width,
+  int height,
+  int scale,
+) {
+  if (!supportsPhotoAiScale(width, height, scale)) {
+    throw const FormatException('AI 倍率不支持或输入尺寸过大（输出每边最多 1024）');
+  }
+  var result = normalized;
+  for (var factor = 1; factor < scale; factor *= 2) {
+    result = espcnX2(result, width * factor, height * factor);
+  }
+  return result;
+}
+
 /// Native inference is called only from a worker isolate. The bundled model is
 /// a pretrained ESPCN network, not an interpolation filter labelled as AI.
 Float32List espcnX2(Float32List normalized, int width, int height) {
@@ -99,6 +126,7 @@ class PhotoRenderInput {
   final Uint8List? visibleRgb;
   final int visibleW, visibleH;
   final double? min, max;
+  final int aiScale;
   const PhotoRenderInput({
     required this.temperatures,
     required this.width,
@@ -109,7 +137,32 @@ class PhotoRenderInput {
     this.visibleH = 0,
     this.min,
     this.max,
+    this.aiScale = 2,
   });
+
+  PhotoRenderInput withAiScale(int scale) => PhotoRenderInput(
+    temperatures: temperatures,
+    width: width,
+    height: height,
+    params: params,
+    visibleRgb: visibleRgb,
+    visibleW: visibleW,
+    visibleH: visibleH,
+    min: min,
+    max: max,
+    aiScale: scale,
+  );
+
+  bool get supportsAiScale => supportsPhotoAiScale(
+    width,
+    params.thermalView.enabled &&
+            params.thermalView.restoresMlxSquareChain &&
+            width == 32 &&
+            height == 24
+        ? 32
+        : height,
+    aiScale,
+  );
 
   RenderedFrame render({int? scale}) => renderPipeline(
     thermalFrame: temperatures,
@@ -124,7 +177,11 @@ class PhotoRenderInput {
   );
 
   RenderedFrame enhance() {
-    final measured = render(scale: 2);
+    // Reject oversized cascades before allocating any enlarged render buffers.
+    if (!supportsAiScale) {
+      throw const FormatException('当前照片不支持此 AI 倍率（输出每边最多 1024）');
+    }
+    final measured = render(scale: aiScale);
     // Use the same display range at source resolution, before palette mapping.
     final source = renderPipeline(
       thermalFrame: temperatures,
@@ -136,7 +193,12 @@ class PhotoRenderInput {
     );
     return applyAiDisplay(
       measured,
-      espcnX2(source.normalizedField, source.width, source.height),
+      espcnUpscale(
+        source.normalizedField,
+        source.width,
+        source.height,
+        aiScale,
+      ),
       params,
       visibleRgb: visibleRgb,
       visibleW: visibleW,

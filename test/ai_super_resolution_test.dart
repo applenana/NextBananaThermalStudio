@@ -56,6 +56,102 @@ void main() {
     );
   });
 
+  test(
+    'cascade limits reject unsupported scales before rendering or native access',
+    () {
+      expect(photoAiScales.where((s) => supportsPhotoAiScale(120, 90, s)), [
+        2,
+        4,
+        8,
+      ]);
+      expect(photoAiScales.where((s) => supportsPhotoAiScale(256, 192, s)), [
+        2,
+        4,
+      ]);
+      expect(supportsPhotoAiScale(512, 512, 2), isTrue);
+      expect(supportsPhotoAiScale(513, 1, 2), isFalse);
+      for (final scale in [0, 3, 16]) {
+        expect(
+          () => espcnUpscale(Float32List(15), 5, 3, scale),
+          throwsFormatException,
+        );
+      }
+      final oversized = PhotoRenderInput(
+        temperatures: Float32List(256 * 192),
+        width: 256,
+        height: 192,
+        params: const RenderParams(),
+        aiScale: 8,
+      );
+      expect(oversized.enhance, throwsFormatException);
+      final ai = PhotoAiSession();
+      expect(() => ai.setScale(3), throwsArgumentError);
+      ai.dispose();
+    },
+  );
+
+  test(
+    'changing scale discards stale output and export captures its own scale',
+    () async {
+      final jobs = <Completer<RenderedFrame>>[];
+      final scales = <int>[];
+      final ai = PhotoAiSession(
+        infer: (input) {
+          scales.add(input.aiScale);
+          final done = Completer<RenderedFrame>();
+          jobs.add(done);
+          return done.future;
+        },
+      );
+      final photo = input(0);
+      ai.setScale(2);
+      ai.preview(photo);
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+      ai.setScale(8);
+      expect(ai.preview(photo).width, 40);
+      jobs[0].complete(photo.render(scale: 2));
+      await Future<void>.delayed(Duration.zero);
+      expect(scales, [2, 8]);
+      expect(ai.preview(photo).width, 40);
+      final current = photo.render(scale: 8);
+      jobs[1].complete(current);
+      await Future<void>.delayed(Duration.zero);
+      expect(identical(ai.preview(photo), current), isTrue);
+      final exporting = ai.export(photo, scale: 4);
+      ai.setScale(0);
+      expect(scales, [2, 8, 4]);
+      jobs[2].complete(photo.render(scale: 4));
+      expect((await exporting).width, 20);
+      expect((await ai.export(photo)).width, photo.render().width);
+      ai.dispose();
+    },
+  );
+
+  test(
+    'oversized photo keeps ordinary preview and export reports the limit',
+    () async {
+      var calls = 0;
+      final ai = PhotoAiSession(
+        infer: (input) async {
+          calls++;
+          return input.render();
+        },
+      );
+      final photo = PhotoRenderInput(
+        temperatures: Float32List(256 * 192),
+        width: 256,
+        height: 192,
+        params: const RenderParams(upsampleScale: 1, bilateralEnabled: false),
+      );
+      ai.setScale(8);
+      expect(ai.preview(photo).width, 256);
+      expect(ai.error, contains('1024'));
+      await expectLater(ai.export(photo), throwsFormatException);
+      expect(calls, 0);
+      ai.dispose();
+    },
+  );
+
   test('changing photo while inference runs discards the old result', () async {
     final jobs = <Completer<RenderedFrame>>[];
     final ai = PhotoAiSession(
@@ -66,7 +162,7 @@ void main() {
       },
     );
     final first = input(0), second = input(10);
-    ai.setEnabled(true);
+    ai.setScale(2);
     ai.preview(first);
     await Future<void>.delayed(const Duration(milliseconds: 220));
     expect(jobs.length, 1);
@@ -89,7 +185,7 @@ void main() {
         infer: (_) async => throw StateError('test failure'),
       );
       final photo = input(0);
-      ai.setEnabled(true);
+      ai.setScale(2);
       ai.preview(photo);
       await Future<void>.delayed(const Duration(milliseconds: 220));
       expect(ai.error, contains('test failure'));
@@ -98,12 +194,12 @@ void main() {
         photo.render().temperatureField,
       );
       await expectLater(ai.export(photo), throwsStateError);
-      ai.setEnabled(false);
+      ai.setScale(0);
       expect(
         (await ai.export(photo)).temperatureField,
         photo.render().temperatureField,
       );
-      await expectLater(ai.export(photo, enabled: true), throwsStateError);
+      await expectLater(ai.export(photo, scale: 2), throwsStateError);
       ai.dispose();
     },
   );

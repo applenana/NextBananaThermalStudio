@@ -952,11 +952,11 @@ class _VideoExtremeTrackingState {
 
 class _DetailBodyState extends State<_DetailBody> {
   final _ai = PhotoAiSession();
-  bool _aiWasEnabled = false;
+  int _previousAiScale = 0;
   void _onAiChanged() {
     if (!mounted) return;
-    if (_aiWasEnabled != _ai.enabled) _markers.clear();
-    _aiWasEnabled = _ai.enabled;
+    if (_previousAiScale != _ai.scale) _markers.clear();
+    _previousAiScale = _ai.scale;
     setState(() {});
   }
 
@@ -1125,7 +1125,7 @@ class _DetailBodyState extends State<_DetailBody> {
   // ============================================================
 
   bool _exporting = false;
-  bool? _exportAi;
+  int? _exportAiScale;
 
   Future<Directory> _ensureExportRoot() async {
     final custom = appPhotoDownloadDir.value;
@@ -1626,7 +1626,7 @@ class _DetailBodyState extends State<_DetailBody> {
       visibleH: vh,
     );
     final r = _reader?.type == CapturePackageHeader.typePhoto
-        ? await _ai.export(input, enabled: _exportAi ?? _ai.enabled)
+        ? await _ai.export(input, scale: _exportAiScale ?? _ai.scale)
         : input.render();
     double? tMin, tMax, tAvg;
     if (_tempOverlayEnabled) {
@@ -1742,7 +1742,7 @@ class _DetailBodyState extends State<_DetailBody> {
     final f = _frame;
     final r = _reader;
     if (f == null || r == null || _exporting) return;
-    _exportAi = r.type == CapturePackageHeader.typePhoto && _ai.enabled;
+    _exportAiScale = r.type == CapturePackageHeader.typePhoto ? _ai.scale : 0;
     setState(() => _exporting = true);
     try {
       final baked = await _bakeFrame(f, r.meta);
@@ -1754,7 +1754,7 @@ class _DetailBodyState extends State<_DetailBody> {
       final base = p.basenameWithoutExtension(widget.item.path);
       final name = r.frameCount > 1
           ? '${base}_f$_frameIndex'
-          : '$base${_exportAi == true ? "_ai2x" : ""}';
+          : '$base${_exportAiScale != 0 ? "_ai${_exportAiScale}x" : ""}';
       final dir = await _ensureExportRoot();
       final file = File(p.join(dir.path, '$name.$ext'));
       await file.writeAsBytes(bytes);
@@ -1770,7 +1770,7 @@ class _DetailBodyState extends State<_DetailBody> {
       if (!mounted) return;
       BananaToast.show(context, '导出失败: $e');
     } finally {
-      _exportAi = null;
+      _exportAiScale = null;
       if (mounted) setState(() => _exporting = false);
     }
   }
@@ -2230,6 +2230,8 @@ class _DetailBodyState extends State<_DetailBody> {
           const SizedBox(height: 6),
           PhotoFilterControls(
             ai: isVideo ? null : _ai,
+            sourceWidth: meta.thermalW,
+            sourceHeight: meta.thermalH,
             params: params,
             onChanged: (v) => setState(() => _params = v),
           ),

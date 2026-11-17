@@ -27,52 +27,85 @@ void main() {
         height: 90,
         params: const RenderParams(upsampleScale: 2, colormapName: 'plasma'),
       );
-      final before = input.render();
-      final clock = Stopwatch()..start();
-      final after = input.enhance();
-      clock.stop();
-      expect(after.temperatureField, before.temperatureField);
-      expect(source, Float32List.fromList(values));
-      expect((after.width, after.height), (240, 180));
-      expect(after.rgb, isNot(before.rgb));
-      final original = img.Image.fromBytes(
-        width: 240,
-        height: 180,
-        bytes: before.rgb.buffer,
-        numChannels: 3,
-      );
-      final enhanced = img.Image.fromBytes(
-        width: 240,
-        height: 180,
-        bytes: after.rgb.buffer,
-        numChannels: 3,
-      );
-      final comparison = img.Image(width: 480, height: 206);
-      img.compositeImage(comparison, original, dstX: 0, dstY: 26);
-      img.compositeImage(comparison, enhanced, dstX: 240, dstY: 26);
-      img.drawString(comparison, 'Regular 2x', font: img.arial14, x: 8, y: 5);
-      img.drawString(
-        comparison,
-        'ESPCN AI 2x',
-        font: img.arial14,
-        x: 248,
-        y: 5,
-      );
       final dir = await Directory(
         'build/ai-photo-check',
       ).create(recursive: true);
+      final records = <Map<String, Object>>[];
+      final comparison = img.Image(width: 960, height: 3 * 390);
+      for (final scale in photoAiScales) {
+        final before = input.render(scale: scale);
+        final clock = Stopwatch()..start();
+        final after = input.withAiScale(scale).enhance();
+        clock.stop();
+        expect(after.temperatureField, before.temperatureField);
+        expect(after.normalizedField, before.normalizedField);
+        expect(after.thermalColorScaleRgb, before.thermalColorScaleRgb);
+        expect((after.tMin, after.tMax), (before.tMin, before.tMax));
+        expect(source, Float32List.fromList(values));
+        expect((after.width, after.height), (120 * scale, 90 * scale));
+        expect(after.rgb, isNot(before.rgb));
+        final original = img.Image.fromBytes(
+          width: before.width,
+          height: before.height,
+          bytes: before.rgb.buffer,
+          numChannels: 3,
+        );
+        final enhanced = img.Image.fromBytes(
+          width: after.width,
+          height: after.height,
+          bytes: after.rgb.buffer,
+          numChannels: 3,
+        );
+        await File(
+          '${dir.path}/regular${scale}x.png',
+        ).writeAsBytes(img.encodePng(original));
+        await File(
+          '${dir.path}/ai${scale}x.png',
+        ).writeAsBytes(img.encodePng(enhanced));
+        final rowY = photoAiScales.indexOf(scale) * 390;
+        img.compositeImage(
+          comparison,
+          img.copyResize(original, width: 480, height: 360),
+          dstY: rowY + 30,
+        );
+        img.compositeImage(
+          comparison,
+          img.copyResize(enhanced, width: 480, height: 360),
+          dstX: 480,
+          dstY: rowY + 30,
+        );
+        img.drawString(
+          comparison,
+          'Regular ${scale}x',
+          font: img.arial14,
+          x: 8,
+          y: rowY + 7,
+        );
+        img.drawString(
+          comparison,
+          'ESPCN ${scale}x (${scale == 2 ? "native" : "cascade"})',
+          font: img.arial14,
+          x: 488,
+          y: rowY + 7,
+        );
+        records.add({
+          'scale': scale,
+          'width': after.width,
+          'height': after.height,
+          'pipelineMs': clock.elapsedMilliseconds,
+          'temperatureUnchanged': true,
+        });
+      }
       await File(
         '${dir.path}/comparison.png',
       ).writeAsBytes(img.encodePng(comparison));
-      await File('${dir.path}/ai2x.png').writeAsBytes(img.encodePng(enhanced));
       await File('${dir.path}/result.json').writeAsString(
-        jsonEncode({
+        const JsonEncoder.withIndent('  ').convert({
+          'source': path,
           'sourceWidth': 120,
           'sourceHeight': 90,
-          'width': 240,
-          'height': 180,
-          'pipelineMs': clock.elapsedMilliseconds,
-          'temperatureUnchanged': true,
+          'model': 'ESPCN x2 ordinary-image training; x4/x8 cascaded',
+          'results': records,
         }),
       );
     },

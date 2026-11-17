@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import '../../render/ai_super_resolution.dart';
 import '../../render/photo_ai_session.dart';
 import '../../render/render_params.dart';
 
@@ -7,10 +8,13 @@ import '../../render/render_params.dart';
 class PhotoFilterControls extends StatelessWidget {
   final RenderParams params;
   final PhotoAiSession? ai;
+  final int sourceWidth, sourceHeight;
   final ValueChanged<RenderParams> onChanged;
   const PhotoFilterControls({
     super.key,
     this.ai,
+    this.sourceWidth = 0,
+    this.sourceHeight = 0,
     required this.params,
     required this.onChanged,
   });
@@ -75,7 +79,9 @@ class PhotoFilterControls extends StatelessWidget {
                   const Text('上采样', style: TextStyle(fontSize: 11)),
                   const SizedBox(width: 6),
                   DropdownButton<int>(
-                    value: ai?.enabled == true ? 2 : params.upsampleScale,
+                    value: ai?.enabled == true
+                        ? ai!.scale
+                        : params.upsampleScale,
                     isDense: true,
                     items:
                         ({1, 2, 4, 8, 16, params.upsampleScale}.toList()
@@ -122,12 +128,31 @@ class PhotoFilterControls extends StatelessWidget {
               ),
               if (ai != null) ...[
                 Tooltip(
-                  message: 'ESPCN 2× 本地显示增强，不增加真实测温分辨率。',
-                  child: FilterChip(
-                    label: const Text('AI 超分 2× · 实验'),
-                    selected: ai!.enabled,
-                    onSelected: Platform.isWindows || Platform.isAndroid
-                        ? ai!.setEnabled
+                  message:
+                      '2× 使用原生 ESPCN；4× / 8× 级联运行同一模型。'
+                      '仅增强显示，不增加真实测温分辨率。灰色倍率超出尺寸限制。',
+                  child: DropdownButton<int>(
+                    value: ai!.scale,
+                    isDense: true,
+                    items: [
+                      const DropdownMenuItem(value: 0, child: Text('AI 超分：关闭')),
+                      for (final scale in photoAiScales)
+                        DropdownMenuItem(
+                          value: scale,
+                          enabled: supportsPhotoAiScale(
+                            sourceWidth,
+                            sourceHeight,
+                            scale,
+                          ),
+                          child: Text(
+                            'AI $scale× · ${scale == 2 ? "原生" : "级联"}实验',
+                          ),
+                        ),
+                    ],
+                    onChanged: Platform.isWindows || Platform.isAndroid
+                        ? (value) {
+                            if (value != null) ai!.setScale(value);
+                          }
                         : null,
                   ),
                 ),

@@ -11,7 +11,9 @@ class PhotoAiSession extends ChangeNotifier {
   final Future<RenderedFrame> Function(PhotoRenderInput) _infer;
   PhotoAiSession({Future<RenderedFrame> Function(PhotoRenderInput)? infer})
     : _infer = infer ?? ((input) => Isolate.run(input.enhance));
-  bool enabled = false;
+  int _scale = 0;
+  int get scale => _scale;
+  bool get enabled => _scale != 0;
   bool busy = false;
   bool _disposed = false;
   String? error;
@@ -31,10 +33,15 @@ class PhotoAiSession extends ChangeNotifier {
     input.visibleH,
     input.min,
     input.max,
+    input.aiScale,
   );
 
-  void setEnabled(bool value) {
-    enabled = value;
+  void setScale(int value) {
+    if (value != 0 && !photoAiScales.contains(value)) {
+      throw ArgumentError.value(value, 'scale', 'Supported: 0, 2, 4, 8');
+    }
+    if (_scale == value) return;
+    _scale = value;
     _wanted = null;
     _completed = null;
     _result = null;
@@ -47,6 +54,15 @@ class PhotoAiSession extends ChangeNotifier {
 
   RenderedFrame preview(PhotoRenderInput input) {
     if (!enabled) return input.render();
+    input = input.withAiScale(scale);
+    if (!input.supportsAiScale) {
+      _wanted = null;
+      _pending = null;
+      _debounce?.cancel();
+      error = '当前照片不支持 $scale× AI 超分，请选择较低倍率（输出每边最多 1024）';
+      elapsedMs = null;
+      return input.render();
+    }
     final key = _key(input);
     if (_completed == key && _result != null) return _result!;
     if (_wanted != key) {
@@ -57,7 +73,7 @@ class PhotoAiSession extends ChangeNotifier {
       _debounce?.cancel();
       _debounce = Timer(const Duration(milliseconds: 180), _run);
     }
-    return input.render(scale: 2);
+    return input.render(scale: scale);
   }
 
   Future<void> _run() async {
@@ -88,8 +104,13 @@ class PhotoAiSession extends ChangeNotifier {
     }
   }
 
-  Future<RenderedFrame> export(PhotoRenderInput input, {bool? enabled}) async {
-    if (!(enabled ?? this.enabled)) return input.render();
+  Future<RenderedFrame> export(PhotoRenderInput input, {int? scale}) async {
+    final selectedScale = scale ?? this.scale;
+    if (selectedScale == 0) return input.render();
+    input = input.withAiScale(selectedScale);
+    if (!input.supportsAiScale) {
+      throw const FormatException('当前照片不支持此 AI 倍率（输出每边最多 1024）');
+    }
     if (_completed == _key(input) && _result != null) return _result!;
     // Export never silently substitutes a regular image for requested AI output.
     return _infer(input);
