@@ -176,3 +176,4 @@ endif()
 # Portable CB360 photo restoration core.
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../native/cb360" "${CMAKE_CURRENT_BINARY_DIR}/cb360")
 install(TARGETS cb360_restore RUNTIME DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+install(TARGETS thermal_super_resolution RUNTIME DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)

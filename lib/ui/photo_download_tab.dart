@@ -33,6 +33,8 @@ import '../protocol/photo_cache_index.dart';
 import '../protocol/photo_decoder.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
+import '../render/ai_super_resolution.dart';
+import '../render/photo_ai_session.dart';
 import 'widgets/rgb_image_view.dart';
 import 'widgets/temp_overlay.dart';
 import 'widgets/thermal_canvas.dart';
@@ -50,6 +52,15 @@ class PhotoDownloadTab extends StatefulWidget {
 }
 
 class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
+  final _ai = PhotoAiSession();
+  bool _aiWasEnabled = false;
+  void _onAiChanged() {
+    if (!mounted) return;
+    if (_aiWasEnabled != _ai.enabled) _markers.clear();
+    _aiWasEnabled = _ai.enabled;
+    setState(() {});
+  }
+
   List<PhotoMeta> _list = const [];
   Object? _deviceOwner;
   String? _ownerSerial;
@@ -130,6 +141,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   @override
   void initState() {
     super.initState();
+    _ai.addListener(_onAiChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       // bug 修复: 旋转 (例 全屏入场) 会让 home_shell LayoutBuilder 从 narrow
@@ -149,6 +161,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
 
   @override
   void dispose() {
+    _ai.dispose();
     photoTabRefreshTrigger.removeListener(_onExternalRefresh);
     appClosePhotoDetail = null;
     appPhotoDetailOpen.value = false;
@@ -713,7 +726,11 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   /// v1/v2 没有该元数据时维持旧行为；它们不会借用实时页当前激活的参数。
   void _applyDecodedPhotoParams(PhotoDecoded dec) {
     if (dec.format == PhotoFormat.cb360Y16 && !_photoThermalViewApplied) {
-      _photoParams = _photoParams.copyWith(upsampleScale: 2);
+      _photoParams = _photoParams.copyWith(
+        upsampleScale: 2,
+        colormapName: 'plasma',
+        useCustomColors: false,
+      );
       _photoThermalViewApplied = true;
     }
     if (!_photoThermalViewApplied && dec.thermalView != null) {
@@ -1069,16 +1086,18 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         : _photoParams.copyWith(fusion: const FusionParams());
     RenderedFrame? rendered;
     if (dec?.thermal != null) {
-      rendered = renderPipeline(
-        thermalFrame: dec!.thermal!,
-        srcW: dec.srcW,
-        srcH: dec.srcH,
-        params: renderParams,
-        visibleRgb: allowVisible ? dec.visibleRgb : null,
-        visibleW: allowVisible ? dec.visW : 0,
-        visibleH: allowVisible ? dec.visH : 0,
-        minOverride: dec.tMin,
-        maxOverride: dec.tMax,
+      rendered = _ai.preview(
+        PhotoRenderInput(
+          temperatures: dec!.thermal!,
+          width: dec.srcW,
+          height: dec.srcH,
+          params: renderParams,
+          visibleRgb: allowVisible ? dec.visibleRgb : null,
+          visibleW: allowVisible ? dec.visW : 0,
+          visibleH: allowVisible ? dec.visH : 0,
+          min: dec.tMin,
+          max: dec.tMax,
+        ),
       );
     }
     return Column(
@@ -1095,6 +1114,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           ),
           const SizedBox(height: 6),
           PhotoFilterControls(
+            ai: _ai,
             params: _photoParams,
             onChanged: (v) => setState(() => _photoParams = v),
           ),
@@ -1546,6 +1566,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   }
 
   Future<void> _exportPng() async {
+    final enhancedExport = _ai.enabled;
     final dec = _decoded;
     final sel = _selected;
     if (dec == null || sel == null) return;
@@ -1585,16 +1606,19 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
         setState(() => _statusText = '无可导出的渲染结果');
         return;
       }
-      final r = renderPipeline(
-        thermalFrame: dec.thermal!,
-        srcW: dec.srcW,
-        srcH: dec.srcH,
-        params: exportParams,
-        visibleRgb: allowVisible ? dec.visibleRgb : null,
-        visibleW: allowVisible ? dec.visW : 0,
-        visibleH: allowVisible ? dec.visH : 0,
-        minOverride: dec.tMin,
-        maxOverride: dec.tMax,
+      final r = await _ai.export(
+        PhotoRenderInput(
+          temperatures: dec.thermal!,
+          width: dec.srcW,
+          height: dec.srcH,
+          params: exportParams,
+          visibleRgb: allowVisible ? dec.visibleRgb : null,
+          visibleW: allowVisible ? dec.visW : 0,
+          visibleH: allowVisible ? dec.visH : 0,
+          min: dec.tMin,
+          max: dec.tMax,
+        ),
+        enabled: enhancedExport,
       );
       final pngBytes = await _renderToPng(
         r,
@@ -1607,7 +1631,10 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       );
       final out = await _exportDir();
       final f = File(
-        p.join(out.path, '${p.basenameWithoutExtension(sel.filename)}.png'),
+        p.join(
+          out.path,
+          '${p.basenameWithoutExtension(sel.filename)}${enhancedExport ? "_ai2x" : ""}.png',
+        ),
       );
       await f.writeAsBytes(pngBytes);
       final albumOk = await _saveToGalleryIfAndroid(

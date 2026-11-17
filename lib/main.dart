@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'
+    show LicenseRegistry, LicenseEntryWithLineBreaks;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -229,6 +231,11 @@ Future<void> resetAllSettings() async {
 }
 
 void main() async {
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks([
+      'ESPCN 2× / TF-ESPCN',
+    ], await rootBundle.loadString('assets/licenses/espcn.txt'));
+  });
   WidgetsFlutterBinding.ensureInitialized();
   await _loadPersistedSettings();
   try {

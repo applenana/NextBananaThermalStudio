@@ -1,12 +1,16 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import '../../render/photo_ai_session.dart';
 import '../../render/render_params.dart';
 
 /// Both galleries edit a local configuration, preserving source temperatures.
 class PhotoFilterControls extends StatelessWidget {
   final RenderParams params;
+  final PhotoAiSession? ai;
   final ValueChanged<RenderParams> onChanged;
   const PhotoFilterControls({
     super.key,
+    this.ai,
     required this.params,
     required this.onChanged,
   });
@@ -71,7 +75,7 @@ class PhotoFilterControls extends StatelessWidget {
                   const Text('上采样', style: TextStyle(fontSize: 11)),
                   const SizedBox(width: 6),
                   DropdownButton<int>(
-                    value: params.upsampleScale,
+                    value: ai?.enabled == true ? 2 : params.upsampleScale,
                     isDense: true,
                     items:
                         ({1, 2, 4, 8, 16, params.upsampleScale}.toList()
@@ -83,11 +87,13 @@ class PhotoFilterControls extends StatelessWidget {
                               ),
                             )
                             .toList(),
-                    onChanged: (v) {
-                      if (v != null) {
-                        onChanged(params.copyWith(upsampleScale: v));
-                      }
-                    },
+                    onChanged: ai?.enabled == true
+                        ? null
+                        : (v) {
+                            if (v != null) {
+                              onChanged(params.copyWith(upsampleScale: v));
+                            }
+                          },
                   ),
                 ],
               ),
@@ -106,10 +112,45 @@ class PhotoFilterControls extends StatelessWidget {
                       ),
                     )
                     .toList(),
-                onChanged: (v) {
-                  if (v != null) onChanged(params.copyWith(upsampleMethod: v));
-                },
+                onChanged: ai?.enabled == true
+                    ? null
+                    : (v) {
+                        if (v != null) {
+                          onChanged(params.copyWith(upsampleMethod: v));
+                        }
+                      },
               ),
+              if (ai != null) ...[
+                Tooltip(
+                  message: 'ESPCN 2× 本地显示增强，不增加真实测温分辨率。',
+                  child: FilterChip(
+                    label: const Text('AI 超分 2× · 实验'),
+                    selected: ai!.enabled,
+                    onSelected: Platform.isWindows || Platform.isAndroid
+                        ? ai!.setEnabled
+                        : null,
+                  ),
+                ),
+                if (ai!.enabled)
+                  Text(
+                    ai!.busy
+                        ? 'AI 处理中…'
+                        : ai!.error != null
+                        ? 'AI 失败，显示原预览'
+                        : ai!.elapsedMs != null
+                        ? '${ai!.elapsedMs} ms · 测温取自原数据'
+                        : '等待增强…',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                if (ai!.enabled && ai!.error != null)
+                  Tooltip(
+                    message: ai!.error!,
+                    child: const Icon(Icons.info_outline, size: 16),
+                  ),
+              ],
               if (params.bilateralEnabled) ...[
                 slider(
                   'σ空间',

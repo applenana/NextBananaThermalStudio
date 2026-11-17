@@ -26,6 +26,8 @@ import '../main.dart'
 import '../fusion/fusion.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
+import '../render/ai_super_resolution.dart';
+import '../render/photo_ai_session.dart';
 import '../storage/capture_package.dart';
 import '../storage/capture_service.dart';
 import 'widgets/temp_overlay.dart';
@@ -949,6 +951,15 @@ class _VideoExtremeTrackingState {
 }
 
 class _DetailBodyState extends State<_DetailBody> {
+  final _ai = PhotoAiSession();
+  bool _aiWasEnabled = false;
+  void _onAiChanged() {
+    if (!mounted) return;
+    if (_aiWasEnabled != _ai.enabled) _markers.clear();
+    _aiWasEnabled = _ai.enabled;
+    setState(() {});
+  }
+
   CapturePackageReader? _reader;
   CaptureFrame? _frame;
   Uint8List? _visRgb888;
@@ -991,11 +1002,13 @@ class _DetailBodyState extends State<_DetailBody> {
   @override
   void initState() {
     super.initState();
+    _ai.addListener(_onAiChanged);
     _load();
   }
 
   @override
   void dispose() {
+    _ai.dispose();
     _playTimer?.cancel();
     super.dispose();
   }
@@ -1112,6 +1125,7 @@ class _DetailBodyState extends State<_DetailBody> {
   // ============================================================
 
   bool _exporting = false;
+  bool? _exportAi;
 
   Future<Directory> _ensureExportRoot() async {
     final custom = appPhotoDownloadDir.value;
@@ -1602,15 +1616,18 @@ class _DetailBodyState extends State<_DetailBody> {
         }
       } catch (_) {}
     }
-    final r = renderPipeline(
-      thermalFrame: frame.thermal!,
-      srcW: meta.thermalW,
-      srcH: meta.thermalH,
+    final input = PhotoRenderInput(
+      temperatures: frame.thermal!,
+      width: meta.thermalW,
+      height: meta.thermalH,
       params: _params ?? const RenderParams(),
       visibleRgb: visRgb,
       visibleW: vw,
       visibleH: vh,
     );
+    final r = _reader?.type == CapturePackageHeader.typePhoto
+        ? await _ai.export(input, enabled: _exportAi ?? _ai.enabled)
+        : input.render();
     double? tMin, tMax, tAvg;
     if (_tempOverlayEnabled) {
       double mn = double.infinity;
@@ -1725,6 +1742,7 @@ class _DetailBodyState extends State<_DetailBody> {
     final f = _frame;
     final r = _reader;
     if (f == null || r == null || _exporting) return;
+    _exportAi = r.type == CapturePackageHeader.typePhoto && _ai.enabled;
     setState(() => _exporting = true);
     try {
       final baked = await _bakeFrame(f, r.meta);
@@ -1734,7 +1752,9 @@ class _DetailBodyState extends State<_DetailBody> {
       }
       final (bytes, ext) = baked;
       final base = p.basenameWithoutExtension(widget.item.path);
-      final name = r.frameCount > 1 ? '${base}_f$_frameIndex' : base;
+      final name = r.frameCount > 1
+          ? '${base}_f$_frameIndex'
+          : '$base${_exportAi == true ? "_ai2x" : ""}';
       final dir = await _ensureExportRoot();
       final file = File(p.join(dir.path, '$name.$ext'));
       await file.writeAsBytes(bytes);
@@ -1750,6 +1770,7 @@ class _DetailBodyState extends State<_DetailBody> {
       if (!mounted) return;
       BananaToast.show(context, '导出失败: $e');
     } finally {
+      _exportAi = null;
       if (mounted) setState(() => _exporting = false);
     }
   }
@@ -2208,6 +2229,7 @@ class _DetailBodyState extends State<_DetailBody> {
         if (hasThermalInPkg) ...[
           const SizedBox(height: 6),
           PhotoFilterControls(
+            ai: isVideo ? null : _ai,
             params: params,
             onChanged: (v) => setState(() => _params = v),
           ),
@@ -2522,15 +2544,18 @@ class _DetailBodyState extends State<_DetailBody> {
     if (hasT) {
       // 含热成像: 走原渲染管线; 是否融合可见光由 _visRgb888/_showVisible 控制.
       final useFusionRgb = (hasV && _visRgb888 != null) ? _visRgb888 : null;
-      final rendered = renderPipeline(
-        thermalFrame: f.thermal!,
-        srcW: meta.thermalW,
-        srcH: meta.thermalH,
+      final input = PhotoRenderInput(
+        temperatures: f.thermal!,
+        width: meta.thermalW,
+        height: meta.thermalH,
         params: params,
         visibleRgb: useFusionRgb,
         visibleW: useFusionRgb != null ? _visW : 0,
         visibleH: useFusionRgb != null ? _visH : 0,
       );
+      final rendered = _reader?.type == CapturePackageHeader.typePhoto
+          ? _ai.preview(input)
+          : input.render();
       // 视频回放时, 标记位置不变, 温度按当前帧重新采样.
       final liveMarkers = _refreshMarkers(rendered);
       return AspectRatio(

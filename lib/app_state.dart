@@ -168,6 +168,7 @@ class AppState extends ChangeNotifier {
   // ---------------- 显示 ----------------
   /// 统一的渲染参数 (插值+双边滤波+调色盘+融合). 实时画面与图片下载 Tab 共用同一份.
   RenderParams renderParams = const RenderParams();
+  RenderParams? _beforeCb360RenderParams;
 
   // ---------------- 日志 ----------------
   final List<LogEntry> logs = [];
@@ -398,7 +399,10 @@ class AppState extends ChangeNotifier {
         cb360 = controller;
         thermalWidth = 120;
         thermalHeight = 90;
+        _beforeCb360RenderParams = renderParams;
         renderParams = renderParams.copyWith(
+          colormapName: 'plasma',
+          useCustomColors: false,
           upsampleScale: 2,
           thermalView: const ThermalViewParams(),
         );
@@ -455,6 +459,9 @@ class AppState extends ChangeNotifier {
         );
       } catch (_) {}
       cb.dispose();
+      // CB360 defaults and adjustments must not leak into the next device.
+      renderParams = _beforeCb360RenderParams ?? renderParams;
+      _beforeCb360RenderParams = null;
     }
     _stopThermalHeartbeat();
     _stopVisibleHeartbeat();
