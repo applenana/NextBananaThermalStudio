@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'photo_ai_model.dart';
+import 'photo_ai_progress.dart';
 
 /// One shared, sequential local worker for both galleries. No network service.
 /// Its interpreter and weights live beside the Windows executable.
@@ -42,12 +43,14 @@ class PhotoAiRuntime {
     PhotoAiModel model,
     Float32List source,
     int w,
-    int h,
-  ) {
+    int h, {
+    PhotoAiProgressCallback? onProgress,
+  }) {
+    onProgress?.call(const PhotoAiProgress('queued'));
     final result = Completer<Float32List>();
     _tail = _tail.then((_) async {
       try {
-        result.complete(await _request(model, source, w, h));
+        result.complete(await _request(model, source, w, h, onProgress));
       } catch (e, s) {
         result.completeError(e, s);
       }
@@ -60,6 +63,7 @@ class PhotoAiRuntime {
     Float32List source,
     int w,
     int h,
+    PhotoAiProgressCallback? onProgress,
   ) async {
     _idle?.cancel();
     if (!available(model)) {
@@ -72,6 +76,7 @@ class PhotoAiRuntime {
     }
     try {
       if (_process == null) {
+        onProgress?.call(const PhotoAiProgress('starting'));
         _diagnostic = '';
         _process = await Process.start(
           '$root/python/python.exe',
@@ -106,10 +111,20 @@ class PhotoAiRuntime {
         }),
       );
       await _process!.stdin.flush();
-      if (!await _responses!.moveNext().timeout(const Duration(minutes: 5))) {
-        throw StateError('AI 后台进程退出：$_diagnostic');
+      // Progress is a separate protocol event; only a final response completes
+      // the request. The absolute deadline also bounds a chatty/hung worker.
+      final deadline = DateTime.now().add(const Duration(minutes: 5));
+      late Map<String, dynamic> response;
+      while (true) {
+        final remaining = deadline.difference(DateTime.now());
+        if (remaining <= Duration.zero) throw TimeoutException('AI 处理超时');
+        if (!await _responses!.moveNext().timeout(remaining)) {
+          throw StateError('AI 后台进程退出：$_diagnostic');
+        }
+        response = jsonDecode(_responses!.current) as Map<String, dynamic>;
+        if (response['event'] != 'progress') break;
+        onProgress?.call(PhotoAiProgress.fromJson(response));
       }
-      final response = jsonDecode(_responses!.current) as Map<String, dynamic>;
       if (response['ok'] != true) {
         throw StateError(response['error']?.toString() ?? 'AI 推理失败');
       }
@@ -132,12 +147,19 @@ class PhotoAiRuntime {
       if (output.any((v) => !v.isFinite || v < 0 || v > 1)) {
         throw const FormatException('AI 返回非有效灰度');
       }
+      onProgress?.call(
+        PhotoAiProgress(
+          'readback',
+          device: response['device'] as String?,
+          fallback: response['fallback'] as String?,
+        ),
+      );
       return output;
     } catch (_) {
       await close();
       rethrow;
     } finally {
-      _idle = Timer(const Duration(seconds: 60), () {
+      _idle = Timer(const Duration(minutes: 5), () {
         _tail = _tail.then((_) => close());
       });
     }

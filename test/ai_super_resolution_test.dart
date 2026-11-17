@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:banana_thermal/render/ai_super_resolution.dart';
 import 'package:banana_thermal/render/photo_ai_session.dart';
 import 'package:banana_thermal/render/photo_ai_model.dart';
+import 'package:banana_thermal/render/photo_ai_progress.dart';
 import 'package:banana_thermal/render/render_params.dart';
 import 'package:banana_thermal/render/render_pipeline.dart';
 
@@ -17,6 +18,73 @@ PhotoRenderInput input(double offset) => PhotoRenderInput(
 );
 
 void main() {
+  test('progress validates counts and distinguishes unknown stages', () {
+    expect(
+      PhotoAiProgress.fromJson({
+        'stage': 'tiles',
+        'completed': 2,
+        'total': 4,
+        'device': 'cuda',
+      }).fraction,
+      0.5,
+    );
+    expect(const PhotoAiProgress('loading').fraction, isNull);
+    for (final counts in [(-1, 4), (5, 4), (0, 0)]) {
+      expect(
+        () => PhotoAiProgress.fromJson({
+          'stage': 'tiles',
+          'completed': counts.$1,
+          'total': counts.$2,
+        }),
+        throwsFormatException,
+      );
+    }
+  });
+
+  test(
+    'stale preview progress is ignored and export progress clears on failure',
+    () async {
+      final callbacks = <PhotoAiProgressCallback>[];
+      final jobs = <Completer<RenderedFrame>>[];
+      final ai = PhotoAiSession(
+        inferProgress: (_, callback) {
+          callbacks.add(callback);
+          final job = Completer<RenderedFrame>();
+          jobs.add(job);
+          return job.future;
+        },
+      );
+      final photo = input(0);
+      ai.setModel(PhotoAiModel.pftL1);
+      ai.preview(photo);
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+      callbacks[0](
+        const PhotoAiProgress('blocks', completed: 1, total: 5, device: 'cuda'),
+      );
+      expect(ai.progress!.fraction, 0.2);
+      ai.setModel(PhotoAiModel.pftTv);
+      ai.preview(photo);
+      callbacks[0](const PhotoAiProgress('blocks', completed: 5, total: 5));
+      expect(ai.progress!.stage, 'queued');
+      jobs[0].complete(photo.render(scale: 3));
+      await Future<void>.delayed(Duration.zero);
+      callbacks[1](const PhotoAiProgress('blocks', completed: 2, total: 5));
+      final export = ai.export(photo, model: PhotoAiModel.pbvs, scale: 8);
+      final failure = expectLater(export, throwsStateError);
+      callbacks[2](const PhotoAiProgress('loading', device: 'cuda'));
+      callbacks[1](const PhotoAiProgress('blocks', completed: 3, total: 5));
+      expect(ai.progress!.stage, 'loading');
+      jobs[2].completeError(StateError('test failure'));
+      await failure;
+      expect(ai.progress!.fraction, 0.6);
+      jobs[1].complete(photo.render(scale: 3));
+      await Future<void>.delayed(Duration.zero);
+      expect(ai.processing, isFalse);
+      ai.dispose();
+      callbacks[1](const PhotoAiProgress('complete'));
+    },
+  );
+
   test(
     'model switches invalidate same-scale results and exports capture the model',
     () async {

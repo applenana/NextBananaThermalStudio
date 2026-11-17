@@ -179,18 +179,41 @@ class PhotoFilterControls extends StatelessWidget {
                         : null,
                   ),
                 ),
-                if (ai!.enabled)
+                if (ai!.processing)
+                  SizedBox(
+                    width: sliderWidth,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '${ai!.progress?.backendLabel ?? ""} ${ai!.progress?.label ?? "等待 AI 任务"}'
+                          '${ai!.progress?.fraction != null ? " · ${(ai!.progress!.fraction! * 100).round()}%" : ""}',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        const SizedBox(height: 4),
+                        LinearProgressIndicator(value: ai!.progress?.fraction),
+                      ],
+                    ),
+                  ),
+                if (ai!.enabled && !ai!.processing)
                   Text(
-                    ai!.busy
-                        ? 'AI 处理中…'
-                        : ai!.error != null
+                    ai!.error != null
                         ? 'AI 失败，显示原预览'
                         : ai!.elapsedMs != null
-                        ? '${ai!.elapsedMs} ms · 测温取自原数据'
+                        ? '${ai!.progress?.backendLabel ?? ""} ${ai!.elapsedMs} ms · 测温取自原数据'
                         : '等待增强…',
                     style: TextStyle(
                       fontSize: 11,
                       color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                if (ai!.progress?.fallback != null)
+                  Tooltip(
+                    message: ai!.progress!.fallback!,
+                    child: const Text(
+                      'GPU 不可用，已回退 CPU',
+                      style: TextStyle(fontSize: 11),
                     ),
                   ),
                 if (ai!.enabled && ai!.error != null)

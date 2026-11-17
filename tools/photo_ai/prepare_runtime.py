@@ -1,4 +1,4 @@
-"""Prepare the optional, portable Windows CPU photo-AI bundle.
+"""Prepare the optional, portable Windows CUDA/CPU photo-AI bundle.
 
 Run with Python 3.13 on Windows. No globally installed packages are changed.
 The output is gitignored and can be copied beside banana_thermal.exe as photo_ai.
@@ -47,8 +47,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, default=ROOT/'build/photo-ai-runtime')
     parser.add_argument('--weights-cache', type=Path, default=ROOT/'build/thermal-models/weights')
+    parser.add_argument('--backend', choices=['cuda', 'cpu'], default='cuda')
     parser.add_argument('--runtime-site', type=Path,
-                        help='Reuse a prepared, compatible CPU site-packages directory (offline packaging)')
+                        help='Reuse a prepared, compatible site-packages directory (offline packaging)')
     args = parser.parse_args()
     if sys.platform != 'win32' or sys.version_info[:2] != (3, 13):
         raise RuntimeError('Use Windows Python 3.13 to prepare this bundle')
@@ -66,8 +67,13 @@ def main():
         if args.runtime_site.resolve() != site.resolve():
             shutil.copytree(args.runtime_site, site, dirs_exist_ok=True)
     elif not (site/'torch').exists():
+        torch_args = ['torch==2.11.0+cu128', '--index-url', 'https://download.pytorch.org/whl/cu128'] if args.backend == 'cuda' else ['torch==2.15.0']
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '--target', str(site), *torch_args], check=True)
         subprocess.run([sys.executable, '-m', 'pip', 'install', '--target', str(site),
-                        'torch==2.15.0', 'numpy==2.5.5', 'einops==0.8.2'], check=True)
+                        'numpy==2.5.5', 'einops==0.8.2'], check=True)
+    subprocess.run([str(target/'python/python.exe'), '-c',
+                    'import torch; assert bool(torch.version.cuda) == '+repr(args.backend == 'cuda')+
+                    ', "Existing runtime backend mismatch; use a fresh --output directory"'], check=True)
     manifest = json.loads((HERE/'weights-manifest.json').read_text())
     args.weights_cache.mkdir(parents=True, exist_ok=True)
     (target/'weights').mkdir(exist_ok=True)

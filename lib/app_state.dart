@@ -402,6 +402,7 @@ class AppState extends ChangeNotifier {
         _beforeCb360RenderParams = renderParams;
         renderParams = renderParams.copyWith(
           colormapName: 'plasma',
+          bilateralEnabled: false,
           useCustomColors: false,
           upsampleScale: 2,
           thermalView: const ThermalViewParams(),

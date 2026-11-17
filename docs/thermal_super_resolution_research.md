@@ -9,7 +9,7 @@
 
 | 模型 | 热像训练与输入 | 倍率 / 权重 | 工程判断 |
 | --- | --- | --- | --- |
-| Thermal-PFT light | 在 CIDIS 热像上微调 PFT；单图推理，另有训练时使用 RGB 监督的变体 | 热像微调权重仅原生 3×；提供 L1、L1 + cross-channel + TV 两套 Hugging Face 权重 | 已接入 L1 和 cross-channel + TV 两版，使用本地 PyTorch CPU；不需要可见光 |
+| Thermal-PFT light | 在 CIDIS 热像上微调 PFT；单图推理，另有训练时使用 RGB 监督的变体 | 热像微调权重仅原生 3×；提供 L1、L1 + cross-channel + TV 两套 Hugging Face 权重 | 已接入 L1 和 cross-channel + TV 两版，本地 PyTorch 优先使用 CUDA；不需要可见光 |
 | PBVS_TSR / DRCT-L | 面向 PBVS 2025 单热图超分，训练包括合成数据与真实热像 | 测试脚本 scale=8；README 提供 Google Drive 模型和测试配置 | 已接入最终 8× 输出；源码核查更正原先的 SwinFIR 标注 |
 | SwinFuSR | RGB 引导热像超分；另有训练时随机移除 RGB 的变体 | README 提供 8× / 16× 配置；release 含 baseline、large、modality-augmentation 权重 | 已接入 robust03 的零可见光路径；CPU 分块推理较慢，不默认启用 |
 
@@ -28,7 +28,7 @@ PFT 两套 3× 权重、DRCT-L 8×、SwinFuSR robust03 8× 已下载、记录哈
 - 输入采用调色前的归一化灰度热像，避免把等离子伪彩色误当成原始热像。
 - 输出只参与显示；源温度、测点、极值、报警和温度文件仍由原测温链路负责。
 - 新模型必须明确原生倍率；不得把普通图像预训练权重或级联倍率称为热像专用权重。
-- 使用照片 `0000000A` 与普通插值 / ESPCN 对比，Windows 扩展包包含本地 CPU 运行时。
+- 使用照片 `0000000A` 与普通插值 / ESPCN 对比，Windows 扩展包默认包含本地 CUDA 运行时，并支持 CPU 回退。
   该照片没有高分辨率真值，只能比较观感、稳定性和耗时，不能证明恢复了真实细节。
 
 ## 初始 ESPCN 倍率实验

@@ -7,6 +7,7 @@ import 'package:image/image.dart' as img;
 import 'package:banana_thermal/render/ai_super_resolution.dart';
 import 'package:banana_thermal/render/photo_ai_model.dart';
 import 'package:banana_thermal/render/photo_ai_runtime.dart';
+import 'package:banana_thermal/render/photo_ai_progress.dart';
 import 'package:banana_thermal/render/render_params.dart';
 
 void main() {
@@ -27,7 +28,8 @@ void main() {
         params: const RenderParams(upsampleScale: 2, colormapName: 'plasma'),
       );
       final dir = await Directory(
-        'build/thermal-ai-comparison',
+        Platform.environment['THERMAL_AI_RESULTS'] ??
+            'build/thermal-ai-comparison',
       ).create(recursive: true);
       final models = PhotoAiModel.values;
       final canvas = img.Image(width: 960, height: models.length * 390);
@@ -37,11 +39,30 @@ void main() {
         expect(PhotoAiRuntime.available(model), isTrue, reason: model.id);
         final scale = model.scales.first;
         final measured = input.render(scale: scale);
+        final events = <PhotoAiProgress>[];
         final clock = Stopwatch()..start();
         final result = await input
             .withAiScale(scale, model: model)
-            .enhanceAsync();
+            .enhanceAsync(onProgress: events.add);
         clock.stop();
+        final expectedDevice = Platform.environment['THERMAL_AI_EXPECT_DEVICE'];
+        if (model.external && expectedDevice != null) {
+          expect(events.last.device, expectedDevice);
+          expect(events.every((e) => e.fallback == null), isTrue);
+          final counts = events.where((e) => e.completed != null).toList();
+          expect(counts, isNotEmpty);
+          expect(counts.first.completed, 0);
+          expect(counts.last.completed, counts.last.total);
+          for (var i = 1; i < counts.length; i++) {
+            expect(counts[i].completed, counts[i - 1].completed! + 1);
+          }
+        }
+        final warmClock = Stopwatch()..start();
+        final repeated = await input
+            .withAiScale(scale, model: model)
+            .enhanceAsync();
+        warmClock.stop();
+        expect(repeated.rgb, result.rgb);
         expect((result.width, result.height), (120 * scale, 90 * scale));
         expect(result.temperatureField, measured.temperatureField);
         expect(result.normalizedField, measured.normalizedField);
@@ -60,6 +81,28 @@ void main() {
           bytes: result.rgb.buffer,
           numChannels: 3,
         );
+        double? cpuRgbMeanError;
+        final baselineDir = Platform.environment['THERMAL_AI_BASELINE'];
+        if (baselineDir != null) {
+          final baseline = img.decodePng(
+            await File('$baselineDir/${model.id}.png').readAsBytes(),
+          )!;
+          expect(
+            (baseline.width, baseline.height),
+            (result.width, result.height),
+          );
+          final rgb = baseline.getBytes(order: img.ChannelOrder.rgb);
+          var difference = 0;
+          for (var i = 0; i < rgb.length; i++) {
+            difference += (rgb[i] - result.rgb[i]).abs();
+          }
+          cpuRgbMeanError = difference / rgb.length;
+          expect(
+            cpuRgbMeanError,
+            lessThan(1),
+            reason: 'CUDA should preserve FP32 display output',
+          );
+        }
         await File(
           '${dir.path}/${model.id}.png',
         ).writeAsBytes(img.encodePng(enhanced));
@@ -96,18 +139,24 @@ void main() {
           'model': model.id,
           'scale': scale,
           'pipelineMs': clock.elapsedMilliseconds,
+          'warmPipelineMs': warmClock.elapsedMilliseconds,
+          'device': events.last.device ?? 'unknown',
+          'progressEvents': events.length,
+          'cpuRgbMeanAbsoluteError': ?cpuRgbMeanError,
           'temperatureUnchanged': true,
         });
         // Persist progress even if another model fails later.
         await File('${dir.path}/results.json').writeAsString(
           const JsonEncoder.withIndent('  ').convert({
             'source': sourcePath,
-            'device': 'CPU',
+            'device': expectedDevice ?? 'auto',
             'results': records,
           }),
         );
         // ignore: avoid_print
-        print('${model.id}: ${clock.elapsedMilliseconds} ms');
+        print(
+          '${model.id}: ${clock.elapsedMilliseconds} ms, warm ${warmClock.elapsedMilliseconds} ms, ${events.last.device}',
+        );
       }
       await File(
         '${dir.path}/comparison.png',

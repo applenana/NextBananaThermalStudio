@@ -15,9 +15,13 @@ from engine import Engine
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', required=True)
-    parser.add_argument('--device', default='cpu', choices=['cpu', 'cuda'])
+    parser.add_argument('--device', default='auto', choices=['auto', 'cpu', 'cuda'])
     args = parser.parse_args()
     engine = Engine(args.weights, args.device)
+    protocol = sys.stdout
+    def progress(event):
+        print(json.dumps({'event': 'progress', **event}, separators=(',', ':')),
+              file=protocol, flush=True)
     for line in sys.stdin:
         try:
             request = json.loads(line)
@@ -26,7 +30,7 @@ def main():
                 raise ValueError('Invalid dimensions')
             source = np.frombuffer(base64.b64decode(request['data'], validate=True), dtype='<f4').reshape(h, w)
             with contextlib.redirect_stdout(sys.stderr):
-                output, stats = engine.infer(request['model'], source)
+                output, stats = engine.infer(request['model'], source, progress)
             response = {'ok': True, 'width': output.shape[1], 'height': output.shape[0],
                         'data': base64.b64encode(output.tobytes()).decode('ascii'), **stats}
         except Exception as exc:

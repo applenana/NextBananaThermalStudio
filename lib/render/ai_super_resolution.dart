@@ -8,6 +8,7 @@ import 'render_params.dart';
 import 'render_pipeline.dart';
 import 'photo_ai_model.dart';
 import 'photo_ai_runtime.dart';
+import 'photo_ai_progress.dart';
 
 typedef _Native = Int32 Function(Pointer<Float>, Int32, Int32, Pointer<Float>);
 typedef _Infer = int Function(Pointer<Float>, int, int, Pointer<Float>);
@@ -214,36 +215,75 @@ class PhotoRenderInput {
     );
   }
 
-  Future<RenderedFrame> enhanceAsync() async {
-    if (!aiModel.external) return Isolate.run(enhance);
+  (RenderedFrame, RenderedFrame) _prepareAi() {
+    final measured = render(scale: aiScale);
+    final source = renderPipeline(
+      thermalFrame: temperatures,
+      srcW: width,
+      srcH: height,
+      params: params.copyWith(upsampleScale: 1, fusion: const FusionParams()),
+      minOverride: measured.tMin,
+      maxOverride: measured.tMax,
+    );
+    return (measured, source);
+  }
+
+  Future<RenderedFrame> enhanceAsync({
+    PhotoAiProgressCallback? onProgress,
+  }) async {
+    if (!aiModel.external) {
+      onProgress?.call(const PhotoAiProgress('inference', device: 'cpu'));
+      final result = await Isolate.run(enhance);
+      onProgress?.call(const PhotoAiProgress('complete', device: 'cpu'));
+      return result;
+    }
     if (!supportsAiScale) throw const FormatException('当前照片不支持此模型倍率');
-    final (measured, source) = await Isolate.run(() {
-      final measured = render(scale: aiScale);
-      final source = renderPipeline(
-        thermalFrame: temperatures,
-        srcW: width,
-        srcH: height,
-        params: params.copyWith(upsampleScale: 1, fusion: const FusionParams()),
-        minOverride: measured.tMin,
-        maxOverride: measured.tMax,
-      );
-      return (measured, source);
-    });
+    onProgress?.call(const PhotoAiProgress('preprocess'));
+    final (measured, source) = await Isolate.run(_prepareAi);
+    PhotoAiProgress? latest;
     final enhanced = await PhotoAiRuntime.shared.infer(
       aiModel,
       source.normalizedField,
       source.width,
       source.height,
+      onProgress: (progress) {
+        latest = progress;
+        onProgress?.call(progress);
+      },
     );
-    return Isolate.run(
-      () => applyAiDisplay(
-        measured,
-        enhanced,
-        params,
-        visibleRgb: visibleRgb,
-        visibleW: visibleW,
-        visibleH: visibleH,
+    onProgress?.call(
+      PhotoAiProgress(
+        'coloring',
+        device: latest?.device,
+        fallback: latest?.fallback,
       ),
     );
+    final result = await Isolate.run(
+      _AiColorTask(this, measured, enhanced).run,
+    );
+    onProgress?.call(
+      PhotoAiProgress(
+        'complete',
+        device: latest?.device,
+        fallback: latest?.fallback,
+      ),
+    );
+    return result;
   }
+}
+
+// A value-only task prevents the UI progress callback being captured by an isolate.
+class _AiColorTask {
+  final PhotoRenderInput input;
+  final RenderedFrame measured;
+  final Float32List enhanced;
+  const _AiColorTask(this.input, this.measured, this.enhanced);
+  RenderedFrame run() => applyAiDisplay(
+    measured,
+    enhanced,
+    input.params,
+    visibleRgb: input.visibleRgb,
+    visibleW: input.visibleW,
+    visibleH: input.visibleH,
+  );
 }

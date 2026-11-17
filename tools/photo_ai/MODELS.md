@@ -1,6 +1,6 @@
 # Thermal photo AI runtime
 
-This optional **Windows CPU** bundle is installed beside the application as
+This optional **Windows CUDA/CPU** bundle is installed beside the application as
 `photo_ai/`. The Flutter model dropdown detects the bundle; missing models are
 disabled. It does not download models at application runtime. ESPCN stays native
 and is also available on Android. All models modify display luminance only.
@@ -55,7 +55,7 @@ output (8×). Earlier 2×/4× heads are not exposed as independent verified mode
 base64 little-endian float32 payloads. Diagnostics go to stderr. Only one model
 is held at a time. Flutter shares one queued worker across galleries, enforces a
 five-minute response timeout, kills/restarts a failed worker, and releases it
-after 60 idle seconds. EOF from the parent ends the process. Source/preprocessing
+after five idle minutes. EOF from the parent ends the process. Source/preprocessing
 and recoloring run in Dart isolates. Preview failures display ordinary rendering
 with an error; requested AI exports fail explicitly. Model and scale are captured
 at export start and are part of the preview cache key and output filename.
@@ -63,16 +63,36 @@ at export start and are part of the preview cache key and output filename.
 Prepare with Windows Python 3.13:
 
 ```powershell
-python tools/photo_ai/prepare_runtime.py
+python tools/photo_ai/prepare_runtime.py --backend cuda --output build/photo-ai-cuda-runtime
+cmake -S windows -B build/windows/x64 -DPHOTO_AI_RUNTIME="$PWD/build/photo-ai-cuda-runtime"
 flutter build windows --release --no-pub
 ```
 
-The script uses a portable Python 3.13.3 interpreter and local CPU dependencies
-(tested torch 2.15.0+cpu, numpy 2.5.5, einops 0.8.2). It does not modify global
+The script uses a portable Python 3.13.3 interpreter and defaults to CUDA
+(torch 2.11.0+cu128, numpy 2.5.5, einops 0.8.2). `--backend cpu` prepares the
+smaller CPU-only bundle (torch 2.15.0+cpu). It does not modify global
 packages. CMake copies `build/photo-ai-runtime` when present; without it, the app
 still builds and clearly disables these four models. For an existing installation,
 copy the complete bundle to `<application>/photo_ai`; don't copy only the EXE.
 `THERMAL_AI_RUNTIME` overrides its location for developer tests.
+
+CUDA is selected automatically when available. CUDA allocation/driver/kernel
+failures retry once on CPU and retain a fallback reason; unrelated model errors
+remain errors. FP32 is retained with TF32 disabled. ESPCN continues to use its
+fast native CPU implementation. A CUDA runtime includes the CUDA libraries;
+the target PC still needs a compatible NVIDIA driver. No separate toolkit is
+needed to use the prepared bundle. CPU-only and CUDA bundles must be prepared
+in separate output directories. CMake's `PHOTO_AI_RUNTIME` cache path selects
+the bundle to package when using a non-default output directory.
+
+The progress protocol sends flushed JSON `event: progress` records before the
+final result. Loading/preparation/coloring use indeterminate progress; PFT and
+DRCT report completed top-level model blocks, and SwinFuSR reports completed
+image tiles. Percentages describe work units in that stage, not predicted time.
+CUDA synchronization precedes completed-work events. Both galleries show the
+backend and progress, including exports; stale preview events cannot replace
+the selected photo/model's progress. The five-minute request deadline includes
+all progress events. Worker reuse avoids repeated interpreter/CUDA startup.
 
 ## Validation, November 18, 2026
 
@@ -89,7 +109,7 @@ photo, `0000000A` (120×90), using the same display parameters and plasma palett
 
 Single CPU runs, not a benchmark. L1 includes initial process/PyTorch startup;
 each changed model includes load/hash time. PNG encoding and page presentation
-are excluded. This build does **not** use the machine's NVIDIA GPU.
+are excluded. These historical baseline measurements used CPU only.
 
 All source temperatures, ordinary measurement arrays, ranges and legends matched
 before/after inference. Full output images and summary are generated under
@@ -98,6 +118,50 @@ image inspection showed smoother DRCT-L boundaries, PFT boundary/ringing artifac
 and limited extra detail from SwinFuSR despite its high CPU cost. There is no
 high-resolution truth for this photo; visual changes do not establish accuracy.
 No Flutter page/UI tests or Android builds were performed.
+
+### CUDA validation on RTX 5080
+
+The same `0000000A` photo and display parameters were tested through the complete
+Dart/isolate/portable-worker pipeline with torch 2.11.0+cu128 and NVIDIA driver
+610.62. CUDA matrix execution and all four real model executions succeeded on
+the RTX 5080 (compute capability 12.0), without fallback.
+
+| Model | First request / model load | Immediate repeat, model retained |
+| --- | --- | --- |
+| ESPCN (native CPU) | 85 ms | 62 ms |
+| Thermal-PFT L1 | 2165 ms | 135 ms |
+| Thermal-PFT TV | 554 ms | 121 ms |
+| DRCT-L | 9166 ms | 546 ms |
+| SwinFuSR robust03 | 4204 ms | 3980 ms |
+
+Single runs; L1 includes worker/PyTorch/CUDA startup. Each model's first request
+includes weight verification and loading, and all times include rendering and
+progress delivery but exclude PNG encoding/page painting. DRCT-L's first load
+remains expensive. Repeats perform inference again, without using gallery result
+caches. The benchmark intentionally retains the baseline's bilateral setting
+for comparison; CB360's application default is now bilateral filtering off.
+
+Progress counts ran from zero to the actual completed block/tile count, final
+backend was CUDA, repeated RGB outputs matched, and all measured temperature
+fields/ranges/legends were unchanged. Compared with the previous CPU PNGs,
+maximum mean absolute RGB channel error across the four models was 0.00021 on
+the 0–255 scale. This checks computational consistency, not reconstructed detail
+accuracy. Artifacts: `build/thermal-ai-cuda-comparison/`.
+
+Reproduce the end-to-end test with `THERMAL_SR_SAMPLE` pointing to the temperature
+CSV and `THERMAL_SR_LIBRARY` to the native ESPCN DLL, then:
+
+```powershell
+$env:THERMAL_AI_RUNTIME="$PWD/build/photo-ai-cuda-runtime"
+$env:THERMAL_AI_RESULTS='build/thermal-ai-cuda-comparison'
+$env:THERMAL_AI_EXPECT_DEVICE='cuda'
+$env:THERMAL_AI_BASELINE='build/thermal-ai-comparison'
+flutter test --no-pub tools/check_thermal_ai_models.dart
+```
+
+Focused validation also covers CPU retry for CUDA failures, propagation of
+unrelated failures, hook cleanup, stale model progress, export failure cleanup,
+measurement invariance and native ESPCN reference output. No Flutter page tests.
 
 ## Licenses
 

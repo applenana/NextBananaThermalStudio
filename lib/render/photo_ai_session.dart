@@ -4,13 +4,36 @@ import 'package:flutter/foundation.dart';
 import 'ai_super_resolution.dart';
 import 'render_pipeline.dart';
 import 'photo_ai_model.dart';
+import 'photo_ai_progress.dart';
 
 /// One in-flight inference and one latest pending input per gallery preview.
 /// Slider changes are debounced, old results never replace a newly selected photo.
 class PhotoAiSession extends ChangeNotifier {
-  final Future<RenderedFrame> Function(PhotoRenderInput) _infer;
-  PhotoAiSession({Future<RenderedFrame> Function(PhotoRenderInput)? infer})
-    : _infer = infer ?? ((input) => input.enhanceAsync());
+  final Future<RenderedFrame> Function(PhotoRenderInput)? _infer;
+  final Future<RenderedFrame> Function(
+    PhotoRenderInput,
+    PhotoAiProgressCallback,
+  )?
+  _inferProgress;
+  PhotoAiSession({
+    Future<RenderedFrame> Function(PhotoRenderInput)? infer,
+    Future<RenderedFrame> Function(PhotoRenderInput, PhotoAiProgressCallback)?
+    inferProgress,
+  }) : _infer = infer,
+       _inferProgress = inferProgress;
+  PhotoAiProgress? _previewProgress, _exportProgress;
+  Object? _exportToken;
+  bool get processing => busy || _exportToken != null;
+  PhotoAiProgress? get progress =>
+      _exportToken != null ? _exportProgress : _previewProgress;
+
+  Future<RenderedFrame> _execute(
+    PhotoRenderInput input,
+    PhotoAiProgressCallback progress,
+  ) =>
+      _inferProgress?.call(input, progress) ??
+      _infer?.call(input) ??
+      input.enhanceAsync(onProgress: progress);
   PhotoAiModel _model = PhotoAiModel.espcn;
   PhotoAiModel get model => _model;
   int _scale = 0;
@@ -63,6 +86,7 @@ class PhotoAiSession extends ChangeNotifier {
     _pending = null;
     error = null;
     elapsedMs = null;
+    _previewProgress = null;
     _debounce?.cancel();
     notifyListeners();
   }
@@ -76,6 +100,7 @@ class PhotoAiSession extends ChangeNotifier {
       _debounce?.cancel();
       error = '当前照片不支持 $scale× AI 超分，请选择较低倍率（输出每边最多 1024）';
       elapsedMs = null;
+      _previewProgress = null;
       return input.render();
     }
     final key = _key(input);
@@ -85,6 +110,7 @@ class PhotoAiSession extends ChangeNotifier {
       _pending = input;
       error = null;
       elapsedMs = null;
+      _previewProgress = const PhotoAiProgress('queued');
       _debounce?.cancel();
       _debounce = Timer(const Duration(milliseconds: 180), _run);
     }
@@ -100,7 +126,12 @@ class PhotoAiSession extends ChangeNotifier {
     notifyListeners();
     final clock = Stopwatch()..start();
     try {
-      final result = await _infer(input);
+      final result = await _execute(input, (progress) {
+        if (!_disposed && enabled && _wanted == key) {
+          _previewProgress = progress;
+          notifyListeners();
+        }
+      });
       if (!_disposed && enabled && _wanted == key) {
         _completed = key;
         _result = result;
@@ -109,6 +140,7 @@ class PhotoAiSession extends ChangeNotifier {
     } catch (e) {
       if (!_disposed && enabled && _wanted == key) {
         error = 'AI 超分失败，已显示普通预览：$e';
+        _previewProgress = null;
       }
     } finally {
       busy = false;
@@ -132,7 +164,24 @@ class PhotoAiSession extends ChangeNotifier {
     }
     if (_completed == _key(input) && _result != null) return _result!;
     // Export never silently substitutes a regular image for requested AI output.
-    return _infer(input);
+    final token = Object();
+    _exportToken = token;
+    _exportProgress = const PhotoAiProgress('queued');
+    if (!_disposed) notifyListeners();
+    try {
+      return await _execute(input, (progress) {
+        if (!_disposed && _exportToken == token) {
+          _exportProgress = progress;
+          notifyListeners();
+        }
+      });
+    } finally {
+      if (_exportToken == token) {
+        _exportToken = null;
+        _exportProgress = null;
+      }
+      if (!_disposed) notifyListeners();
+    }
   }
 
   @override

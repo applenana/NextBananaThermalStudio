@@ -729,6 +729,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       _photoParams = _photoParams.copyWith(
         upsampleScale: 2,
         colormapName: 'plasma',
+        bilateralEnabled: false,
         useCustomColors: false,
       );
       _photoThermalViewApplied = true;
