@@ -235,6 +235,15 @@ void main() async {
     yield LicenseEntryWithLineBreaks([
       'ESPCN 2× / TF-ESPCN',
     ], await rootBundle.loadString('assets/licenses/espcn.txt'));
+    for (final entry in const {
+      'Thermal-PFT': 'thermal_pft.txt',
+      'DRCT-L / PBVS_TSR': 'thermal_drct.txt',
+      'SwinFuSR': 'thermal_swinfu.txt',
+    }.entries) {
+      yield LicenseEntryWithLineBreaks([
+        entry.key,
+      ], await rootBundle.loadString('assets/licenses/${entry.value}'));
+    }
   });
   WidgetsFlutterBinding.ensureInitialized();
   await _loadPersistedSettings();

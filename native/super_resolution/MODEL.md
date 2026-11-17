@@ -26,9 +26,9 @@ capture packages are not modified. Processing runs in an isolate; slider updates
 are debounced and obsolete results discarded. Failed preview falls back with an
 error indication; requested AI export fails explicitly rather than silently
 exporting a regular image. AI exports capture the chosen scale and use an
-`_ai2x`, `_ai4x` or `_ai8x` filename suffix. Scale changes invalidate preview
+`_ai_espcn_2x`, `_ai_espcn_4x` or `_ai_espcn_8x` filename suffix. Scale changes invalidate preview
 results and clear measurement markers whose display coordinates would change.
-Thermal-specific model candidates are documented in
+Integrated thermal model runtime details are in `tools/photo_ai/MODELS.md`; initial candidates are documented in
 [`docs/thermal_super_resolution_research.md`](../../docs/thermal_super_resolution_research.md).
 
 ## Validation

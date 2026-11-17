@@ -1,15 +1,17 @@
 # 热像专用超分模型调研
 
 核查日期：2026-11-18。这里讨论单张图片的空间超分，不是视频时间插帧。
-本次只扩展现有 ESPCN 的照片实验倍率；下列热像模型尚未集成或在 CB360 样本上运行。
+后续实现已将下列三个系列接入 Windows 照片模型下拉框，并在最后一张 CB360
+照片 `0000000A` 上完成实际推理。详细来源、预处理、限制和测时见
+[`tools/photo_ai/MODELS.md`](../tools/photo_ai/MODELS.md)。
 
 ## 候选模型
 
 | 模型 | 热像训练与输入 | 倍率 / 权重 | 工程判断 |
 | --- | --- | --- | --- |
-| Thermal-PFT light | 在 CIDIS 热像上微调 PFT；单图推理，另有训练时使用 RGB 监督的变体 | 热像微调权重仅原生 3×；提供 L1、L1 + cross-channel + TV 两套 Hugging Face 权重 | 首选离线试验 L1 版：公开权重和模型卡较齐全，不需要 CB360 提供可见光。需评估 PyTorch、自定义算子及移植成本 |
-| PBVS_TSR / SwinFIR | 面向 PBVS 2025 单热图超分，训练包括合成数据与真实热像 | 测试脚本 scale=8；README 提供 Google Drive 模型和测试配置 | 值得作为原生 8× 对照；训练依赖较旧，尚未下载/验证外链权重或在本机测速度 |
-| SwinFuSR | RGB 引导热像超分；另有训练时随机移除 RGB 的变体 | README 提供 8× / 16× 配置；release 含 baseline、large、modality-augmentation 权重 | 常规路径需要配准可见光，不适合作为 CB360 当前单热像流程的直接替换；缺失 RGB 变体需单独验证 |
+| Thermal-PFT light | 在 CIDIS 热像上微调 PFT；单图推理，另有训练时使用 RGB 监督的变体 | 热像微调权重仅原生 3×；提供 L1、L1 + cross-channel + TV 两套 Hugging Face 权重 | 已接入 L1 和 cross-channel + TV 两版，使用本地 PyTorch CPU；不需要可见光 |
+| PBVS_TSR / DRCT-L | 面向 PBVS 2025 单热图超分，训练包括合成数据与真实热像 | 测试脚本 scale=8；README 提供 Google Drive 模型和测试配置 | 已接入最终 8× 输出；源码核查更正原先的 SwinFIR 标注 |
+| SwinFuSR | RGB 引导热像超分；另有训练时随机移除 RGB 的变体 | README 提供 8× / 16× 配置；release 含 baseline、large、modality-augmentation 权重 | 已接入 robust03 的零可见光路径；CPU 分块推理较慢，不默认启用 |
 
 许可证核查：Thermal-PFT 仓库 LICENSE.txt 为 Apache-2.0，L1 模型卡也声明
 Apache-2.0；PBVS_TSR 仓库为 MIT；SwinFuSR 仓库为 Apache-2.0。
@@ -18,17 +20,18 @@ Apache-2.0；PBVS_TSR 仓库为 MIT；SwinFuSR 仓库为 Apache-2.0。
 Thermal-PFT README 的数据预处理步骤存在需澄清之处：文字写 3×，同时示例
 出现 64→256，且描述从低分辨率图上采样生成 GT。因此不把其报告的 PSNR/SSIM
 作为 CB360 效果保证。优先做相同输入、相同归一化、相同调色板的实际对照。
-本次核查了仓库和模型文件列表，尚未验证热像权重推理结果。
+PFT 两套 3× 权重、DRCT-L 8×、SwinFuSR robust03 8× 已下载、记录哈希、严格加载并
+实际推理。SwinFuSR 使用无可见光引导路径及分块处理，并不要求 CB360 提供 RGB。
 
 ## 接入边界
 
 - 输入采用调色前的归一化灰度热像，避免把等离子伪彩色误当成原始热像。
 - 输出只参与显示；源温度、测点、极值、报警和温度文件仍由原测温链路负责。
 - 新模型必须明确原生倍率；不得把普通图像预训练权重或级联倍率称为热像专用权重。
-- 先使用照片 `0000000A` 与普通插值 / ESPCN 对比，再决定是否引入额外运行时。
+- 使用照片 `0000000A` 与普通插值 / ESPCN 对比，Windows 扩展包包含本地 CPU 运行时。
   该照片没有高分辨率真值，只能比较观感、稳定性和耗时，不能证明恢复了真实细节。
 
-## 本次已实现的倍率实验
+## 初始 ESPCN 倍率实验
 
 下拉列表为关闭、2× 原生 ESPCN、4× 级联、8× 级联，默认关闭。
 仍使用普通图像训练的现有模型。CB360 的 120×90 对应输出 240×180、480×360、
@@ -44,6 +47,20 @@ Thermal-PFT README 的数据预处理步骤存在需澄清之处：文字写 3×
 结果位于忽略的 `build/ai-photo-check/`：`result.json`、`comparison.png`、
 `regular2x/4x/8x.png` 和 `ai2x/4x/8x.png`。
 总览图统一显示尺寸，原生分辨率效果应打开各倍率单独文件查看。
+
+## 热像模型接入结果
+
+两处图库增加模型下拉框，选项为 ESPCN、Thermal-PFT L1、Thermal-PFT TV、
+DRCT-L / PBVS、SwinFuSR 无可见光。倍率框与模型联动，PFT 固定原生 3×，
+DRCT-L 和 SwinFuSR 固定 8×，ESPCN 保留 2/4/8×。默认仍关闭。
+导出名包含模型 ID 和倍率，切换模型时旧结果不会覆盖新选择。
+
+实际 CPU 测时（含模型加载；PFT L1 还含首次进程启动）：PFT L1 10.794 秒，
+PFT TV 3.433 秒，DRCT-L 11.788 秒，SwinFuSR 61.917 秒。全部测温字段保持一致。
+从导出图看，DRCT-L 的轮廓更平滑，PFT 边缘有伪影，SwinFuSR 的改善有限且较慢。
+这些是单样本观感结论，不能证明恢复了真实细节。新输出在
+`build/thermal-ai-comparison/`，复现入口为 `tools/check_thermal_ai_models.dart`。
+仅对导出图进行了检查，没有进行 Flutter 页面测试。
 
 ## 一手来源
 

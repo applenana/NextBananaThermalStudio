@@ -1,6 +1,6 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import '../../render/ai_super_resolution.dart';
+import '../../render/photo_ai_model.dart';
+import '../../render/photo_ai_runtime.dart';
 import '../../render/photo_ai_session.dart';
 import '../../render/render_params.dart';
 
@@ -84,7 +84,7 @@ class PhotoFilterControls extends StatelessWidget {
                         : params.upsampleScale,
                     isDense: true,
                     items:
-                        ({1, 2, 4, 8, 16, params.upsampleScale}.toList()
+                        ({1, 2, 3, 4, 8, 16, params.upsampleScale}.toList()
                               ..sort())
                             .map(
                               (v) => DropdownMenuItem(
@@ -129,27 +129,50 @@ class PhotoFilterControls extends StatelessWidget {
               if (ai != null) ...[
                 Tooltip(
                   message:
-                      '2× 使用原生 ESPCN；4× / 8× 级联运行同一模型。'
+                      '${ai!.model.description} 仅增强显示，测温取自原数据。'
+                      '热像模型需要 Windows 扩展包；不可用项置灰。',
+                  child: DropdownButton<PhotoAiModel>(
+                    value: ai!.model,
+                    isDense: true,
+                    items: PhotoAiModel.values
+                        .map(
+                          (model) => DropdownMenuItem(
+                            value: model,
+                            enabled: PhotoAiRuntime.available(model),
+                            child: Text(
+                              '${model.label}${PhotoAiRuntime.available(model) ? "" : "（未安装）"}',
+                            ),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (model) {
+                      if (model != null) ai!.setModel(model);
+                    },
+                  ),
+                ),
+                Tooltip(
+                  message:
+                      '${ai!.model.description}'
                       '仅增强显示，不增加真实测温分辨率。灰色倍率超出尺寸限制。',
                   child: DropdownButton<int>(
                     value: ai!.scale,
                     isDense: true,
                     items: [
                       const DropdownMenuItem(value: 0, child: Text('AI 超分：关闭')),
-                      for (final scale in photoAiScales)
+                      for (final scale in ai!.model.scales)
                         DropdownMenuItem(
                           value: scale,
-                          enabled: supportsPhotoAiScale(
+                          enabled: ai!.model.supports(
                             sourceWidth,
                             sourceHeight,
                             scale,
                           ),
                           child: Text(
-                            'AI $scale× · ${scale == 2 ? "原生" : "级联"}实验',
+                            'AI $scale× · ${ai!.model == PhotoAiModel.espcn && scale > 2 ? "级联" : "原生"}实验',
                           ),
                         ),
                     ],
-                    onChanged: Platform.isWindows || Platform.isAndroid
+                    onChanged: PhotoAiRuntime.available(ai!.model)
                         ? (value) {
                             if (value != null) ai!.setScale(value);
                           }

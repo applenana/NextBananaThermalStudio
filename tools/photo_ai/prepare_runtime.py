@@ -1,0 +1,97 @@
+"""Prepare the optional, portable Windows CPU photo-AI bundle.
+
+Run with Python 3.13 on Windows. No globally installed packages are changed.
+The output is gitignored and can be copied beside banana_thermal.exe as photo_ai.
+"""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import urllib.request
+import zipfile
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent.parent
+PYTHON_URL = 'https://www.python.org/ftp/python/3.13.3/python-3.13.3-embed-amd64.zip'
+PYTHON_HASH = '59ff76e16e6597de47474fb22be69e7191a89116910d728ab735079b078e52db'
+URLS = {
+    'pft_l1': 'https://huggingface.co/SemilleroCV/thermal-pft-light-srx3/resolve/5002f089dcbd43c6835620136e0c0318707276cf/202_Thermal_PFT_light_SRx3_finetune.pth',
+    'pft_tv': 'https://huggingface.co/SemilleroCV/thermal-pft-light-srx3-cross-channel-tv/resolve/98dfd184de8d364d19982190d70c2c692333aaf5/202_Thermal_PFT_light_SRx3_finetune_cross_channel_tv.pth',
+    'swinfu': 'https://github.com/VisionICLab/SwinFuSR/releases/download/v1.0.0/robust03',
+    'pbvs': '1MzYdz63dlql-WdUQsL9eC5AUqNGYedVF',
+}
+
+
+def digest(path):
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def fetch(target, url, expected, download_python=None):
+    if target.exists() and digest(target) == expected:
+        return
+    temp = target.with_suffix('.partial')
+    if url.startswith('https://'):
+        urllib.request.urlretrieve(url, temp)
+    else:
+        subprocess.run([str(download_python), '-m', 'gdown', url, '-O', str(temp)], check=True)
+    if digest(temp) != expected:
+        raise ValueError('Checksum mismatch: ' + str(target))
+    temp.replace(target)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output', type=Path, default=ROOT/'build/photo-ai-runtime')
+    parser.add_argument('--weights-cache', type=Path, default=ROOT/'build/thermal-models/weights')
+    parser.add_argument('--runtime-site', type=Path,
+                        help='Reuse a prepared, compatible CPU site-packages directory (offline packaging)')
+    args = parser.parse_args()
+    if sys.platform != 'win32' or sys.version_info[:2] != (3, 13):
+        raise RuntimeError('Use Windows Python 3.13 to prepare this bundle')
+    target = args.output.resolve()
+    cache = ROOT/'build/thermal-models'
+    cache.mkdir(parents=True, exist_ok=True)
+    (target/'python').mkdir(parents=True, exist_ok=True)
+    archive = cache/'python-3.13.3-embed-amd64.zip'
+    fetch(archive, PYTHON_URL, PYTHON_HASH)
+    with zipfile.ZipFile(archive) as z:
+        z.extractall(target/'python')
+    (target/'python/python313._pth').write_text('python313.zip\n.\nLib/site-packages\n..\nimport site\n')
+    site = target/'python/Lib/site-packages'
+    if args.runtime_site:
+        if args.runtime_site.resolve() != site.resolve():
+            shutil.copytree(args.runtime_site, site, dirs_exist_ok=True)
+    elif not (site/'torch').exists():
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '--target', str(site),
+                        'torch==2.15.0', 'numpy==2.5.5', 'einops==0.8.2'], check=True)
+    manifest = json.loads((HERE/'weights-manifest.json').read_text())
+    args.weights_cache.mkdir(parents=True, exist_ok=True)
+    (target/'weights').mkdir(exist_ok=True)
+    downloader = None
+    for model, item in manifest.items():
+        source = args.weights_cache/item['file']
+        if model == 'pbvs' and (not source.exists() or digest(source) != item['sha256']):
+            env = cache/'download-venv'
+            subprocess.run([sys.executable, '-m', 'venv', str(env)], check=True)
+            downloader = env/'Scripts/python.exe'
+            subprocess.run([str(downloader), '-m', 'pip', 'install', 'gdown==6.5.1'], check=True)
+        fetch(source, URLS[model], item['sha256'], downloader)
+        shutil.copy2(source, target/'weights'/item['file'])
+    shutil.copy2(HERE/'weights-manifest.json', target/'weights/manifest.json')
+    for name in ['engine.py', 'worker.py', 'MODELS.md']:
+        shutil.copy2(HERE/name, target/name)
+    shutil.copytree(HERE/'vendor', target/'vendor', dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns('__pycache__'))
+    for license in HERE.glob('*LICENSE.txt'):
+        shutil.copy2(license, target/license.name)
+    subprocess.run([str(target/'python/python.exe'), '-c',
+                    'import torch,numpy,einops; print(torch.__version__, "portable runtime ready")'], check=True)
+    print('Prepared:', target)
+
+
+if __name__ == '__main__':
+    main()

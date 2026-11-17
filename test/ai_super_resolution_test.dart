@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:banana_thermal/render/ai_super_resolution.dart';
 import 'package:banana_thermal/render/photo_ai_session.dart';
+import 'package:banana_thermal/render/photo_ai_model.dart';
 import 'package:banana_thermal/render/render_params.dart';
 import 'package:banana_thermal/render/render_pipeline.dart';
 
@@ -16,6 +17,46 @@ PhotoRenderInput input(double offset) => PhotoRenderInput(
 );
 
 void main() {
+  test(
+    'model switches invalidate same-scale results and exports capture the model',
+    () async {
+      final jobs = <Completer<RenderedFrame>>[];
+      final selected = <PhotoAiModel>[];
+      final ai = PhotoAiSession(
+        infer: (input) {
+          selected.add(input.aiModel);
+          final job = Completer<RenderedFrame>();
+          jobs.add(job);
+          return job.future;
+        },
+      );
+      final photo = input(0);
+      ai.setModel(PhotoAiModel.pftL1);
+      expect(ai.scale, 3);
+      expect(() => ai.setScale(8), throwsArgumentError);
+      expect(ai.preview(photo).width, 15);
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+      ai.setModel(PhotoAiModel.pftTv);
+      ai.preview(photo);
+      final stale = photo.render(scale: 3);
+      jobs[0].complete(stale);
+      await Future<void>.delayed(Duration.zero);
+      expect(selected, [PhotoAiModel.pftL1, PhotoAiModel.pftTv]);
+      expect(identical(ai.preview(photo), stale), isFalse);
+      final current = photo.render(scale: 3);
+      jobs[1].complete(current);
+      await Future<void>.delayed(Duration.zero);
+      expect(identical(ai.preview(photo), current), isTrue);
+      final exporting = ai.export(photo, scale: 3, model: PhotoAiModel.pftL1);
+      ai.setModel(PhotoAiModel.pbvs);
+      expect(ai.scale, 8);
+      expect(selected.last, PhotoAiModel.pftL1);
+      jobs[2].complete(photo.render(scale: 3));
+      expect((await exporting).width, 15);
+      ai.dispose();
+    },
+  );
+
   test('AI display keeps all original measurement fields and bounds', () {
     final original = input(0).render();
     final enhanced = applyAiDisplay(

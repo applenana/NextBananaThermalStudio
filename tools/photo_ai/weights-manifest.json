@@ -1,0 +1,18 @@
+{
+  "pft_l1": {
+    "sha256": "05fad60547a01a86a87aacc85a13a5cbf9e8712579b822853f77a6959762136b",
+    "file": "pft_l1.pth"
+  },
+  "pft_tv": {
+    "sha256": "c7c09d79f6dd46c82389999bb3f8b828470f4b3267aabd3181d0f5c6e0a4c5d8",
+    "file": "pft_tv.pth"
+  },
+  "swinfu": {
+    "sha256": "3cb1621698e34f3f76a5b31f5eb5a9a1ed47f687e65012c1915276b0e26040b7",
+    "file": "swinfu_robust03.pth"
+  },
+  "pbvs": {
+    "sha256": "afe64d7b099e6d5dbc3aa94ccb69c751b878f6398989714c45078e4bf877d66a",
+    "file": "pbvs.pth"
+  }
+}

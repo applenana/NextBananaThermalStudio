@@ -28,6 +28,7 @@ import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
 import '../render/ai_super_resolution.dart';
 import '../render/photo_ai_session.dart';
+import '../render/photo_ai_model.dart';
 import '../storage/capture_package.dart';
 import '../storage/capture_service.dart';
 import 'widgets/temp_overlay.dart';
@@ -987,10 +988,14 @@ class _DetailBodyState extends State<_DetailBody> {
 
   /// 为当前 rendered 帧重采样所有 markers 的温度, 返回新列表.
   /// 不修改 _markers 自身, 避免 build 阶段 setState 触发循环.
-  List<TempMarker> _refreshMarkers(RenderedFrame r) {
-    if (_markers.isEmpty) return const [];
+  List<TempMarker> _refreshMarkers(
+    RenderedFrame r, [
+    List<TempMarker>? snapshot,
+  ]) {
+    final markers = snapshot ?? _markers;
+    if (markers.isEmpty) return const [];
     final out = <TempMarker>[];
-    for (final m in _markers) {
+    for (final m in markers) {
       final px = m.px.clamp(0, r.width - 1);
       final py = m.py.clamp(0, r.height - 1);
       final t = r.temperatureField[py * r.width + px];
@@ -1126,6 +1131,7 @@ class _DetailBodyState extends State<_DetailBody> {
 
   bool _exporting = false;
   int? _exportAiScale;
+  PhotoAiModel? _exportAiModel;
 
   Future<Directory> _ensureExportRoot() async {
     final custom = appPhotoDownloadDir.value;
@@ -1603,6 +1609,7 @@ class _DetailBodyState extends State<_DetailBody> {
   Future<({RenderedFrame rendered, double? tMin, double? tMax, double? tAvg})?>
   _renderThermalFrame(CaptureFrame frame, CaptureMeta meta) async {
     if (!(frame.hasThermal && frame.thermal != null)) return null;
+    final exportOverlay = _tempOverlayEnabled;
     Uint8List? visRgb;
     int vw = 0, vh = 0;
     final vpng = frame.visiblePng;
@@ -1626,10 +1633,14 @@ class _DetailBodyState extends State<_DetailBody> {
       visibleH: vh,
     );
     final r = _reader?.type == CapturePackageHeader.typePhoto
-        ? await _ai.export(input, scale: _exportAiScale ?? _ai.scale)
+        ? await _ai.export(
+            input,
+            scale: _exportAiScale ?? _ai.scale,
+            model: _exportAiModel ?? _ai.model,
+          )
         : input.render();
     double? tMin, tMax, tAvg;
-    if (_tempOverlayEnabled) {
+    if (exportOverlay) {
       double mn = double.infinity;
       double mx = -double.infinity;
       double s = 0;
@@ -1660,9 +1671,10 @@ class _DetailBodyState extends State<_DetailBody> {
     CaptureMeta meta, {
     _VideoExtremeTrackingState? trackingState,
   }) async {
+    final exportMarkers = List<TempMarker>.of(_markers);
     final th = await _renderThermalFrame(frame, meta);
     if (th != null) {
-      final perFrameMarkers = _refreshMarkers(th.rendered);
+      final perFrameMarkers = _refreshMarkers(th.rendered, exportMarkers);
       final png = await _renderFrameToPng(
         th.rendered,
         overlayMin: th.tMin,
@@ -1743,6 +1755,7 @@ class _DetailBodyState extends State<_DetailBody> {
     final r = _reader;
     if (f == null || r == null || _exporting) return;
     _exportAiScale = r.type == CapturePackageHeader.typePhoto ? _ai.scale : 0;
+    _exportAiModel = _ai.model;
     setState(() => _exporting = true);
     try {
       final baked = await _bakeFrame(f, r.meta);
@@ -1754,7 +1767,7 @@ class _DetailBodyState extends State<_DetailBody> {
       final base = p.basenameWithoutExtension(widget.item.path);
       final name = r.frameCount > 1
           ? '${base}_f$_frameIndex'
-          : '$base${_exportAiScale != 0 ? "_ai${_exportAiScale}x" : ""}';
+          : '$base${_exportAiScale != 0 ? "_ai_${_exportAiModel!.id}_${_exportAiScale}x" : ""}';
       final dir = await _ensureExportRoot();
       final file = File(p.join(dir.path, '$name.$ext'));
       await file.writeAsBytes(bytes);
@@ -1771,6 +1784,7 @@ class _DetailBodyState extends State<_DetailBody> {
       BananaToast.show(context, '导出失败: $e');
     } finally {
       _exportAiScale = null;
+      _exportAiModel = null;
       if (mounted) setState(() => _exporting = false);
     }
   }

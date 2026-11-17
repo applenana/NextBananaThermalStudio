@@ -1,16 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:isolate';
 import 'package:flutter/foundation.dart';
 import 'ai_super_resolution.dart';
 import 'render_pipeline.dart';
+import 'photo_ai_model.dart';
 
 /// One in-flight inference and one latest pending input per gallery preview.
 /// Slider changes are debounced, old results never replace a newly selected photo.
 class PhotoAiSession extends ChangeNotifier {
   final Future<RenderedFrame> Function(PhotoRenderInput) _infer;
   PhotoAiSession({Future<RenderedFrame> Function(PhotoRenderInput)? infer})
-    : _infer = infer ?? ((input) => Isolate.run(input.enhance));
+    : _infer = infer ?? ((input) => input.enhanceAsync());
+  PhotoAiModel _model = PhotoAiModel.espcn;
+  PhotoAiModel get model => _model;
   int _scale = 0;
   int get scale => _scale;
   bool get enabled => _scale != 0;
@@ -34,14 +36,27 @@ class PhotoAiSession extends ChangeNotifier {
     input.min,
     input.max,
     input.aiScale,
+    input.aiModel,
   );
 
   void setScale(int value) {
-    if (value != 0 && !photoAiScales.contains(value)) {
-      throw ArgumentError.value(value, 'scale', 'Supported: 0, 2, 4, 8');
+    if (value != 0 && !model.scales.contains(value)) {
+      throw ArgumentError.value(value, 'scale', 'Unsupported model scale');
     }
     if (_scale == value) return;
     _scale = value;
+    _reset();
+  }
+
+  void setModel(PhotoAiModel value) {
+    if (value == model) return;
+    _model = value;
+    // Selecting a model enables its native scale.
+    _scale = value.scales.first;
+    _reset();
+  }
+
+  void _reset() {
     _wanted = null;
     _completed = null;
     _result = null;
@@ -54,7 +69,7 @@ class PhotoAiSession extends ChangeNotifier {
 
   RenderedFrame preview(PhotoRenderInput input) {
     if (!enabled) return input.render();
-    input = input.withAiScale(scale);
+    input = input.withAiScale(scale, model: model);
     if (!input.supportsAiScale) {
       _wanted = null;
       _pending = null;
@@ -104,10 +119,14 @@ class PhotoAiSession extends ChangeNotifier {
     }
   }
 
-  Future<RenderedFrame> export(PhotoRenderInput input, {int? scale}) async {
+  Future<RenderedFrame> export(
+    PhotoRenderInput input, {
+    int? scale,
+    PhotoAiModel? model,
+  }) async {
     final selectedScale = scale ?? this.scale;
     if (selectedScale == 0) return input.render();
-    input = input.withAiScale(selectedScale);
+    input = input.withAiScale(selectedScale, model: model ?? this.model);
     if (!input.supportsAiScale) {
       throw const FormatException('当前照片不支持此 AI 倍率（输出每边最多 1024）');
     }

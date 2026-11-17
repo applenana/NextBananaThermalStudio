@@ -1,10 +1,13 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import '../fusion/fusion.dart';
 import 'render_params.dart';
 import 'render_pipeline.dart';
+import 'photo_ai_model.dart';
+import 'photo_ai_runtime.dart';
 
 typedef _Native = Int32 Function(Pointer<Float>, Int32, Int32, Pointer<Float>);
 typedef _Infer = int Function(Pointer<Float>, int, int, Pointer<Float>);
@@ -127,6 +130,7 @@ class PhotoRenderInput {
   final int visibleW, visibleH;
   final double? min, max;
   final int aiScale;
+  final PhotoAiModel aiModel;
   const PhotoRenderInput({
     required this.temperatures,
     required this.width,
@@ -138,22 +142,25 @@ class PhotoRenderInput {
     this.min,
     this.max,
     this.aiScale = 2,
+    this.aiModel = PhotoAiModel.espcn,
   });
 
-  PhotoRenderInput withAiScale(int scale) => PhotoRenderInput(
-    temperatures: temperatures,
-    width: width,
-    height: height,
-    params: params,
-    visibleRgb: visibleRgb,
-    visibleW: visibleW,
-    visibleH: visibleH,
-    min: min,
-    max: max,
-    aiScale: scale,
-  );
+  PhotoRenderInput withAiScale(int scale, {PhotoAiModel? model}) =>
+      PhotoRenderInput(
+        temperatures: temperatures,
+        width: width,
+        height: height,
+        params: params,
+        visibleRgb: visibleRgb,
+        visibleW: visibleW,
+        visibleH: visibleH,
+        min: min,
+        max: max,
+        aiScale: scale,
+        aiModel: model ?? aiModel,
+      );
 
-  bool get supportsAiScale => supportsPhotoAiScale(
+  bool get supportsAiScale => aiModel.supports(
     width,
     params.thermalView.enabled &&
             params.thermalView.restoresMlxSquareChain &&
@@ -177,6 +184,7 @@ class PhotoRenderInput {
   );
 
   RenderedFrame enhance() {
+    if (aiModel.external) throw StateError('热像模型必须使用后台异步推理');
     // Reject oversized cascades before allocating any enlarged render buffers.
     if (!supportsAiScale) {
       throw const FormatException('当前照片不支持此 AI 倍率（输出每边最多 1024）');
@@ -203,6 +211,39 @@ class PhotoRenderInput {
       visibleRgb: visibleRgb,
       visibleW: visibleW,
       visibleH: visibleH,
+    );
+  }
+
+  Future<RenderedFrame> enhanceAsync() async {
+    if (!aiModel.external) return Isolate.run(enhance);
+    if (!supportsAiScale) throw const FormatException('当前照片不支持此模型倍率');
+    final (measured, source) = await Isolate.run(() {
+      final measured = render(scale: aiScale);
+      final source = renderPipeline(
+        thermalFrame: temperatures,
+        srcW: width,
+        srcH: height,
+        params: params.copyWith(upsampleScale: 1, fusion: const FusionParams()),
+        minOverride: measured.tMin,
+        maxOverride: measured.tMax,
+      );
+      return (measured, source);
+    });
+    final enhanced = await PhotoAiRuntime.shared.infer(
+      aiModel,
+      source.normalizedField,
+      source.width,
+      source.height,
+    );
+    return Isolate.run(
+      () => applyAiDisplay(
+        measured,
+        enhanced,
+        params,
+        visibleRgb: visibleRgb,
+        visibleW: visibleW,
+        visibleH: visibleH,
+      ),
     );
   }
 }

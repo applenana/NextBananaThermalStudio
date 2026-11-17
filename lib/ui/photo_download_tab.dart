@@ -1569,6 +1569,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
 
   Future<void> _exportPng() async {
     final exportAiScale = _ai.scale;
+    final exportAiModel = _ai.model;
+    final exportMarkers = List<TempMarker>.of(_markers);
+    final exportOverlay = _tempOverlayEnabled;
     final dec = _decoded;
     final sel = _selected;
     if (dec == null || sel == null) return;
@@ -1621,13 +1624,14 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           max: dec.tMax,
         ),
         scale: exportAiScale,
+        model: exportAiModel,
       );
       final pngBytes = await _renderToPng(
         r,
-        _markers,
-        overlayMin: _tempOverlayEnabled ? r.tMin : null,
-        overlayMax: _tempOverlayEnabled ? r.tMax : null,
-        overlayAvg: _tempOverlayEnabled
+        exportMarkers,
+        overlayMin: exportOverlay ? r.tMin : null,
+        overlayMax: exportOverlay ? r.tMax : null,
+        overlayAvg: exportOverlay
             ? (dec.thermal != null ? computeAvgC(dec.thermal!) : null)
             : null,
       );
@@ -1635,7 +1639,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       final f = File(
         p.join(
           out.path,
-          '${p.basenameWithoutExtension(sel.filename)}${exportAiScale != 0 ? "_ai${exportAiScale}x" : ""}.png',
+          '${p.basenameWithoutExtension(sel.filename)}${exportAiScale != 0 ? "_ai_${exportAiModel.id}_${exportAiScale}x" : ""}.png',
         ),
       );
       await f.writeAsBytes(pngBytes);
