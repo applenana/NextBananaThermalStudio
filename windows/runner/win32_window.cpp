@@ -4,6 +4,8 @@
 #include <dwmapi.h>
 #include <flutter_windows.h>
 #include <windowsx.h>
+#include <chrono>
+#include <future>
 
 #include "resource.h"
 
@@ -177,6 +179,7 @@ LRESULT CALLBACK SplashWndProc(HWND hwnd, UINT msg, WPARAM wparam,
     }
     case WM_DESTROY:
       KillTimer(hwnd, 1);
+      PostQuitMessage(0);  // Ends only the splash thread's message loop.
       return 0;
   }
   return DefWindowProc(hwnd, msg, wparam, lparam);
@@ -229,6 +232,7 @@ HWND CreateSplashWindow() {
   // leaving the user staring at the desktop with only a taskbar icon.
   ShowWindow(hwnd, SW_SHOW);
   SetForegroundWindow(hwnd);
+  UpdateWindow(hwnd);  // Paint before signalling readiness to engine startup.
   return hwnd;
 }
 
@@ -299,6 +303,50 @@ Win32Window::~Win32Window() {
   Destroy();
 }
 
+void Win32Window::StartSplash() {
+  // The engine/plugin constructors run synchronously on the main thread.
+  // A separate window-owning thread keeps WM_PAINT/WM_TIMER responsive there.
+  std::promise<HWND> ready;
+  auto first_paint = ready.get_future();
+  splash_thread_ = std::thread([ready = std::move(ready)]() mutable {
+    const HWND splash = CreateSplashWindow();
+    ready.set_value(splash);
+    if (!splash) return;
+    MSG msg{};
+    while (GetMessage(&msg, nullptr, 0, 0) > 0) {
+      TranslateMessage(&msg);
+      DispatchMessage(&msg);
+    }
+  });
+  // Activating a window on another UI thread can send synchronous messages
+  // back here. Service sent messages while waiting to avoid a startup deadlock.
+  while (first_paint.wait_for(std::chrono::milliseconds(10)) !=
+         std::future_status::ready) {
+    MSG message{};
+    PeekMessage(&message, nullptr, 0, 0, PM_NOREMOVE);
+  }
+  splash_hwnd_ = first_paint.get();
+}
+
+void Win32Window::StopSplash() {
+  // DestroyWindow must execute on the thread that created the splash.
+  if (splash_hwnd_) {
+    PostMessage(splash_hwnd_, WM_CLOSE, 0, 0);
+    splash_hwnd_ = nullptr;
+  }
+  if (splash_thread_.joinable()) {
+    // Closing the active popup can synchronously activate this host. Do not
+    // block its message handling while joining the popup's owning thread.
+    HANDLE thread = splash_thread_.native_handle();
+    while (MsgWaitForMultipleObjects(1, &thread, FALSE, INFINITE,
+                                    QS_SENDMESSAGE) == WAIT_OBJECT_0 + 1) {
+      MSG message{};
+      PeekMessage(&message, nullptr, 0, 0, PM_NOREMOVE);
+    }
+    splash_thread_.join();
+  }
+}
+
 bool Win32Window::Create(const std::wstring& title,
                          const Point& origin,
                          const Size& size) {
@@ -324,30 +372,25 @@ bool Win32Window::Create(const std::wstring& title,
   }
 
   UpdateTheme(window);
+  SetWindowPos(window, nullptr, 0, 0, 0, 0,
+               SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE |
+                   SWP_NOZORDER | SWP_NOACTIVATE);
+  GetWindowRect(window, &splash_target_rect_);
+  splash_active_ = true;
+  StartSplash();
 
-  bool created = OnCreate();
-  if (created) {
-    // Trigger WM_NCCALCSIZE recalculation so the custom (frameless) NC layout applies.
-    SetWindowPos(window, nullptr, 0, 0, 0, 0,
-                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE |
-                     SWP_NOZORDER | SWP_NOACTIVATE);
-
-    // Remember the intended on-screen rect.
-    GetWindowRect(window, &splash_target_rect_);
-
-    // Spawn the transparent draggable splash popup. The main window is
-    // moved off-screen (instead of hidden) so the Flutter engine treats
-    // it as visible and actually produces the first frame; otherwise the
-    // SetNextFrameCallback would never fire and DismissSplash() would
-    // never run unless the user manually interacted with the splash.
-    splash_hwnd_ = CreateSplashWindow();
-    const int w = splash_target_rect_.right - splash_target_rect_.left;
-    const int h = splash_target_rect_.bottom - splash_target_rect_.top;
-    SetWindowPos(window, nullptr, -32000, -32000, w, h,
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    ShowWindow(window, SW_SHOWNA);
+  // Keep the host visible off-screen so Flutter produces a first frame.
+  // Prepare this before OnCreate: that call boots the engine and registers plugins.
+  const int w = splash_target_rect_.right - splash_target_rect_.left;
+  const int h = splash_target_rect_.bottom - splash_target_rect_.top;
+  SetWindowPos(window, nullptr, -32000, -32000, w, h,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+  ShowWindow(window, SW_SHOWNA);
+  if (!OnCreate()) {
+    Destroy();
+    return false;
   }
-  return created;
+  return true;
 }
 
 bool Win32Window::Show() {
@@ -528,6 +571,8 @@ Win32Window::MessageHandler(HWND hwnd,
 }
 
 void Win32Window::Destroy() {
+  splash_active_ = false;
+  StopSplash();
   if (child_content_ && IsWindow(child_content_)) {
     RemoveWindowSubclass(child_content_, ChildWndProc, 1);
   }
@@ -564,8 +609,8 @@ void Win32Window::SetChildContent(HWND content) {
   // production of the first frame (and thus SetNextFrameCallback) to the
   // child view being visible. Hiding it caused DismissSplash to never fire
   // until the user manually interacted with the splash window.
-  // The top-level window stays hidden until DismissSplash; since the child
-  // is parented to it, no pixels reach the screen anyway while splash is up.
+  // The top-level window stays off-screen until DismissSplash; the child
+  // therefore produces frames without covering the startup popup.
   SetFocus(child_content_);
 }
 
@@ -610,13 +655,8 @@ void Win32Window::DismissSplash() {
     }
   }
 
-  // Destroy splash last so the foreground transfer above can complete with
-  // the splash still owning input; otherwise z-order returns to the taskbar
-  // / desktop and the main window loses the activation race.
-  if (splash_hwnd_) {
-    DestroyWindow(splash_hwnd_);
-    splash_hwnd_ = nullptr;
-  }
+  // Close on its owning thread after foreground transfer has completed.
+  StopSplash();
 }
 
 RECT Win32Window::GetClientArea() {

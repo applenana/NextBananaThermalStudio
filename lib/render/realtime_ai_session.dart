@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:image/image.dart' as img;
 import 'ai_super_resolution.dart';
 import 'photo_ai_progress.dart';
 import 'render_pipeline.dart';
@@ -26,8 +25,6 @@ class RealtimeAiSession extends ChangeNotifier {
   PhotoRenderInput? _pending;
   Float32List? _lastSubmitted;
   RenderedFrame? _result;
-  Uint8List? _displayRgb;
-  (int, int)? _displaySize;
   PhotoAiProgress? progress;
   String? error;
   int? elapsedMs;
@@ -45,8 +42,6 @@ class RealtimeAiSession extends ChangeNotifier {
     _lastSubmitted = null;
     _configuration = null;
     _result = null;
-    _displayRgb = null;
-    _displaySize = null;
     error = null;
     progress = null;
     elapsedMs = null;
@@ -104,8 +99,6 @@ class RealtimeAiSession extends ChangeNotifier {
               input.enhanceAsync(onProgress: report));
       if (current()) {
         _result = result;
-        _displayRgb = null;
-        _displaySize = null;
         elapsedMs = clock.elapsedMilliseconds;
       }
     } catch (e) {
@@ -113,7 +106,6 @@ class RealtimeAiSession extends ChangeNotifier {
         error = 'AI 失败，已恢复普通画面；关闭后重开可重试：$e';
         _result = null;
         _pending = null;
-        _displayRgb = null;
         progress = null;
       }
     } finally {
@@ -125,43 +117,9 @@ class RealtimeAiSession extends ChangeNotifier {
     }
   }
 
-  /// Keep the existing canvas/measurement coordinate grid, including recorder
-  /// points. PFT infers at 3x; only its RGB is resized for the selected grid.
-  RenderedFrame display(RenderedFrame measured) {
-    final enhanced = _result;
-    if (!enabled || enhanced == null) return measured;
-    final size = (measured.width, measured.height);
-    if (_displayRgb == null || _displaySize != size) {
-      _displayRgb = (enhanced.width, enhanced.height) == size
-          ? enhanced.rgb
-          : img
-                .copyResize(
-                  img.Image.fromBytes(
-                    width: enhanced.width,
-                    height: enhanced.height,
-                    bytes: enhanced.rgb.buffer,
-                    bytesOffset: enhanced.rgb.offsetInBytes,
-                    numChannels: 3,
-                  ),
-                  width: measured.width,
-                  height: measured.height,
-                  interpolation: img.Interpolation.linear,
-                )
-                .getBytes(order: img.ChannelOrder.rgb);
-      _displaySize = size;
-    }
-    return RenderedFrame(
-      rgb: _displayRgb!,
-      width: measured.width,
-      height: measured.height,
-      normalizedField: measured.normalizedField,
-      temperatureField: measured.temperatureField,
-      tMin: measured.tMin,
-      tMax: measured.tMax,
-      thermalColorScaleRgb: measured.thermalColorScaleRgb,
-      hasFiniteTemperatureData: measured.hasFiniteTemperatureData,
-    );
-  }
+  /// Full native AI RGB for display only. The canvas retains its independent
+  /// measured frame for temperatures, markers and recorder coordinates.
+  RenderedFrame? get enhancedFrame => enabled ? _result : null;
 
   @override
   void dispose() {

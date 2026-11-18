@@ -41,14 +41,16 @@ inference immediately, runs only one job, and overwrites a single pending slot
 with the newest sensor frame. New arrivals do not discard a finished valid job.
 The shared worker serializes live and photo requests. Source preprocessing and
 coloring execute in Dart isolates; CUDA is used when available, with CPU fallback.
-The header shows actual block progress, backend and the previous job duration.
+The header shows actual block progress, backend, the native displayed AI dimensions
+and the previous job duration; the first job explicitly indicates ordinary preview.
 
 Live display uses the latest completed AI RGB while measured temperatures,
 markers and legend continue updating from the current sensor frame. AI image
 updates therefore lag the measurements by the inference/queue time; this is not
-an increase in sensor rate or true measurement resolution. RGB is resized to the
-existing canvas grid so measurement/recording coordinates do not move when AI is
-toggled. There is no AI change to captured raw photo/video data. Normal and
+an increase in sensor rate or true measurement resolution. The canvas accepts the native 3× RGB separately from the measurement grid,
+without shrinking it to the ordinary upsample size. Bilinear screen scaling
+avoids magnifying output pixels into blocks. Measurement/recording coordinates
+do not move when AI is toggled. There is no AI change to captured raw photo/video data. Normal and
 fullscreen views share this state. Disabling, stopping/disconnecting, or changing
 render parameters discards old results. Errors restore ordinary display; toggle
 AI off/on to retry. While loading, ordinary live rendering remains visible.

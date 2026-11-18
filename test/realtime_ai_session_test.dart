@@ -53,30 +53,24 @@ void main() {
       jobs[0].complete(enhanced);
       await Future<void>.delayed(Duration.zero);
       expect(inputs, [first, latest]);
-      // AI RGB is resized without moving measurement/recorder coordinates.
+      // The native result must reach the canvas without resizing to its
+      // independent ordinary 2x measurement grid.
       final measured = latest.render();
-      final display = ai.display(measured);
-      expect((display.width, display.height), (10, 6));
-      expect(display.rgb.length, 180);
-      expect(display.rgb, isNot(measured.rgb));
-      expect(
-        identical(display.temperatureField, measured.temperatureField),
-        isTrue,
-      );
-      expect(
-        identical(display.normalizedField, measured.normalizedField),
-        isTrue,
-      );
-      expect(
-        identical(display.thermalColorScaleRgb, measured.thermalColorScaleRgb),
-        isTrue,
-      );
-      expect((display.tMin, display.tMax), (measured.tMin, measured.tMax));
+      final display = ai.enhancedFrame!;
+      expect((measured.width, measured.height), (10, 6));
+      expect((display.width, display.height), (15, 9));
+      expect(display.rgb.length, 405);
+      expect(identical(display, enhanced), isTrue);
+      expect(identical(display.rgb, enhanced.rgb), isTrue);
+      expect(display.rgb, isNot(first.render(scale: 3).rgb));
       jobs[1].complete(latest.render(scale: 3));
       await Future<void>.delayed(Duration.zero);
       expect(ai.busy, isFalse);
+      expect(ai.enhancedFrame, isNotNull);
       ai.submit(latest);
       expect(jobs.length, 2);
+      ai.setEnabled(false);
+      expect(ai.enhancedFrame, isNull);
     },
   );
 
@@ -104,8 +98,7 @@ void main() {
       expect(ai.progress, isNull);
       jobs[0].complete(first.render(scale: 3));
       await Future<void>.delayed(Duration.zero);
-      final measured = next.render();
-      expect(identical(ai.display(measured), measured), isTrue);
+      expect(ai.enhancedFrame, isNull);
       expect(jobs.length, 2);
       final changed = input(
         30,
@@ -114,12 +107,12 @@ void main() {
       ai.submit(changed);
       jobs[1].complete(next.render(scale: 3));
       await Future<void>.delayed(Duration.zero);
-      expect(identical(ai.display(measured), measured), isTrue);
+      expect(ai.enhancedFrame, isNull);
       expect(jobs.length, 3);
       ai.clear(); // Stopped stream must not retain its last image.
       jobs[2].complete(changed.render(scale: 3));
       await Future<void>.delayed(Duration.zero);
-      expect(identical(ai.display(measured), measured), isTrue);
+      expect(ai.enhancedFrame, isNull);
     },
   );
 
@@ -140,8 +133,7 @@ void main() {
       expect(ai.error, contains('runtime failed'));
       ai.submit(input(1));
       expect(calls, 1);
-      final measured = input(2).render();
-      expect(identical(ai.display(measured), measured), isTrue);
+      expect(ai.enhancedFrame, isNull);
       ai.setEnabled(false);
       ai.setEnabled(true);
       ai.submit(input(3));

@@ -13,7 +13,7 @@ import 'colormap.dart';
 /// * [mappingCurve]: 'linear' 或 'nonlinear' (S 形曲线).
 /// * [useCustomColors]=true 时走三色线性插值 (cold→mid→hot).
 /// * 否则按 [colormapName] 取内置 colormap, 数据先线性裁剪到 0.05~0.95
-///   再查表 (与 fusion_utils.py 一致).
+///   再查表 (与 fusion_utils.py 一致)。固件铁热使用完整 0~255 范围。
 Uint8List colorize({
   required Float32List normalized,
   required int width,
@@ -64,9 +64,10 @@ Uint8List colorize({
   }
 
   final lut = getColormapLut(colormapName);
+  final firmwarePalette = colormapName.toLowerCase() == 'iron';
   for (int i = 0, j = 0; i < data.length; i++, j += 3) {
     // 裁剪到 0.05~0.95 (避免两端过黑/过白, 与 Python 一致)
-    final clipped = data[i] * 0.9 + 0.05;
+    final clipped = firmwarePalette ? data[i] : data[i] * 0.9 + 0.05;
     final idx = (clipped * 255.0).round().clamp(0, 255);
     out[j] = lut[idx * 3];
     out[j + 1] = lut[idx * 3 + 1];

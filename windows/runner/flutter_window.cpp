@@ -133,8 +133,8 @@ bool FlutterWindow::OnCreate() {
     if (self) PostMessage(self, kSplashDismissMsg, 0, 0);
   });
 
-  // Fallback: if for any reason SetNextFrameCallback never fires, dismiss
-  // the splash after a safety interval so the user is never stuck.
+  // Request another frame if startup is slow. A timer must not dismiss the
+  // splash into an empty host before Dart initialization/first-frame completes.
   SetTimer(self, kSplashFallbackTimerId, 2500, nullptr);
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -174,8 +174,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     return 0;
   }
   if (message == WM_TIMER && wparam == kSplashFallbackTimerId) {
-    KillTimer(hwnd, kSplashFallbackTimerId);
-    DismissSplash();
+    if (flutter_controller_) flutter_controller_->ForceRedraw();
     return 0;
   }
 
@@ -191,7 +190,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
 
   switch (message) {
     case WM_FONTCHANGE:
-      flutter_controller_->engine()->ReloadSystemFonts();
+      if (flutter_controller_) flutter_controller_->engine()->ReloadSystemFonts();
       break;
   }
 

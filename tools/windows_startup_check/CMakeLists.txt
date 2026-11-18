@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.14)
+project(startup_check LANGUAGES CXX)
+get_filename_component(APP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(EPHEMERAL "${APP_ROOT}/windows/flutter/ephemeral")
+add_executable(startup_check startup_check.cpp "${APP_ROOT}/windows/runner/win32_window.cpp")
+target_compile_features(startup_check PRIVATE cxx_std_17)
+target_compile_definitions(startup_check PRIVATE UNICODE _UNICODE)
+target_include_directories(startup_check PRIVATE "${APP_ROOT}/windows/runner" "${EPHEMERAL}")
+target_link_libraries(startup_check PRIVATE "${EPHEMERAL}/flutter_windows.dll.lib" dwmapi comctl32)
+add_custom_command(TARGET startup_check POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${EPHEMERAL}/flutter_windows.dll" "$<TARGET_FILE_DIR:startup_check>")

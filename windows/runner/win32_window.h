@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 
 // A class abstraction for a high DPI-aware Win32 Window. Intended to be
 // inherited from by classes that wish to specialize with custom
@@ -56,8 +57,8 @@ class Win32Window {
   RECT GetClientArea();
 
   // Splash overlay control. A small, draggable, transparent-background
-  // popup window is created during Win32Window::Create() and the main
-  // top-level window stays hidden until DismissSplash() is invoked (from
+  // popup is painted on its own thread before engine startup. The main
+  // top-level window stays off-screen until DismissSplash() is invoked (from
   // the Flutter first-frame callback). This gives the user immediate
   // visual feedback while the engine boots, and the popup can be moved
   // by dragging anywhere on it.
@@ -117,8 +118,11 @@ class Win32Window {
   // window handle for hosted content.
   HWND child_content_ = nullptr;
 
-  // Independent transparent popup window shown during engine boot.
+  // Independent popup and its window-owning thread, active during engine boot.
   HWND splash_hwnd_ = nullptr;
+  std::thread splash_thread_;
+  void StartSplash();
+  void StopSplash();
 
   // When true, the main top-level window is kept hidden and the splash
   // popup is shown instead. Flipped to false by DismissSplash() once

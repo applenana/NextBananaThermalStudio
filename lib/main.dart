@@ -237,17 +237,13 @@ void main() async {
     ], await rootBundle.loadString('assets/licenses/thermal_pft.txt'));
   });
   WidgetsFlutterBinding.ensureInitialized();
-  await _loadPersistedSettings();
-  try {
-    await AppUpdateService.instance.initialize();
-  } catch (_) {
-    // 版本信息插件不可用时不阻止主程序启动，设置页仍可提示检查失败。
-  }
-  try {
-    await TemperatureHistoryStore.instance.initialize();
-  } catch (_) {
-    // 历史目录不可用时不阻止实时测温，历史页会显示具体错误。
-  }
+  // Independent startup I/O can overlap. The native splash keeps animating
+  // until these finish and Flutter renders the actual home screen.
+  await Future.wait([
+    _loadPersistedSettings(),
+    _initializeOptionalService(AppUpdateService.instance.initialize),
+    _initializeOptionalService(TemperatureHistoryStore.instance.initialize),
+  ]);
   // Windows: 启动系统亮度轮询 (Flutter embedder 在部分 LTSC 上
   // 读不到 platformBrightness, 这里直接读注册表兑定).
   startWindowsBrightnessWatcher();
@@ -270,6 +266,16 @@ void main() async {
     appConnectionBarExpanded.value = false;
   }
   runApp(const BananaThermalApp());
+}
+
+Future<void> _initializeOptionalService(
+  Future<void> Function() initialize,
+) async {
+  try {
+    await initialize();
+  } catch (_) {
+    // Optional services expose their own errors without blocking the main UI.
+  }
 }
 
 class BananaThermalApp extends StatelessWidget {

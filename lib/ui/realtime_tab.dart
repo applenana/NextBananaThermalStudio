@@ -446,7 +446,6 @@ class _ThermalCardState extends State<_ThermalCard> {
         visibleW: supportsVisibleLight ? app.visibleWidth : 0,
         visibleH: supportsVisibleLight ? app.visibleHeight : 0,
       );
-      frame = app.realtimeAi.display(frame);
     }
 
     final headerPad = edge
@@ -513,6 +512,7 @@ class _ThermalCardState extends State<_ThermalCard> {
           )
         : ThermalCanvas(
             frame: frame,
+            displayFrame: app.realtimeAi.enhancedFrame,
             markers: cursorMode ? const [] : _liveMarkers(frame),
             onAddMarker: (supportsViewTools && !cursorMode)
                 ? (px, py, _) => _store.add(px, py)
@@ -810,7 +810,6 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
         visibleW: supportsVisibleLight ? app.visibleWidth : 0,
         visibleH: supportsVisibleLight ? app.visibleHeight : 0,
       );
-      frame = app.realtimeAi.display(frame);
     }
     final liveMarkers = (frame == null || cursorMode)
         ? const <TempMarker>[]
@@ -875,6 +874,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                           )
                         : ThermalCanvas(
                             frame: frame,
+                            displayFrame: app.realtimeAi.enhancedFrame,
                             markers: liveMarkers,
                             onAddMarker: cursorMode
                                 ? null
@@ -1948,6 +1948,7 @@ class _RealtimeAiSwitch extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final progress = app.realtimeAi.progress;
+    final enhanced = app.realtimeAi.enhancedFrame;
     final resultAvailable = PhotoAiRuntime.available(PhotoAiModel.pftTv);
     return Tooltip(
       message: resultAvailable
@@ -1977,7 +1978,7 @@ class _RealtimeAiSwitch extends StatelessWidget {
                     app.realtimeAi.error ??
                         (progress == null
                             ? '等待热像帧'
-                            : '${progress.backendLabel} ${progress.label}'
+                            : '${enhanced == null ? "首帧处理中 · 普通画面" : "AI ${enhanced.width}×${enhanced.height}"} · ${progress.backendLabel} ${progress.label}'
                                   '${app.realtimeAi.elapsedMs == null ? "" : " · 上帧 ${app.realtimeAi.elapsedMs} ms"}'),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -2908,6 +2909,7 @@ class _ColormapDropdown extends StatelessWidget {
 
   /// 色盘 key (英文, 与 colormap 查表保持一致) -> 中文显示名.
   static const _names = <String, String>{
+    'iron': '铁热',
     'jet': '喷射',
     'hot': '热力',
     'inferno': '炽焰',

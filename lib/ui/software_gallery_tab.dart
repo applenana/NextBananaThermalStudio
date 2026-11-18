@@ -24,6 +24,7 @@ import '../app_state.dart';
 import '../main.dart'
     show appCloseSoftwareDetail, appSoftwareDetailOpen, appPhotoDownloadDir;
 import '../fusion/fusion.dart';
+import '../fusion/colormap.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
 import '../render/ai_super_resolution.dart';
@@ -871,6 +872,7 @@ class _GalleryThumbCache {
     if (!mn.isFinite || !mx.isFinite) return null;
     final span = (mx - mn).abs() < 1e-6 ? 1.0 : (mx - mn);
     final image = img.Image(width: w, height: h, numChannels: 3);
+    final lut = getColormapLut(kDefaultPhotoColormap);
     for (int y = 0; y < h; y++) {
       for (int x = 0; x < w; x++) {
         final v = data[y * w + x];
@@ -878,37 +880,11 @@ class _GalleryThumbCache {
         if (t.isNaN) t = 0;
         if (t < 0) t = 0;
         if (t > 1) t = 1;
-        // Iron 调色板 5 段: 黑 -> 紫 -> 红 -> 黄 -> 白.
-        final rgb = _ironRgb(t);
-        image.setPixelRgb(x, y, rgb[0], rgb[1], rgb[2]);
+        final index = (t * 255).round() * 3;
+        image.setPixelRgb(x, y, lut[index], lut[index + 1], lut[index + 2]);
       }
     }
     return Uint8List.fromList(img.encodePng(image, level: 6));
-  }
-
-  // Iron 调色板查表 (近似): t in [0,1] -> RGB.
-  static List<int> _ironRgb(double t) {
-    // 5 段: (0.00) 黑(0,0,0) -> (0.25) 紫(80,0,128)
-    // -> (0.50) 红(230,40,40) -> (0.75) 黄(255,200,0) -> (1.00) 白(255,255,255).
-    const stops = <List<num>>[
-      [0.00, 0, 0, 0],
-      [0.25, 80, 0, 128],
-      [0.50, 230, 40, 40],
-      [0.75, 255, 200, 0],
-      [1.00, 255, 255, 255],
-    ];
-    for (int i = 0; i < stops.length - 1; i++) {
-      final a = stops[i];
-      final b = stops[i + 1];
-      if (t >= a[0] && t <= b[0]) {
-        final k = (t - a[0]) / (b[0] - a[0]);
-        final r = (a[1] + (b[1] - a[1]) * k).round();
-        final g = (a[2] + (b[2] - a[2]) * k).round();
-        final bb = (a[3] + (b[3] - a[3]) * k).round();
-        return [r, g, bb];
-      }
-    }
-    return [255, 255, 255];
   }
 }
 
@@ -1036,6 +1012,14 @@ class _DetailBodyState extends State<_DetailBody> {
         } else {
           _params = context.read<AppState>().renderParams;
         }
+      }
+      // Show the export default in the preview too; subsequent palette choices
+      // remain authoritative for ordinary and AI PNG exports.
+      if (r.type == CapturePackageHeader.typePhoto && _params != null) {
+        _params = _params!.copyWith(
+          colormapName: kDefaultPhotoColormap,
+          useCustomColors: false,
+        );
       }
       if (r.frameCount > 0) {
         await _selectFrame(0);
@@ -2688,6 +2672,7 @@ class _SlotTimelineBar extends StatelessWidget {
 // 横排参数行 (复制 photo_download_tab.dart 同款风格)
 // ============================================================
 const Map<String, String> _colormapZh = {
+  'iron': '铁热',
   'jet': '喷流',
   'hot': '热焰',
   'cool': '冷蓝',

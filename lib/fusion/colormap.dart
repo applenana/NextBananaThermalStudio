@@ -9,6 +9,7 @@ import 'dart:typed_data';
 
 /// 内置 colormap 名称.
 const List<String> kBuiltinColormaps = [
+  'iron',
   'jet',
   'hot',
   'inferno',
@@ -22,6 +23,9 @@ const List<String> kBuiltinColormaps = [
   'rainbow',
 ];
 
+/// Still-photo previews and exports share this default; live defaults are separate.
+const String kDefaultPhotoColormap = 'iron';
+
 /// 返回 256*3 的 uint8 LUT (R,G,B,R,G,B,...).
 ///
 /// 实现说明:
@@ -32,6 +36,8 @@ const List<String> kBuiltinColormaps = [
 Uint8List getColormapLut(String name) {
   final lower = name.toLowerCase();
   switch (lower) {
+    case 'iron':
+      return _ironLut;
     case 'jet':
       return _generate(_jet);
     case 'hot':
@@ -58,6 +64,39 @@ Uint8List getColormapLut(String name) {
     default:
       return _generate(_jet);
   }
+}
+
+// Ported from RP2040-CB360/src/display/view.cpp, paletteColor(Palette::Iron).
+// Keep the firmware's six stops and integer rounding. Retain RGB888 before the
+// final LCD RGB565 packing to avoid adding display quantization to PNG exports.
+final Uint8List _ironLut = _buildIronLut();
+Uint8List _buildIronLut() {
+  const positions = [0, 22, 48, 72, 90, 100];
+  const colors = [
+    [12, 9, 24],
+    [88, 12, 48],
+    [190, 35, 28],
+    [250, 142, 28],
+    [255, 226, 92],
+    [255, 255, 238],
+  ];
+  final lut = Uint8List(256 * 3);
+  for (var level = 0; level < 256; level++) {
+    var segment = 0;
+    while (segment < 4 && level * 100 > positions[segment + 1] * 255) {
+      segment++;
+    }
+    final span = (positions[segment + 1] - positions[segment]) * 255;
+    final offset = level * 100 - positions[segment] * 255;
+    for (var channel = 0; channel < 3; channel++) {
+      lut[level * 3 + channel] =
+          (colors[segment][channel] * (span - offset) +
+              colors[segment + 1][channel] * offset +
+              span ~/ 2) ~/
+          span;
+    }
+  }
+  return lut;
 }
 
 typedef _CmapFn = List<double> Function(double t);

@@ -21,6 +21,7 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../cb360/controller.dart';
 import '../fusion/fusion.dart';
+import '../fusion/colormap.dart';
 import 'banana_toast.dart';
 import 'app_font.dart';
 import '../main.dart'
@@ -97,7 +98,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   /// [AppState.renderParams]. 点开一张新图时重置为默认值; 如果是双光图
   /// (visibleRgb 非空) 则解码完成后自动将 fusion 模式升为 blend.
   /// 用户在预览详情里调参只影响本页, 切图 / 退出后丝毫不注入实时面板.
-  RenderParams _photoParams = const RenderParams();
+  RenderParams _photoParams = const RenderParams(
+    colormapName: kDefaultPhotoColormap,
+  );
   bool _photoThermalViewApplied = false;
 
   /// 用户点击固定的温度标记 (坐标以渲染后帧像素为准).
@@ -715,6 +718,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   /// 解码完成后可再调 [_applyDecodedPhotoParams] 合入照片自带的热像视图.
   void _resetPhotoParams() {
     _photoParams = RenderParams(
+      colormapName: kDefaultPhotoColormap,
       upsampleScale: context.read<AppState>().isCb360 ? 2 : 8,
     );
     _photoThermalViewApplied = false;
@@ -728,7 +732,6 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     if (dec.format == PhotoFormat.cb360Y16 && !_photoThermalViewApplied) {
       _photoParams = _photoParams.copyWith(
         upsampleScale: 2,
-        colormapName: 'plasma',
         bilateralEnabled: false,
         useCustomColors: false,
       );
@@ -2073,6 +2076,7 @@ FusionParams _fusionWith(
 
 /// 颜色映射的中文名.
 const Map<String, String> _colormapZh = {
+  'iron': '铁热',
   'jet': '喷流',
   'hot': '热焰',
   'cool': '冷蓝',

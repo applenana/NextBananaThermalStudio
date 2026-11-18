@@ -27,6 +27,10 @@ class TempMarker {
 class ThermalCanvas extends StatefulWidget {
   final RenderedFrame? frame;
 
+  /// Optional native-resolution RGB. Only its image is used; measurement and
+  /// marker coordinates continue to come from [frame]. Must have the same aspect.
+  final RenderedFrame? displayFrame;
+
   /// 是否启用鼠标悬浮取温 + 十字光标
   final bool showCursorTemp;
 
@@ -82,6 +86,7 @@ class ThermalCanvas extends StatefulWidget {
   const ThermalCanvas({
     super.key,
     required this.frame,
+    this.displayFrame,
     this.showCursorTemp = true,
     this.infoBar,
     this.placeholder = '等待数据…',
@@ -203,6 +208,9 @@ class _ThermalCanvasState extends State<ThermalCanvas>
       );
     }
 
+    final display = widget.displayFrame ?? frame;
+    assert(display.width * frame.height == display.height * frame.width);
+
     return LayoutBuilder(
       builder: (context, c) {
         final boxAspect = c.maxWidth / c.maxHeight;
@@ -294,11 +302,13 @@ class _ThermalCanvasState extends State<ThermalCanvas>
                       ? (d) => setState(() => _hoverLocal = d.localPosition)
                       : null,
                   child: RgbImageView(
-                    rgb: frame.rgb,
-                    width: frame.width,
-                    height: frame.height,
+                    rgb: display.rgb,
+                    width: display.width,
+                    height: display.height,
                     fit: BoxFit.contain,
-                    filterQuality: FilterQuality.none,
+                    filterQuality: widget.displayFrame == null
+                        ? FilterQuality.none
+                        : FilterQuality.low,
                   ),
                 ),
               ),
