@@ -1995,13 +1995,9 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
-    final progress = app.realtimeAi.progress;
     final enhanced = app.realtimeAi.enhancedFrame;
     final timings = app.realtimeAi.lastCompletedProgress;
     final connected = app.status == ConnectionStatus.connected;
-    final backend = progress?.backendLabel.isNotEmpty == true
-        ? progress!.backendLabel
-        : timings?.backendLabel ?? '—';
     return Tooltip(
       message: _modelAvailable
           ? 'Thermal-PFT TV 实时 3× 超分；温度测量仍使用原始帧'
@@ -2096,8 +2092,8 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
                   '${app.realtimeAi.outputFps?.toStringAsFixed(1) ?? "—"} AI FPS',
                 ),
                 _info(104, '上帧 ${app.realtimeAi.elapsedMs ?? "—"} ms'),
-                _info(62, backend),
-                _info(180, app.realtimeAi.error ?? progress?.label ?? '等待热像帧'),
+                if (app.realtimeAi.error != null)
+                  _info(180, app.realtimeAi.error!),
               ],
             ),
         ],
