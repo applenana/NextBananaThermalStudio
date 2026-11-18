@@ -1954,8 +1954,43 @@ class _ThermalStreamSwitch extends StatelessWidget {
   }
 }
 
-class _RealtimeAiSwitch extends StatelessWidget {
+class _RealtimeAiSwitch extends StatefulWidget {
   const _RealtimeAiSwitch();
+
+  @override
+  State<_RealtimeAiSwitch> createState() => _RealtimeAiSwitchState();
+}
+
+class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
+  late final Future<PhotoAiCudaCapability> _cuda;
+  late final bool _modelAvailable;
+
+  @override
+  void initState() {
+    super.initState();
+    _modelAvailable = PhotoAiRuntime.available(PhotoAiModel.pftTv);
+    _cuda = PhotoAiRuntime.shared.checkCuda();
+  }
+
+  Widget _info(double width, String text) => SizedBox(
+    width: width,
+    height: 24,
+    child: Align(
+      alignment: Alignment.centerLeft,
+      child: Tooltip(
+        message: text,
+        child: Text(
+          text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            fontSize: 11,
+            fontFeatures: [FontFeature.tabularFigures()],
+          ),
+        ),
+      ),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -1963,47 +1998,107 @@ class _RealtimeAiSwitch extends StatelessWidget {
     final progress = app.realtimeAi.progress;
     final enhanced = app.realtimeAi.enhancedFrame;
     final timings = app.realtimeAi.lastCompletedProgress;
-    final resultAvailable = PhotoAiRuntime.available(PhotoAiModel.pftTv);
+    final connected = app.status == ConnectionStatus.connected;
+    final backend = progress?.backendLabel.isNotEmpty == true
+        ? progress!.backendLabel
+        : timings?.backendLabel ?? '—';
     return Tooltip(
-      message: resultAvailable
+      message: _modelAvailable
           ? 'Thermal-PFT TV 实时 3× 超分；温度测量仍使用原始帧'
                 '${timings == null ? "" : "\n上帧预处理 ${timings.prepareMs} ms · 推理 ${timings.modelInferenceMs} ms · 着色 ${timings.colorMs} ms"}'
           : '未安装 Thermal-PFT Windows 扩展包',
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text('AI 实时超分 · PFT TV 3×', style: TextStyle(fontSize: 12)),
-          Transform.scale(
-            scale: 0.85,
-            child: Switch(
-              value: app.realtimeAiEnabled,
-              onChanged:
-                  resultAvailable && app.status == ConnectionStatus.connected
-                  ? app.setRealtimeAiEnabled
-                  : null,
-            ),
-          ),
-          if (app.realtimeAiEnabled)
-            Expanded(
-              child: Column(
+          Wrap(
+            spacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Row(
                 mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    app.realtimeAi.error ??
-                        (progress == null
-                            ? '等待热像帧'
-                            : '${enhanced == null ? "首帧处理中 · 普通画面" : "AI ${enhanced.width}×${enhanced.height}"} · ${progress.backendLabel} ${progress.label}'
-                                  '${app.realtimeAi.outputFps == null ? "" : " · ${app.realtimeAi.outputFps!.toStringAsFixed(1)} FPS"}'
-                                  '${app.realtimeAi.elapsedMs == null ? "" : " · 上帧 ${app.realtimeAi.elapsedMs} ms"}'),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 10),
+                  const Text(
+                    'AI 实时超分 · PFT TV 3×',
+                    style: TextStyle(fontSize: 12),
                   ),
-                  if (app.realtimeAi.busy)
-                    LinearProgressIndicator(value: progress?.fraction),
+                  Transform.scale(
+                    scale: 0.85,
+                    child: Switch(
+                      value: app.realtimeAiEnabled,
+                      onChanged: _modelAvailable && connected
+                          ? app.setRealtimeAiEnabled
+                          : null,
+                    ),
+                  ),
                 ],
               ),
+              FutureBuilder<PhotoAiCudaCapability>(
+                future: _cuda,
+                builder: (context, snapshot) {
+                  final capability = snapshot.data;
+                  final ready = capability?.available == true;
+                  final dark = Theme.of(context).brightness == Brightness.dark;
+                  final gold = dark
+                      ? const Color(0xFFE4C474)
+                      : const Color(0xFF876316);
+                  return Tooltip(
+                    message: capability == null
+                        ? '正在检测 CUDA 加速能力'
+                        : !ready
+                        ? capability.detail
+                        : !connected
+                        ? 'CUDA 已就绪，请连接设备'
+                        : '${capability.detail}\n开启 PFT TV 3×；普通插值 2× 双三次\n双边滤波：空间 0.79 / 亮度 0.50\n温度卡尔曼开启，像素卡尔曼关闭',
+                    child: OutlinedButton.icon(
+                      onPressed: ready && connected
+                          ? app.applyRealtimeAiPreset
+                          : null,
+                      icon: const Icon(Icons.auto_awesome_outlined, size: 16),
+                      label: const Text('AI 预设'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: gold,
+                        backgroundColor: ready
+                            ? gold.withValues(alpha: 0.08)
+                            : null,
+                        side: BorderSide(
+                          color: ready
+                              ? gold.withValues(alpha: 0.5)
+                              : Theme.of(context).disabledColor,
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        textStyle: const TextStyle(fontSize: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+          if (app.realtimeAiEnabled)
+            Wrap(
+              spacing: 12,
+              children: [
+                _info(
+                  112,
+                  enhanced == null
+                      ? 'AI 分辨率 —'
+                      : 'AI ${enhanced.width}×${enhanced.height}',
+                ),
+                _info(
+                  92,
+                  '${app.realtimeAi.outputFps?.toStringAsFixed(1) ?? "—"} AI FPS',
+                ),
+                _info(104, '上帧 ${app.realtimeAi.elapsedMs ?? "—"} ms'),
+                _info(62, backend),
+                _info(180, app.realtimeAi.error ?? progress?.label ?? '等待热像帧'),
+              ],
             ),
         ],
       ),

@@ -5,6 +5,12 @@ import 'dart:typed_data';
 import 'photo_ai_model.dart';
 import 'photo_ai_progress.dart';
 
+class PhotoAiCudaCapability {
+  final bool available;
+  final String detail;
+  const PhotoAiCudaCapability(this.available, this.detail);
+}
+
 /// One shared, sequential local worker for galleries and live display. No network service.
 /// Its interpreter and weights live beside the Windows executable.
 class PhotoAiRuntime {
@@ -15,6 +21,47 @@ class PhotoAiRuntime {
   Future<void> _tail = Future.value();
   Timer? _idle;
   String _diagnostic = '';
+  Future<PhotoAiCudaCapability>? _cudaProbe;
+  PhotoAiCudaCapability? cudaCapability;
+
+  /// Cache one asynchronous probe per app run; never launch Python per frame.
+  Future<PhotoAiCudaCapability> checkCuda() => _cudaProbe ??= _probeCuda();
+
+  Future<PhotoAiCudaCapability> _probeCuda() async {
+    Process? process;
+    try {
+      if (!available(PhotoAiModel.pftTv)) {
+        return cudaCapability = const PhotoAiCudaCapability(
+          false,
+          '未安装 Thermal-PFT Windows 扩展包',
+        );
+      }
+      process = await Process.start('$root/python/python.exe', [
+        '-u',
+        '$root/worker.py',
+        '--probe-cuda',
+      ], runInShell: false);
+      final output = process.stdout.transform(utf8.decoder).join();
+      final errors = process.stderr
+          .transform(const Utf8Decoder(allowMalformed: true))
+          .join();
+      final result = await Future.wait<Object>([
+        output,
+        errors,
+        process.exitCode,
+      ]).timeout(const Duration(seconds: 45));
+      if (result[2] != 0) throw StateError('CUDA 检测进程退出：${result[1]}');
+      final response = jsonDecode(result[0] as String) as Map;
+      return cudaCapability = PhotoAiCudaCapability(
+        response['cudaAvailable'] == true,
+        (response['deviceName'] ?? response['reason'] ?? 'CUDA 不可用').toString(),
+      );
+    } catch (e) {
+      return cudaCapability = PhotoAiCudaCapability(false, 'CUDA 检测失败：$e');
+    } finally {
+      process?.kill();
+    }
+  }
 
   static String get root =>
       Platform.environment['THERMAL_AI_RUNTIME'] ??

@@ -13,11 +13,34 @@ import numpy as np
 from engine import Engine
 
 
+def probe_cuda():
+    """Verify this bundled runtime can execute kernels, not just find a GPU."""
+    import torch
+    try:
+        if not torch.cuda.is_available():
+            return {'cudaAvailable': False, 'reason': 'CUDA is unavailable in this runtime'}
+        with torch.inference_mode():
+            sample = torch.ones((16, 16), device='cuda')
+            result = sample @ sample
+            torch.cuda.synchronize()
+            if result[0, 0].item() != 16:
+                raise RuntimeError('CUDA computation failed validation')
+        return {'cudaAvailable': True, 'deviceName': torch.cuda.get_device_name()}
+    except Exception as exc:
+        return {'cudaAvailable': False, 'reason': str(exc)}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', required=True)
+    parser.add_argument('--weights')
+    parser.add_argument('--probe-cuda', action='store_true')
     parser.add_argument('--device', default='auto', choices=['auto', 'cpu', 'cuda'])
     args = parser.parse_args()
+    if args.probe_cuda:
+        print(json.dumps(probe_cuda()), flush=True)
+        return
+    if not args.weights:
+        parser.error('--weights is required for inference')
     engine = Engine(args.weights, args.device)
     protocol = sys.stdout
     def progress(event):

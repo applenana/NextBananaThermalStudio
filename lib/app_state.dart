@@ -219,6 +219,35 @@ class AppState extends ChangeNotifier {
     _submitRealtimeAi();
   }
 
+  /// Apply the user-selected live preset in one configuration change.
+  void applyRealtimeAiPreset() {
+    if (status != ConnectionStatus.connected ||
+        PhotoAiRuntime.shared.cudaCapability?.available != true ||
+        !PhotoAiRuntime.available(PhotoAiModel.pftTv)) {
+      return;
+    }
+    renderParams = renderParams.copyWith(
+      upsampleScale: 2,
+      upsampleMethod: UpsampleMethod.bicubic,
+      bilateralEnabled: true,
+      bilateralSigmaSpatial: 0.79,
+      bilateralSigmaIntensity: 0.50,
+    );
+    kalmanScalarEnabled = true;
+    kalmanPixelEnabled = false;
+    _kMax.reset();
+    _kMin.reset();
+    _kAvg.reset();
+    _kPix.reset();
+    if (realtimeAiEnabled) {
+      realtimeAi.clear();
+    } else {
+      realtimeAi.setEnabled(true);
+    }
+    _submitRealtimeAi();
+    notifyListeners();
+  }
+
   void _submitRealtimeAi() {
     final frame = thermalFrame;
     if (!realtimeAiEnabled || !Platform.isWindows || frame == null) return;

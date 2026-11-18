@@ -1,11 +1,41 @@
 """Checks for local inference adaptations, not the upstream training code."""
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+from pathlib import Path
+import sys
+
+# Embedded Python's ._pth can otherwise resolve stale packaged adapters.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import torch
 from vendor import sparse_ops
 
 
 class AdapterTests(unittest.TestCase):
+    def test_cuda_probe_rejects_unavailable_runtime(self):
+        from worker import probe_cuda
+        with patch('torch.cuda.is_available', return_value=False), patch('torch.ones') as allocate:
+            self.assertFalse(probe_cuda()['cudaAvailable'])
+            allocate.assert_not_called()
+
+    def test_cuda_probe_rejects_kernel_failure(self):
+        from worker import probe_cuda
+        with patch('torch.cuda.is_available', return_value=True), \
+             patch('torch.ones', side_effect=RuntimeError('unsupported CUDA architecture')):
+            result = probe_cuda()
+            self.assertFalse(result['cudaAvailable'])
+            self.assertIn('unsupported CUDA architecture', result['reason'])
+
+    def test_cuda_probe_checks_result_and_synchronizes(self):
+        from worker import probe_cuda
+        sample = torch.ones(16, 16)
+        with patch('torch.cuda.is_available', return_value=True), \
+             patch('torch.ones', return_value=sample) as allocate, \
+             patch('torch.cuda.synchronize') as sync, \
+             patch('torch.cuda.get_device_name', return_value='Test GPU'):
+            self.assertEqual(probe_cuda(), {'cudaAvailable': True, 'deviceName': 'Test GPU'})
+            allocate.assert_called_once_with((16, 16), device='cuda')
+            sync.assert_called_once()
+
     def test_inference_mask_reuses_one_shape_and_preserves_output(self):
         from vendor.pft import PFT
         model = PFT(upscale=3, embed_dim=8, depths=[2], num_heads=2,
