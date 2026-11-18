@@ -66,7 +66,7 @@ Uint8List getColormapLut(String name) {
   }
 }
 
-// Ported from RP2040-CB360/src/display/view.cpp, paletteColor(Palette::Iron).
+// Ported from RP2040-StarThermal/src/display/view.cpp, paletteColor(Palette::Iron).
 // Keep the firmware's six stops and integer rounding. Retain RGB888 before the
 // final LCD RGB565 packing to avoid adding display quantization to PNG exports.
 final Uint8List _ironLut = _buildIronLut();

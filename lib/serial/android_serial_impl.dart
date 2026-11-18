@@ -17,7 +17,7 @@ import 'dart:typed_data';
 import 'package:usb_serial/usb_serial.dart';
 
 import 'serial_port_info.dart';
-import '../cb360/protocol.dart';
+import '../starthermal/protocol.dart';
 
 class AndroidSerialImpl {
   UsbPort? _port;

@@ -1,0 +1,5 @@
+#pragma once
+
+#ifndef STARTHERMAL_FIRMWARE_VERSION
+#define STARTHERMAL_FIRMWARE_VERSION "0.1.0"
+#endif

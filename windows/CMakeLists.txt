@@ -173,9 +173,12 @@ if(EXISTS "${FFMPEG_EXE_CACHE}")
     COMPONENT Runtime)
 endif()
 
-# Portable CB360 photo restoration core.
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../native/cb360" "${CMAKE_CURRENT_BINARY_DIR}/cb360")
-install(TARGETS cb360_restore RUNTIME DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+# Portable StarThermal photo restoration core.
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../native/starthermal" "${CMAKE_CURRENT_BINARY_DIR}/starthermal")
+install(TARGETS starthermal_restore RUNTIME DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+# Resolve the generator expression to the actual configuration output directory.
+string(CONCAT retired_library "cb" "360_restore.dll")
+install(CODE "file(REMOVE \"${BUILD_BUNDLE_DIR}/${retired_library}\")" COMPONENT Runtime)
 # Optional thermal photo models and portable Python runtime. Prepare explicitly
 # with tools/photo_ai/prepare_runtime.py; CMake never downloads model weights.
 install(CODE [[

@@ -10,7 +10,7 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../main.dart' show appConnectionBarExpanded;
 import '../serial/serial_service.dart';
-import 'cb360_controls.dart';
+import 'starthermal_controls.dart';
 
 class ConnectionBar extends StatefulWidget {
   const ConnectionBar({super.key});
@@ -70,7 +70,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
   }
 
   Widget _baudSelector(AppState app) {
-    final device = app.cb360;
+    final device = app.starthermal;
     final connected = app.status == ConnectionStatus.connected;
     return DropdownButton<int>(
       value: connected ? app.currentBaud : _baud,
@@ -382,7 +382,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
                 ),
               ],
             ),
-            if (app.cb360 != null) ...[
+            if (app.starthermal != null) ...[
               const SizedBox(height: 8),
               Wrap(
                 spacing: 12,
@@ -390,7 +390,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   _baudSelector(app),
-                  Cb360Controls(device: app.cb360!),
+                  StarThermalControls(device: app.starthermal!),
                 ],
               ),
             ],
@@ -641,7 +641,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
                     ),
                   ),
                   _StatusBadge(status: app.status),
-                  if (app.cb360 != null) Cb360Controls(device: app.cb360!),
+                  if (app.starthermal != null) StarThermalControls(device: app.starthermal!),
                 ],
               ),
 

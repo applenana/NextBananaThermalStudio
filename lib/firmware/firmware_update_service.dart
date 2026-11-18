@@ -15,6 +15,8 @@ import '../serial/serial_service.dart';
 import '../update/app_update.dart' show AppVersion, githubProxyUri;
 import 'android_uf2_flasher.dart';
 import 'firmware_update.dart';
+import 'starthermal_package.dart';
+import 'starthermal_ota.dart';
 
 enum FirmwareUpdatePhase {
   idle,
@@ -362,6 +364,7 @@ class FirmwareUpdateService {
       );
       return null;
     }
+    if (snapshot.value.busy) return null;
     if (!manual && !automaticCheckEnabled.value) return null;
     snapshot.value = const FirmwareUpdateSnapshot(
       phase: FirmwareUpdatePhase.checking,
@@ -369,8 +372,18 @@ class FirmwareUpdateService {
     );
     try {
       final catalog = await loadCatalog(force: manual);
+      if (snapshot.value.busy) return null;
       if (catalog.releases.isEmpty) {
         throw const FormatException('官方仓库没有可用的固件 Release');
+      }
+      if (!catalog.releases.any(
+        (r) => r.isStarThermal == identity.isStarThermal,
+      )) {
+        snapshot.value = FirmwareUpdateSnapshot(
+          phase: FirmwareUpdatePhase.ready,
+          message: '${identity.productName} 暂无正式固件发布',
+        );
+        return null;
       }
       final newer = findNewerFirmware(identity, catalog.releases);
       if (newer == null) {
@@ -414,7 +427,8 @@ class FirmwareUpdateService {
       throw UnsupportedError('自动烧录目前支持 Windows 和 Android');
     }
     if (!identity.canFlash) throw StateError(identity.reason);
-    if (variant.profile != identity.hardwareProfile) {
+    if (release.isStarThermal != identity.isStarThermal ||
+        variant.profile != identity.hardwareProfile) {
       throw StateError('目标固件板型与设备板型不匹配');
     }
     if (identity.hardwareProfile == FirmwareHardwareProfile.standard &&
@@ -424,7 +438,16 @@ class FirmwareUpdateService {
     if (snapshot.value.busy) throw StateError('已有固件烧录任务正在进行');
 
     _cancelDownload = false;
+    snapshot.value = FirmwareUpdateSnapshot(
+      phase: FirmwareUpdatePhase.downloading,
+      target: release,
+      message: '正在准备固件下载…',
+    );
     try {
+      if (identity.isStarThermal) {
+        await _flashStarThermal(app, identity, release, variant);
+        return;
+      }
       final bundle = await _downloadBundle(release, variant);
       await validateRp2040Uf2File(bundle.file);
       final port = app.currentPort;
@@ -922,29 +945,176 @@ class FirmwareUpdateService {
   }) async {
     final client = HttpClient()..connectionTimeout = timeout;
     try {
-      final request = await client.getUrl(source.uri);
-      request.headers
-        ..set(HttpHeaders.acceptHeader, 'application/vnd.github+json')
-        ..set('X-GitHub-Api-Version', '2022-11-28')
-        ..set(HttpHeaders.userAgentHeader, 'BananaThermalStudio-Firmware');
-      final response = await request.close().timeout(timeout);
-      if (response.statusCode != HttpStatus.ok) {
-        throw HttpException('${source.label} 返回 HTTP ${response.statusCode}');
-      }
-      final bytes = BytesBuilder(copy: false);
-      const maximumBytes = 4 * 1024 * 1024;
-      await for (final chunk in response.timeout(timeout)) {
-        if (bytes.length + chunk.length > maximumBytes) {
-          throw const FormatException('固件版本列表超过安全大小限制');
+      return await fetchFirmwareReleasePages((page) async {
+        final uri = source.uri.replace(
+          queryParameters: {...source.uri.queryParameters, 'page': '$page'},
+        );
+        final request = await client.getUrl(uri).timeout(timeout);
+        request.headers
+          ..set(HttpHeaders.acceptHeader, 'application/vnd.github+json')
+          ..set('X-GitHub-Api-Version', '2022-11-28')
+          ..set(HttpHeaders.userAgentHeader, 'BananaThermalStudio-Firmware');
+        final response = await request.close().timeout(timeout);
+        if (response.statusCode != HttpStatus.ok) {
+          throw HttpException('${source.label} 返回 HTTP ${response.statusCode}');
         }
-        bytes.add(chunk);
-      }
-      final releases = parseFirmwareReleaseList(utf8.decode(bytes.takeBytes()));
-      if (releases.isEmpty) throw const FormatException('没有有效的正式固件版本');
-      return releases;
+        final bytes = BytesBuilder(copy: false);
+        await for (final chunk in response.timeout(timeout)) {
+          if (bytes.length + chunk.length > 4 * 1024 * 1024) {
+            throw const FormatException('固件版本列表超过安全大小限制');
+          }
+          bytes.add(chunk);
+        }
+        return utf8.decode(bytes.takeBytes());
+      });
     } finally {
       client.close(force: true);
     }
+  }
+
+  Future<void> _flashStarThermal(
+    AppState app,
+    FirmwareDeviceIdentity identity,
+    FirmwareRelease release,
+    FirmwareVariant variant,
+  ) async {
+    final port = app.currentPort;
+    final baud = app.currentBaud;
+    if (port == null ||
+        app.status != ConnectionStatus.connected ||
+        identity.serialNumber == null ||
+        identity.serialNumber!.isEmpty) {
+      throw StateError('星像升级需要已连接且具有唯一序列号的设备');
+    }
+    final bundle = await _downloadStarThermalBundle(release);
+    final image = await bundle.file.readAsBytes();
+    if (sha256.convert(image).toString() != bundle.artifact.sha256) {
+      throw const FormatException('星像固件缓存校验失败');
+    }
+    validateStarThermalImage(image, release.tagName);
+    await app.starthermal?.whenIdle();
+    final current = FirmwareDeviceIdentity.fromDeviceInfo(app.deviceInfo);
+    if (_cancelDownload ||
+        app.currentPort != port ||
+        app.currentBaud != baud ||
+        !current.canFlash ||
+        !current.isStarThermal ||
+        current.deviceKey != identity.deviceKey ||
+        current.currentVersion != identity.currentVersion) {
+      throw StateError('下载期间设备连接或身份已改变，请重新连接后升级');
+    }
+    snapshot.value = FirmwareUpdateSnapshot(
+      phase: FirmwareUpdatePhase.flashing,
+      target: release,
+      progress: 0,
+      message: '正在确认星像串口身份并进入升级模式…',
+    );
+    await app.disconnect();
+    final serial = SerialService();
+    StarThermalOta? ota;
+    try {
+      await serial.open(port, baud: baud);
+      ota = StarThermalOta(input: serial.bytesStream, write: serial.writeAll);
+      await ota.verifyIdentity(identity);
+      await ota.transfer(
+        image,
+        tag: release.tagName,
+        onProgress: (progress) {
+          snapshot.value = FirmwareUpdateSnapshot(
+            phase: FirmwareUpdatePhase.flashing,
+            progress: progress,
+            target: release,
+            message: '正在通过串口更新星像，请保持供电…',
+          );
+        },
+      );
+    } finally {
+      await ota?.dispose();
+      await serial.dispose();
+    }
+    snapshot.value = FirmwareUpdateSnapshot(
+      phase: FirmwareUpdatePhase.reconnecting,
+      target: release,
+      message: '固件已提交，正在等待星像重启并回读版本…',
+    );
+    await Future<void>.delayed(const Duration(seconds: 3));
+    final connected = await _reconnect(app);
+    final updated = FirmwareDeviceIdentity.fromDeviceInfo(app.deviceInfo);
+    final version = AppVersion.tryParse(updated.currentVersion ?? '');
+    if (!connected ||
+        !updated.canFlash ||
+        !updated.isStarThermal ||
+        updated.serialNumber != identity.serialNumber ||
+        version == null ||
+        version.compareTo(release.version) != 0) {
+      throw StateError('固件已提交，但尚未确认同一台星像启动目标版本；请重新连接核对');
+    }
+    await rememberVariant(updated, variant);
+    snapshot.value = FirmwareUpdateSnapshot(
+      phase: FirmwareUpdatePhase.completed,
+      progress: 1,
+      target: release,
+      message: '星像升级完成，已核对设备身份及 ${release.tagName}',
+    );
+  }
+
+  Future<_FirmwareBundle> _downloadStarThermalBundle(
+    FirmwareRelease release,
+  ) async {
+    final directory = await _downloadDirectory(release.tagName);
+    await directory.create(recursive: true);
+    FirmwareReleaseAsset requiredAsset(String name, int limit) {
+      final asset = release.assetNamed(name);
+      if (asset == null || asset.size <= 0 || asset.size > limit) {
+        throw FormatException('星像发布附件缺失或大小异常：$name');
+      }
+      return asset;
+    }
+
+    Future<File> metadata(String name, int limit) async {
+      final asset = requiredAsset(name, limit);
+      if (!asset.hasGitHubDigest) throw FormatException('$name 缺少下载摘要');
+      return _downloadVerified(
+        asset,
+        directory,
+        expectedSize: asset.size,
+        expectedSha256: asset.sha256!,
+      );
+    }
+
+    final sums = await metadata('SHA256SUMS', 16384);
+    final signature = await metadata('SHA256SUMS.sig', 4096);
+    final signedHashes = await verifyStarThermalChecksums(
+      await sums.readAsBytes(),
+      await signature.readAsString(),
+      release.tagName,
+    );
+    final manifestAsset = requiredAsset('manifest.json', 1024 * 1024);
+    final manifestFile = await _downloadVerified(
+      manifestAsset,
+      directory,
+      expectedSize: manifestAsset.size,
+      expectedSha256: signedHashes['manifest.json']!,
+    );
+    final artifact = parseStarThermalManifest(
+      await manifestFile.readAsString(),
+      tag: release.tagName,
+    );
+    if (signedHashes[artifact.file] != artifact.sha256) {
+      throw const FormatException('星像清单与签名摘要冲突');
+    }
+    final asset = requiredAsset(artifact.file, starThermalMaximumImage);
+    if (asset.size != artifact.size ||
+        (asset.sha256 != null && asset.sha256 != artifact.sha256)) {
+      throw const FormatException('星像附件与签名清单冲突');
+    }
+    final file = await _downloadVerified(
+      asset,
+      directory,
+      expectedSize: artifact.size,
+      expectedSha256: artifact.sha256,
+    );
+    return _FirmwareBundle(file: file, artifact: artifact);
   }
 
   Future<_FirmwareBundle> _downloadBundle(

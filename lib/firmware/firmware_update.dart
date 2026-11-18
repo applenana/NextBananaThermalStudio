@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../starthermal/protocol.dart' show isStarThermalInfo;
 import '../update/app_update.dart' show AppVersion;
 
 const firmwareRepositoryOwner = 'applenana';
@@ -21,7 +22,7 @@ final _unifiedFirmwareCutover = AppVersion.tryParse('v1.8.0')!;
 
 enum FirmwareDeviceFamily { bananaThermal, unsupported }
 
-enum FirmwareHardwareProfile { dual, standard }
+enum FirmwareHardwareProfile { dual, standard, starthermal }
 
 enum FirmwareVariant {
   flash8MbPerformance(
@@ -71,6 +72,15 @@ enum FirmwareVariant {
     filesystemBytes: 5 * 1024 * 1024,
     cpuHz: 220000000,
     stabilityProfile: 'stable',
+  ),
+  starThermal8Mb(
+    environment: 'starthermal-rp2040-8m',
+    label: '星像 StarThermal · 8 MB',
+    profile: FirmwareHardwareProfile.starthermal,
+    flashBytes: 8 * 1024 * 1024,
+    filesystemBytes: 5 * 1024 * 1024,
+    cpuHz: 300000000,
+    stabilityProfile: 'performance',
   ),
   standardFlash2Mb(
     environment: 'standard_sketch1m_fs1m',
@@ -142,11 +152,15 @@ class FirmwareDeviceIdentity {
   final int? migrationFlashBytes;
   final String reason;
 
+  bool get isStarThermal =>
+      hardwareProfile == FirmwareHardwareProfile.starthermal;
+
   bool get canFlash => family == FirmwareDeviceFamily.bananaThermal;
 
   String get productName => switch (hardwareProfile) {
     FirmwareHardwareProfile.dual => '双光热成像',
     FirmwareHardwareProfile.standard => '普通热成像',
+    FirmwareHardwareProfile.starthermal => '星像 StarThermal',
     null => '未知热成像',
   };
 
@@ -170,6 +184,31 @@ class FirmwareDeviceIdentity {
         requiresProductMigration: false,
         migrationFlashBytes: null,
         reason: '设备尚未返回 GetSysInfo，不能确认固件兼容性',
+      );
+    }
+
+    if (isStarThermalInfo(info)) {
+      final hardware = info['hardwareId'];
+      final supported =
+          (hardware == null || hardware == 'starthermal-rp2040-8m') &&
+          (info['otaProtocol'] == null ||
+              info['otaProtocol'] == 'serial-ota-v1');
+      return FirmwareDeviceIdentity(
+        family: supported
+            ? FirmwareDeviceFamily.bananaThermal
+            : FirmwareDeviceFamily.unsupported,
+        hardwareProfile: FirmwareHardwareProfile.starthermal,
+        model: 'StarThermal',
+        currentVersion: info['firmwareVersion']?.toString(),
+        serialNumber:
+            (info['SerialNum'] ??
+                    info['Serial'] ??
+                    info['thermalModuleSerialNumber'])
+                ?.toString(),
+        reportedVariant: FirmwareVariant.starThermal8Mb,
+        requiresProductMigration: false,
+        migrationFlashBytes: null,
+        reason: supported ? '已识别星像 StarThermal' : '星像硬件版本不受当前固件支持',
       );
     }
 
@@ -409,7 +448,8 @@ class FirmwareRelease {
   final List<FirmwareReleaseAsset> assets;
   final bool prerelease;
 
-  AppVersion get version => AppVersion.tryParse(tagName)!;
+  bool get isStarThermal => tagName.startsWith('StarThermal-');
+  AppVersion get version => firmwareReleaseVersion(tagName)!;
 
   FirmwareReleaseAsset? assetNamed(String name) {
     for (final asset in assets) {
@@ -419,6 +459,12 @@ class FirmwareRelease {
   }
 
   FirmwareReleaseAsset? assetFor(FirmwareVariant variant) {
+    if (isStarThermal) {
+      return variant == FirmwareVariant.starThermal8Mb
+          ? assetNamed('$tagName.bin')
+          : null;
+    }
+    if (variant == FirmwareVariant.starThermal8Mb) return null;
     final environment = version.compareTo(_unifiedFirmwareCutover) < 0
         ? variant.historicalEnvironment
         : variant.environment;
@@ -445,7 +491,7 @@ class FirmwareRelease {
   factory FirmwareRelease.fromJson(Map<String, dynamic> json) {
     final tag = json['tag_name'] as String? ?? '';
     final pageUrl = Uri.tryParse(json['html_url'] as String? ?? '');
-    if (AppVersion.tryParse(tag) == null ||
+    if (firmwareReleaseVersion(tag) == null ||
         pageUrl == null ||
         !_isFirmwareReleasePage(pageUrl) ||
         pageUrl.pathSegments.last != tag) {
@@ -500,6 +546,30 @@ List<FirmwareRelease> parseFirmwareReleaseList(
   }
   releases.sort((a, b) => b.version.compareTo(a.version));
   return List.unmodifiable(releases);
+}
+
+/// Continue on the raw page count, even when all entries belong to another
+/// product or are filtered out. Never return a silently truncated catalog.
+Future<List<FirmwareRelease>> fetchFirmwareReleasePages(
+  Future<String> Function(int page) fetchPage, {
+  int maximumPages = 100,
+}) async {
+  final releases = <String, FirmwareRelease>{};
+  for (var page = 1; page <= maximumPages; page++) {
+    final source = await fetchPage(page);
+    final raw = jsonDecode(source);
+    if (raw is! List) throw const FormatException('固件版本响应不是数组');
+    for (final release in parseFirmwareReleaseList(source)) {
+      releases[release.tagName] = release;
+    }
+    if (raw.length < 100) {
+      return releases.values.toList()..sort((a, b) {
+        final version = b.version.compareTo(a.version);
+        return version != 0 ? version : a.tagName.compareTo(b.tagName);
+      });
+    }
+  }
+  throw const FormatException('固件版本分页超过上限，请打开官方发布页');
 }
 
 class FirmwareArtifact {
@@ -627,7 +697,9 @@ class FirmwareManifest {
         ? FirmwareVariant.values
               .where((variant) => variant.historicalEnvironment != null)
               .toList()
-        : FirmwareVariant.values;
+        : FirmwareVariant.values
+              .where((v) => v.profile != FirmwareHardwareProfile.starthermal)
+              .toList();
     final expectedEnvironments = variants
         .map(
           (variant) => schemaVersion == 1
@@ -672,6 +744,9 @@ FirmwareRelease? findNewerFirmware(
   List<FirmwareRelease> releases,
 ) {
   if (!identity.canFlash) return null;
+  releases = releases
+      .where((r) => r.isStarThermal == identity.isStarThermal)
+      .toList();
   if (identity.requiresProductMigration) {
     for (final release in releases) {
       if (release.version.compareTo(_unifiedFirmwareCutover) >= 0) {
@@ -718,4 +793,16 @@ bool _isFirmwareAssetUrl(Uri uri) {
       segments[3] == 'download' &&
       segments[4].isNotEmpty &&
       segments[5].isNotEmpty;
+}
+
+AppVersion? firmwareReleaseVersion(String tag) {
+  final star = RegExp(
+    r'^StarThermal-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$',
+  );
+  final legacy = RegExp(r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$');
+  if (star.hasMatch(tag)) {
+    return AppVersion.tryParse(tag.substring('StarThermal-'.length));
+  }
+  if (legacy.hasMatch(tag)) return AppVersion.tryParse(tag);
+  return null;
 }

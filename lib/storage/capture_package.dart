@@ -77,7 +77,7 @@ class CaptureMeta {
   /// 设备序列号 (来自激活信息), 用于区分多台设备.
   final String? deviceSn;
 
-  /// 热成像源分辨率，包括 32×24、32×32 和 CB360 的 120×90。
+  /// 热成像源分辨率，包括 32×24、32×32 和 StarThermal 的 120×90。
   final int thermalW;
   final int thermalH;
 

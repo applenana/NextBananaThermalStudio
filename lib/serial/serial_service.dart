@@ -28,7 +28,7 @@ import 'android_serial_impl.dart';
 import 'serial_port_info.dart';
 import 'windows_rx_buffer.dart';
 import 'desktop_serial_reader.dart';
-import '../cb360/protocol.dart';
+import '../starthermal/protocol.dart';
 
 export 'serial_port_info.dart';
 

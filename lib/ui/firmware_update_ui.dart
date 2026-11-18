@@ -228,7 +228,6 @@ class _FirmwareUpdateSettingsControlState
   Widget build(BuildContext context) {
     return Consumer<AppState>(
       builder: (context, app, _) {
-        if (app.isCb360) return const Text('CB360 使用串口 OTA 协议；此处的旧设备 UF2 升级不适用。');
         final connected = app.status == ConnectionStatus.connected;
         final liveIdentity = FirmwareDeviceIdentity.fromDeviceInfo(
           app.deviceInfo,
@@ -361,9 +360,7 @@ class _FirmwareUpdateSettingsControlState
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
               title: const Text('连接后自动检查固件更新'),
-              subtitle: const Text(
-                '仅对明确识别为官方 dual / standard 型号的设备查询；未知型号不会匹配或烧录',
-              ),
+              subtitle: const Text('按双光、普通热成像或星像的设备身份查询对应固件；未知型号不会匹配或烧录'),
               value: _service.automaticCheckEnabled.value,
               onChanged: _service.setAutomaticCheckEnabled,
             ),
@@ -896,7 +893,7 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
     _selectedVariant =
         matchingRecovery?.variant ?? _service.variantFor(widget.identity);
     _service.snapshot.addListener(_refresh);
-    if (Platform.isAndroid) {
+    if ((Platform.isAndroid && !widget.identity.isStarThermal)) {
       unawaited(_probeAndroidUsb());
       _usbProbeTimer = Timer.periodic(
         const Duration(seconds: 1),
@@ -935,7 +932,10 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
   }
 
   Future<void> _probeAndroidUsb() async {
-    if (!Platform.isAndroid || _usbProbeInFlight) return;
+    if (!(Platform.isAndroid && !widget.identity.isStarThermal) ||
+        _usbProbeInFlight) {
+      return;
+    }
     _usbProbeInFlight = true;
     try {
       final state = await AndroidUf2Flasher.inspectUsbState();
@@ -1015,6 +1015,10 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
   }
 
   List<FirmwareRelease> _compatibleReleases(List<FirmwareRelease> releases) {
+    releases = releases
+        .where((r) => r.isStarThermal == widget.identity.isStarThermal)
+        .toList();
+    if (widget.identity.isStarThermal) return releases;
     if (widget.identity.hardwareProfile == FirmwareHardwareProfile.dual &&
         !widget.identity.requiresProductMigration) {
       return releases;
@@ -1031,7 +1035,7 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
     final release = _selectedRelease;
     final variant = _selectedVariant;
     if (release == null || variant == null) return;
-    if (Platform.isAndroid) {
+    if ((Platform.isAndroid && !widget.identity.isStarThermal)) {
       await _probeAndroidUsb();
       final usbState = _androidUsbState;
       final serialConnected =
@@ -1131,7 +1135,9 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
                 Text('固件变体：${variant.label}'),
                 const SizedBox(height: 8),
                 _WarningBox(
-                  text: widget.identity.requiresProductMigration
+                  text: widget.identity.isStarThermal
+                      ? '星像通过串口 OTA 更新。请先备份照片和配置，升级期间保持供电与 USB 连接；设备重启后会自动核对身份和版本。'
+                      : widget.identity.requiresProductMigration
                       ? migrationCapacityChanged
                             ? '首次迁移会格式化整个 LittleFS，清除旧照片、配置和校准；你选择的容量与原设备推荐容量不同，旧分区可能无法挂载，激活信息也可能无法自动恢复。请先完成备份。'
                             : '首次迁移会格式化整个 LittleFS，清除旧照片、配置和校准；仅在旧分区可挂载且激活信息有效时尝试恢复激活。请先完成备份。'
@@ -1185,11 +1191,15 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
         widget.app.currentPort != null;
     final bootloader = _androidUsbState?.singleBootloader;
     final ambiguousAndroidTarget =
-        Platform.isAndroid && (_androidUsbState?.bootloaders.length ?? 0) > 1 ||
-        (Platform.isAndroid && serialConnected && bootloader != null);
+        (Platform.isAndroid && !widget.identity.isStarThermal) &&
+            (_androidUsbState?.bootloaders.length ?? 0) > 1 ||
+        ((Platform.isAndroid && !widget.identity.isStarThermal) &&
+            serialConnected &&
+            bootloader != null);
     final androidTargetAvailable =
-        !Platform.isAndroid ||
-        (serialConnected || bootloader != null) && !ambiguousAndroidTarget;
+        (!widget.identity.isStarThermal || serialConnected) &&
+        (!(Platform.isAndroid && !widget.identity.isStarThermal) ||
+            (serialConnected || bootloader != null) && !ambiguousAndroidTarget);
     return AlertDialog(
       icon: const Icon(Icons.developer_board_rounded),
       title: const Text('设备固件管理'),
@@ -1214,7 +1224,7 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
                     : '固件选择已锁定为 ${widget.identity.hardwareProfile?.name ?? '未知'} 板型，不能跨板型烧录。',
                 style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
               ),
-              if (Platform.isAndroid) ...[
+              if ((Platform.isAndroid && !widget.identity.isStarThermal)) ...[
                 const SizedBox(height: 14),
                 _AndroidFirmwareConnectionCard(
                   serialConnected: serialConnected,
@@ -1372,24 +1382,25 @@ class _FirmwareManagerDialogState extends State<_FirmwareManagerDialog> {
                     busy ||
                     !androidTargetAvailable
                 ? null
-                : Platform.isAndroid &&
+                : (Platform.isAndroid && !widget.identity.isStarThermal) &&
                       bootloader != null &&
                       !bootloader.hasPermission
                 ? _requestBootloaderPermission
                 : _startFlash,
             icon: Icon(
-              Platform.isAndroid &&
+              (Platform.isAndroid && !widget.identity.isStarThermal) &&
                       bootloader != null &&
                       !bootloader.hasPermission
                   ? Icons.usb_rounded
                   : Icons.bolt_rounded,
             ),
             label: Text(
-              Platform.isAndroid &&
+              (Platform.isAndroid && !widget.identity.isStarThermal) &&
                       bootloader != null &&
                       !bootloader.hasPermission
                   ? '授权 USB 磁盘'
-                  : Platform.isAndroid && bootloader != null
+                  : (Platform.isAndroid && !widget.identity.isStarThermal) &&
+                        bootloader != null
                   ? '从 USB 磁盘继续烧录'
                   : _actionLabel(_selectedRelease),
             ),

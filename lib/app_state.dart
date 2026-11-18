@@ -7,8 +7,8 @@ import 'dart:convert';
 import 'dart:io' show Platform, HttpClient;
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'cb360/controller.dart';
-import 'cb360/protocol.dart';
+import 'starthermal/controller.dart';
+import 'starthermal/protocol.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter/foundation.dart';
@@ -43,9 +43,9 @@ class LogEntry {
 
 class AppState extends ChangeNotifier {
   final SerialService _serial = SerialService();
-  Cb360Controller? cb360;
-  bool get isCb360 => cb360 != null;
-  bool get requiresActivation => !isCb360;
+  StarThermalController? starthermal;
+  bool get isStarThermal => starthermal != null;
+  bool get requiresActivation => !isStarThermal;
   IdentityProbe? _identityProbe;
   Completer<Map<String, dynamic>>? _identityResult;
 
@@ -73,7 +73,7 @@ class AppState extends ChangeNotifier {
   /// 上次成功连接的端口 / 波特率, 用于重连优先尝试同一个端口.
   String? _lastPort;
   int _lastBaud = 115200;
-  int get currentBaud => cb360?.client.baud ?? _lastBaud;
+  int get currentBaud => starthermal?.client.baud ?? _lastBaud;
 
   // ---------------- 连接 ----------------
   ConnectionStatus status = ConnectionStatus.disconnected;
@@ -100,7 +100,7 @@ class AppState extends ChangeNotifier {
       status == ConnectionStatus.connected &&
       firmwareIdentity.hardwareProfile == FirmwareHardwareProfile.standard;
 
-  bool get supportsVisibleLight => !isStandardThermalDevice && !isCb360;
+  bool get supportsVisibleLight => !isStandardThermalDevice && !isStarThermal;
 
   // ---------------- 推流 ----------------
   bool thermalStreamEnabled = false;
@@ -174,7 +174,7 @@ class AppState extends ChangeNotifier {
   RenderParams renderParams = const RenderParams();
   final RealtimeAiSession realtimeAi = RealtimeAiSession();
   bool get realtimeAiEnabled => realtimeAi.enabled;
-  RenderParams? _beforeCb360RenderParams;
+  RenderParams? _beforeStarThermalRenderParams;
 
   // ---------------- 日志 ----------------
   final List<LogEntry> logs = [];
@@ -334,7 +334,11 @@ class AppState extends ChangeNotifier {
     );
     var foundBaud = baud;
     for (final speed in {
-      preferences.getInt('cb360.lastBaud') ?? baud,
+      preferences.getInt('starthermal.lastBaud') ??
+          preferences.getInt(
+            '${legacyStarThermalModel.toLowerCase()}.lastBaud',
+          ) ??
+          baud,
       baud,
       115200,
       2000000,
@@ -375,7 +379,7 @@ class AppState extends ChangeNotifier {
     }
     await connect(found.port!, baud: foundBaud);
     // 探测阶段已经拿到 JSON, 直接消化, 不必等连接后再 GetSysInfo
-    if (found.info != null && !isCb360) {
+    if (found.info != null && !isStarThermal) {
       _absorbDeviceInfo(found.info!);
       notifyListeners();
     }
@@ -440,15 +444,15 @@ class AppState extends ChangeNotifier {
       _identityResult = null;
       if (identity == null) throw StateError('未收到有效设备信息');
       status = ConnectionStatus.connected;
-      if (isCb360Info(identity)) {
-        final controller = Cb360Controller(
+      if (isStarThermalInfo(identity)) {
+        final controller = StarThermalController(
           info: identity,
           onInfo: (value) {
             _absorbDeviceInfo(value);
             notifyListeners();
           },
           onTemperature: (temperatures, max, min, avg) {
-            if (cb360 == null) return;
+            if (starthermal == null) return;
             thermalStreamEnabled = true;
             _onThermalFrame(max, min, avg, 120, 90, temperatures);
           },
@@ -457,14 +461,14 @@ class AppState extends ChangeNotifier {
             await _serial.setBaud(value);
             _lastBaud = value;
             final prefs = await SharedPreferences.getInstance();
-            await prefs.setInt('cb360.lastBaud', value);
+            await prefs.setInt('starthermal.lastBaud', value);
           },
           baud: _lastBaud,
         );
-        cb360 = controller;
+        starthermal = controller;
         thermalWidth = 120;
         thermalHeight = 90;
-        _beforeCb360RenderParams = renderParams;
+        _beforeStarThermalRenderParams = renderParams;
         renderParams = renderParams.copyWith(
           colormapName: 'plasma',
           bilateralEnabled: false,
@@ -473,14 +477,14 @@ class AppState extends ChangeNotifier {
           thermalView: const ThermalViewParams(),
         );
         kalmanScalarEnabled = false;
-        controller.addListener(_onCb360Changed);
+        controller.addListener(_onStarThermalChanged);
         _absorbDeviceInfo(identity);
         _startPortWatchdog();
         notifyListeners();
         try {
           await controller.initialize();
         } catch (e) {
-          _log('err', 'CB360: $e');
+          _log('err', 'StarThermal: $e');
         }
       } else {
         _absorbDeviceInfo(identity);
@@ -498,14 +502,14 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _onCb360Changed() {
-    if (cb360 == null || _disposed) return;
-    thermalStreamEnabled = cb360!.active;
+  void _onStarThermalChanged() {
+    if (starthermal == null || _disposed) return;
+    thermalStreamEnabled = starthermal!.active;
     if (!thermalStreamEnabled) {
       thermalFrame = null;
       realtimeAi.clear();
     }
-    _lastBaud = cb360!.client.baud;
+    _lastBaud = starthermal!.client.baud;
     notifyListeners();
   }
 
@@ -519,19 +523,19 @@ class AppState extends ChangeNotifier {
   Future<void> _teardownConnection({required String reason}) async {
     realtimeAi.setEnabled(false);
     _stopPortWatchdog();
-    final cb = cb360;
-    cb360 = null;
+    final cb = starthermal;
+    starthermal = null;
     if (cb != null) {
-      cb.removeListener(_onCb360Changed);
+      cb.removeListener(_onStarThermalChanged);
       try {
         await _serial.writeAll(
           Uint8List.fromList('StopY16Stream\nEndTransfer\n'.codeUnits),
         );
       } catch (_) {}
       cb.dispose();
-      // CB360 defaults and adjustments must not leak into the next device.
-      renderParams = _beforeCb360RenderParams ?? renderParams;
-      _beforeCb360RenderParams = null;
+      // StarThermal defaults and adjustments must not leak into the next device.
+      renderParams = _beforeStarThermalRenderParams ?? renderParams;
+      _beforeStarThermalRenderParams = null;
     }
     _stopThermalHeartbeat();
     _stopVisibleHeartbeat();
@@ -679,8 +683,8 @@ class AppState extends ChangeNotifier {
       _log('warn', '串口未连接, 忽略: $line');
       return;
     }
-    if (isCb360) {
-      _log('warn', 'CB360 请使用设备控制入口');
+    if (isStarThermal) {
+      _log('warn', 'StarThermal 请使用设备控制入口');
       return;
     }
     final trimmed = line.trim();
@@ -1324,8 +1328,8 @@ class AppState extends ChangeNotifier {
       }
       return;
     }
-    if (cb360 != null) {
-      cb360!.client.feed(data);
+    if (starthermal != null) {
+      starthermal!.client.feed(data);
       return;
     }
     if (_photoMode) {
@@ -1675,6 +1679,8 @@ class AppState extends ChangeNotifier {
 
   /// 统一吸收 GetSysInfo 返回的 JSON 字段, 兼容 Python/固件两套 key 命名.
   void _absorbDeviceInfo(Map<String, dynamic> j) {
+    j = Map<String, dynamic>.from(j);
+    if (isStarThermalInfo(j)) j['deviceModel'] = 'StarThermal';
     deviceInfo = j;
     _enforceStandardCapabilities();
     deviceSerial =
@@ -1745,7 +1751,7 @@ class AppState extends ChangeNotifier {
       }
     }
     // 异常剔除: 平均温度偶发大跳变, 用滚动中位数过滤.
-    if (!isCb360 && _avgRecent.length >= 3) {
+    if (!isStarThermal && _avgRecent.length >= 3) {
       final sorted = List<double>.from(_avgRecent)..sort();
       final median = sorted[sorted.length >> 1];
       if ((av - median).abs() > avgOutlierThreshold) {
@@ -1764,7 +1770,7 @@ class AppState extends ChangeNotifier {
     // 垂直翻转 (上下镜像): 设备热像与显示方向上下相反.
     final mirrored = Float32List(width * height);
     for (int y = 0; y < height; y++) {
-      final srcOff = (isCb360 ? y : height - 1 - y) * width;
+      final srcOff = (isStarThermal ? y : height - 1 - y) * width;
       final dstOff = y * width;
       for (int x = 0; x < width; x++) {
         mirrored[dstOff + x] = pix[srcOff + x];
@@ -1848,12 +1854,12 @@ class AppState extends ChangeNotifier {
   // ============================================================
 
   void setThermalStream(bool on) {
-    if (cb360 != null) {
-      final device = cb360!;
+    if (starthermal != null) {
+      final device = starthermal!;
       unawaited(
         () async {
           await device.whenIdle();
-          if (identical(cb360, device) && on != device.active) {
+          if (identical(starthermal, device) && on != device.active) {
             await device.toggleStream();
           }
         }().catchError((Object e) {
@@ -2074,6 +2080,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _log(String level, String text) {
+    text = publicStarThermalText(text);
     if (hideHeartbeatLog && _isHeartbeatTraffic(level, text)) return;
     logs.add(LogEntry(DateTime.now(), level, text));
     while (logs.length > maxLogs) {
@@ -2272,7 +2279,7 @@ class AppState extends ChangeNotifier {
   Future<List<PhotoMeta>> fetchPhotoList({
     Duration timeout = const Duration(seconds: 4),
   }) async {
-    if (isCb360) throw StateError('请使用 CB360 设备入口');
+    if (isStarThermal) throw StateError('请使用 StarThermal 设备入口');
     if (!_serial.isOpen) throw StateError('串口未连接');
     if (_photoMode) throw StateError('图库忙, 请稍候');
     // 暂停推流以减少干扰.
@@ -2342,7 +2349,7 @@ class AppState extends ChangeNotifier {
     void Function(Uint8List headBytes)? onEarlyBytes,
     Duration timeout = const Duration(seconds: 30),
   }) async {
-    if (isCb360) throw StateError('请使用 CB360 设备入口');
+    if (isStarThermal) throw StateError('请使用 StarThermal 设备入口');
     if (!_serial.isOpen) throw StateError('串口未连接');
     if (_photoMode) throw StateError('图库忙, 请稍候');
     final hadTherm = thermalStreamEnabled;
@@ -2406,9 +2413,9 @@ class AppState extends ChangeNotifier {
     _stopVisibleHeartbeat();
     await _temperatureAlarmAudio.dispose();
     await _alarmModuleSerial.dispose();
-    cb360?.removeListener(_onCb360Changed);
-    cb360?.dispose();
-    cb360 = null;
+    starthermal?.removeListener(_onStarThermalChanged);
+    starthermal?.dispose();
+    starthermal = null;
     await _serial.dispose();
     super.dispose();
   }
@@ -2611,7 +2618,7 @@ class PhotoMeta {
   final double? tempMax;
   final double? tempMin;
 
-  /// Optional verified local CB360 resource, displayed in the device gallery.
+  /// Optional verified local StarThermal resource, displayed in the device gallery.
   final String? localPath;
 
   const PhotoMeta({

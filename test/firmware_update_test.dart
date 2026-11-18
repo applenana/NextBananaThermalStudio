@@ -488,7 +488,9 @@ Map<String, dynamic> _manifestV2Json() => {
     'workflow_repository': 'applenana/BananaThermalFirmware',
   },
   'artifacts': [
-    for (final variant in FirmwareVariant.values)
+    for (final variant in FirmwareVariant.values.where(
+      (v) => v.profile != FirmwareHardwareProfile.starthermal,
+    ))
       {
         'file': 'banana-thermal-v1.8.0-${variant.environment}.uf2',
         'size': 1630208,

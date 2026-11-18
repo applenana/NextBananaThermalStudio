@@ -20,7 +20,7 @@ import 'dart:typed_data';
 import '../app_state.dart' show PhotoMeta;
 import '../render/render_params.dart' show ThermalViewParams;
 
-enum PhotoFormat { cb360Y16, jpegLike, v1Simple, v1Full, v2Htph, unknown }
+enum PhotoFormat { starthermalY16, jpegLike, v1Simple, v1Full, v2Htph, unknown }
 
 class PhotoDecoded {
   final PhotoFormat format;

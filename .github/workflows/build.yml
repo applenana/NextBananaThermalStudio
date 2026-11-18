@@ -29,6 +29,12 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      - name: Check public branding
+        run: python tools/check_public_branding.py
+
+      - name: Verify firmware update contracts
+        run: flutter test --no-pub test/firmware_update_test.dart test/starthermal_firmware_test.dart test/starthermal_protocol_test.dart
+
       # 打 tag 时让 APK/EXE 内部版本与 tag 对齐。Windows 的 Flutter 工具只接受
       # 三段 build-name，因此 v1.2.3.4 映射为 build-name=1.2.3、build-number=4，
       # 同时通过 dart-define 保留完整版本供应用内更新比较。
@@ -62,6 +68,9 @@ jobs:
 
       - name: Build Windows Release
         run: flutter build windows --release ${{ steps.ver.outputs.args }}
+
+      - name: Check Windows release branding
+        run: python tools/check_public_branding.py --release build/windows/x64/runner/Release
 
       - name: Pack
         id: pack
@@ -163,6 +172,9 @@ jobs:
       # Linux runner 无此坑, 但为统一与本地命令一致, 仍显式传入.
       - name: Build APK (split per ABI, release)
         run: flutter build apk --release --target=lib/main.dart --split-per-abi ${{ steps.ver.outputs.args }}
+
+      - name: Check Android release branding
+        run: python tools/check_public_branding.py --release build/app/outputs/flutter-apk
 
       - name: Rename APKs
         id: pack

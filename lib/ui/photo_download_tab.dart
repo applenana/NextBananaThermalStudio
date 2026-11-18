@@ -19,7 +19,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
-import '../cb360/controller.dart';
+import '../starthermal/controller.dart';
 import '../fusion/fusion.dart';
 import '../fusion/colormap.dart';
 import 'banana_toast.dart';
@@ -70,7 +70,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final app = context.watch<AppState>();
-    final owner = app.cb360;
+    final owner = app.starthermal;
     if (!identical(owner, _deviceOwner) || app.deviceSerial != _ownerSerial) {
       _deviceOwner = owner;
       _ownerSerial = app.deviceSerial;
@@ -289,11 +289,11 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     const retryWait = Duration(seconds: 1);
     Object? lastErr;
     try {
-      if (app.cb360 != null) {
-        final cb = app.cb360!;
+      if (app.starthermal != null) {
+        final cb = app.starthermal!;
         await cb.whenIdle();
         await cb.refreshList();
-        if (!mounted || !identical(cb, app.cb360)) return;
+        if (!mounted || !identical(cb, app.starthermal)) return;
         setState(() {
           _list = [
             for (var i = 0; i < cb.photoIds.length; i++)
@@ -302,7 +302,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 filename: cb.photoIds[i],
                 size: 21600,
                 mode: 'thermal',
-                dataFormat: 'CB360-Y16',
+                dataFormat: 'StarThermal-Y16',
               ),
           ];
           _selected = null;
@@ -366,7 +366,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     }
   }
 
-  Future<void> _downloadAllCb360() async {
+  Future<void> _downloadAllStarThermal() async {
     if (_busy) return;
     setState(() => _busy = true);
     try {
@@ -398,7 +398,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
               filename: '${photos[i].serial}_${photos[i].id}_$i',
               size: 21600,
               mode: 'thermal',
-              dataFormat: 'CB360-Y16',
+              dataFormat: 'StarThermal-Y16',
               localPath: photos[i].path,
             ),
         ];
@@ -411,9 +411,9 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
     }
   }
 
-  Future<void> _deleteCb360() async {
+  Future<void> _deleteStarThermal() async {
     final photo = _selected;
-    final device = context.read<AppState>().cb360;
+    final device = context.read<AppState>().starthermal;
     if (photo == null || photo.localPath != null || device == null || _busy) {
       return;
     }
@@ -531,8 +531,8 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
       // 点击新图: 重置预览参数为默认值, 不使用上一张图、也不使用实时面板的任何状态.
       _resetPhotoParams();
     });
-    if (sel.dataFormat == 'CB360-Y16') {
-      final device = app.cb360;
+    if (sel.dataFormat == 'StarThermal-Y16') {
+      final device = app.starthermal;
       if (device == null && sel.localPath == null) {
         setState(() => _statusText = '设备已断开');
         return;
@@ -546,7 +546,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           photo = await device.fetchGalleryPhoto(sel.filename);
         }
         if (!mounted ||
-            (sel.localPath == null && !identical(device, app.cb360))) {
+            (sel.localPath == null && !identical(device, app.starthermal))) {
           return;
         }
         var min = double.infinity, max = double.negativeInfinity;
@@ -555,13 +555,13 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
           if (value > max) max = value;
         }
         final decoded = PhotoDecoded(
-          format: PhotoFormat.cb360Y16,
+          format: PhotoFormat.starthermalY16,
           thermal: photo.temperatures,
           srcW: 120,
           srcH: 90,
           tMin: min,
           tMax: max,
-          summary: 'CB360 120×90 · 下载时配置 · 全域温度',
+          summary: 'StarThermal 120×90 · 下载时配置 · 全域温度',
         );
         setState(() {
           _raw = photo.raw;
@@ -719,7 +719,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   void _resetPhotoParams() {
     _photoParams = RenderParams(
       colormapName: kDefaultPhotoColormap,
-      upsampleScale: context.read<AppState>().isCb360 ? 2 : 8,
+      upsampleScale: context.read<AppState>().isStarThermal ? 2 : 8,
     );
     _photoThermalViewApplied = false;
   }
@@ -729,7 +729,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
   /// 仅首次合入，避免分块下载的多次部分解码覆盖用户随后在详情页做的调整。
   /// v1/v2 没有该元数据时维持旧行为；它们不会借用实时页当前激活的参数。
   void _applyDecodedPhotoParams(PhotoDecoded dec) {
-    if (dec.format == PhotoFormat.cb360Y16 && !_photoThermalViewApplied) {
+    if (dec.format == PhotoFormat.starthermalY16 && !_photoThermalViewApplied) {
       _photoParams = _photoParams.copyWith(
         upsampleScale: 2,
         bilateralEnabled: false,
@@ -884,7 +884,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 const Spacer(),
                 IconButton(
                   onPressed: _busy ? null : _showDownloaded,
-                  tooltip: '查看已下载的 CB360 设备照片',
+                  tooltip: '查看已下载的 StarThermal 设备照片',
                   icon: const Icon(Icons.folder_open_outlined, size: 18),
                 ),
                 FilledButton.icon(
@@ -900,14 +900,14 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                 ),
               ],
             ),
-            if (context.watch<AppState>().isCb360)
+            if (context.watch<AppState>().isStarThermal)
               Wrap(
                 spacing: 8,
                 children: [
                   TextButton.icon(
                     onPressed: _busy || _list.isEmpty
                         ? null
-                        : _downloadAllCb360,
+                        : _downloadAllStarThermal,
                     icon: const Icon(Icons.download, size: 16),
                     label: const Text('下载全部'),
                   ),
@@ -917,7 +917,7 @@ class _PhotoDownloadTabState extends State<PhotoDownloadTab> {
                             _selected == null ||
                             _selected!.localPath != null
                         ? null
-                        : _deleteCb360,
+                        : _deleteStarThermal,
                     icon: const Icon(Icons.delete_outline, size: 16),
                     label: const Text('删除选中'),
                   ),

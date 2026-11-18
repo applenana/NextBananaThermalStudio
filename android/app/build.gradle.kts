@@ -52,7 +52,7 @@ android {
     }
 
     externalNativeBuild {
-        cmake { path = file("../../native/cb360/CMakeLists.txt") }
+        cmake { path = file("../../native/starthermal/CMakeLists.txt") }
     }
 
     buildTypes {
