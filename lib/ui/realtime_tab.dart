@@ -20,6 +20,8 @@ import '../main.dart'
         setTemperatureRecordInterval;
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
+import '../render/realtime_render_cache.dart';
+import '../render/ai_super_resolution.dart';
 import '../render/photo_ai_model.dart';
 import '../render/photo_ai_runtime.dart';
 import '../temperature/temperature_history_store.dart';
@@ -331,6 +333,8 @@ class _ThermalCard extends StatefulWidget {
 }
 
 class _ThermalCardState extends State<_ThermalCard> {
+  final _renderCache = RealtimeRenderCache();
+
   /// 主画面 marker / 光标模式: 委托给文件级单例, 跨 state 重建持久.
   /// 详见 [_ThermalMarkersStore] 注释.
   _ThermalMarkersStore get _store => _ThermalMarkersStore.instance;
@@ -437,15 +441,19 @@ class _ThermalCardState extends State<_ThermalCard> {
 
     RenderedFrame? frame;
     if (app.thermalFrame != null) {
-      frame = renderPipeline(
-        thermalFrame: app.thermalFrame!,
-        srcW: app.thermalWidth,
-        srcH: app.thermalHeight,
-        params: app.renderParams,
-        visibleRgb: supportsVisibleLight ? app.visibleRgb888 : null,
-        visibleW: supportsVisibleLight ? app.visibleWidth : 0,
-        visibleH: supportsVisibleLight ? app.visibleHeight : 0,
+      frame = _renderCache.render(
+        PhotoRenderInput(
+          temperatures: app.thermalFrame!,
+          width: app.thermalWidth,
+          height: app.thermalHeight,
+          params: app.renderParams,
+          visibleRgb: supportsVisibleLight ? app.visibleRgb888 : null,
+          visibleW: supportsVisibleLight ? app.visibleWidth : 0,
+          visibleH: supportsVisibleLight ? app.visibleHeight : 0,
+        ),
       );
+    } else {
+      _renderCache.clear();
     }
 
     final headerPad = edge
@@ -753,6 +761,7 @@ class _FullscreenThermalView extends StatefulWidget {
 }
 
 class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
+  final _renderCache = RealtimeRenderCache();
   _ThermalMarkersStore get _store => _ThermalMarkersStore.instance;
 
   // 浮窗位置 (左上角偏移). null 表示尚未基于布局尺寸初始化, 首次 build 时按
@@ -801,15 +810,19 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
     final cursorMode = _store.cursorMode;
     RenderedFrame? frame;
     if (app.thermalFrame != null) {
-      frame = renderPipeline(
-        thermalFrame: app.thermalFrame!,
-        srcW: app.thermalWidth,
-        srcH: app.thermalHeight,
-        params: app.renderParams,
-        visibleRgb: supportsVisibleLight ? app.visibleRgb888 : null,
-        visibleW: supportsVisibleLight ? app.visibleWidth : 0,
-        visibleH: supportsVisibleLight ? app.visibleHeight : 0,
+      frame = _renderCache.render(
+        PhotoRenderInput(
+          temperatures: app.thermalFrame!,
+          width: app.thermalWidth,
+          height: app.thermalHeight,
+          params: app.renderParams,
+          visibleRgb: supportsVisibleLight ? app.visibleRgb888 : null,
+          visibleW: supportsVisibleLight ? app.visibleWidth : 0,
+          visibleH: supportsVisibleLight ? app.visibleHeight : 0,
+        ),
       );
+    } else {
+      _renderCache.clear();
     }
     final liveMarkers = (frame == null || cursorMode)
         ? const <TempMarker>[]
@@ -1949,10 +1962,12 @@ class _RealtimeAiSwitch extends StatelessWidget {
     final app = context.watch<AppState>();
     final progress = app.realtimeAi.progress;
     final enhanced = app.realtimeAi.enhancedFrame;
+    final timings = app.realtimeAi.lastCompletedProgress;
     final resultAvailable = PhotoAiRuntime.available(PhotoAiModel.pftTv);
     return Tooltip(
       message: resultAvailable
           ? 'Thermal-PFT TV 实时 3× 超分；温度测量仍使用原始帧'
+                '${timings == null ? "" : "\n上帧预处理 ${timings.prepareMs} ms · 推理 ${timings.modelInferenceMs} ms · 着色 ${timings.colorMs} ms"}'
           : '未安装 Thermal-PFT Windows 扩展包',
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1979,6 +1994,7 @@ class _RealtimeAiSwitch extends StatelessWidget {
                         (progress == null
                             ? '等待热像帧'
                             : '${enhanced == null ? "首帧处理中 · 普通画面" : "AI ${enhanced.width}×${enhanced.height}"} · ${progress.backendLabel} ${progress.label}'
+                                  '${app.realtimeAi.outputFps == null ? "" : " · ${app.realtimeAi.outputFps!.toStringAsFixed(1)} FPS"}'
                                   '${app.realtimeAi.elapsedMs == null ? "" : " · 上帧 ${app.realtimeAi.elapsedMs} ms"}'),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,

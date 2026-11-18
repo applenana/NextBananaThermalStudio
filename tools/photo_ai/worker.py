@@ -8,6 +8,7 @@ import contextlib
 import json
 import sys
 import traceback
+import time
 import numpy as np
 from engine import Engine
 
@@ -25,12 +26,14 @@ def main():
     for line in sys.stdin:
         try:
             request = json.loads(line)
+            request_start = time.perf_counter()
             w, h = request['width'], request['height']
             if type(w) is not int or type(h) is not int or min(w, h) < 1 or max(w, h) > 512:
                 raise ValueError('Invalid dimensions')
             source = np.frombuffer(base64.b64decode(request['data'], validate=True), dtype='<f4').reshape(h, w)
             with contextlib.redirect_stdout(sys.stderr):
                 output, stats = engine.infer(request['model'], source, progress)
+            stats['requestMs'] = round((time.perf_counter() - request_start) * 1000)
             response = {'ok': True, 'width': output.shape[1], 'height': output.shape[0],
                         'data': base64.b64encode(output.tobytes()).decode('ascii'), **stats}
         except Exception as exc:

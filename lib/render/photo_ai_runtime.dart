@@ -151,6 +151,9 @@ class PhotoAiRuntime {
           'readback',
           device: response['device'] as String?,
           fallback: response['fallback'] as String?,
+          requestMs: response['requestMs'] as int?,
+          modelLoadMs: response['loadMs'] as int?,
+          modelInferenceMs: response['inferMs'] as int?,
         ),
       );
       return output;

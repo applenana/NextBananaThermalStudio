@@ -137,8 +137,10 @@ class PhotoRenderInput {
     PhotoAiProgressCallback? onProgress,
   }) async {
     if (!supportsAiScale) throw const FormatException('当前照片不支持此模型倍率');
+    final prepareClock = Stopwatch()..start();
     onProgress?.call(const PhotoAiProgress('preprocess'));
     final (measured, source) = await Isolate.run(_prepareAi);
+    prepareClock.stop();
     PhotoAiProgress? latest;
     final enhanced = await PhotoAiRuntime.shared.infer(
       aiModel,
@@ -150,6 +152,7 @@ class PhotoRenderInput {
         onProgress?.call(progress);
       },
     );
+    final colorClock = Stopwatch()..start();
     onProgress?.call(
       PhotoAiProgress(
         'coloring',
@@ -160,11 +163,17 @@ class PhotoRenderInput {
     final result = await Isolate.run(
       _AiColorTask(this, measured, enhanced).run,
     );
+    colorClock.stop();
     onProgress?.call(
       PhotoAiProgress(
         'complete',
         device: latest?.device,
         fallback: latest?.fallback,
+        prepareMs: prepareClock.elapsedMilliseconds,
+        requestMs: latest?.requestMs,
+        modelLoadMs: latest?.modelLoadMs,
+        modelInferenceMs: latest?.modelInferenceMs,
+        colorMs: colorClock.elapsedMilliseconds,
       ),
     );
     return result;

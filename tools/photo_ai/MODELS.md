@@ -43,6 +43,17 @@ The shared worker serializes live and photo requests. Source preprocessing and
 coloring execute in Dart isolates; CUDA is used when available, with CPU fallback.
 The header shows actual block progress, backend, the native displayed AI dimensions
 and the previous job duration; the first job explicitly indicates ordinary preview.
+It also shows smoothed completed-output FPS (not sensor FPS). Hover the switch
+for the previous job's preprocessing, model inference and coloring durations.
+Timings include CPU dispatch/readback in inference; they are not CUDA-event GPU-only times.
+
+The inference attention mask caches only the latest padded shape/device, avoiding
+repeated CPU construction and upload. Block progress uses CUDA event completion
+queries instead of a device synchronization after each block. The ordinary live
+render caches the latest source/parameters/visible frame, so AI progress callbacks
+do not rerender an unchanged sensor image. Both normal and fullscreen views use it.
+FP32 and the existing weights remain unchanged; no batching adds frame latency.
+See `docs/ai_performance_20261118.md` for the measured scope and remaining limits.
 
 Live display uses the latest completed AI RGB while measured temperatures,
 markers and legend continue updating from the current sensor frame. AI image

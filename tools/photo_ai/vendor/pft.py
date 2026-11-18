@@ -1110,7 +1110,17 @@ class PFT(nn.Module):
         self.mean = self.mean.type_as(x)
         x = (x - self.mean) * self.img_range
 
-        attn_mask = self.calculate_mask([h, w]).to(x.device)
+        # Inference streams keep the same shape. Rebuilding this large mask on
+        # CPU and uploading it every frame stalls dispatch. Keep only the last
+        # shape/device; never persist it in the checkpoint or retain old sizes.
+        mask_key = (h, w, x.device)
+        if self.training:
+            attn_mask = self.calculate_mask([h, w]).to(x.device)
+        else:
+            if getattr(self, '_inference_mask_key', None) != mask_key:
+                self._inference_mask = self.calculate_mask([h, w]).to(x.device)
+                self._inference_mask_key = mask_key
+            attn_mask = self._inference_mask
         params = {'attn_mask': attn_mask, 'rpi_sa': self.relative_position_index_SA}
 
         if self.upsampler == 'pixelshuffle':

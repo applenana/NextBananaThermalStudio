@@ -201,4 +201,14 @@ if(EXISTS "${PHOTO_AI_RUNTIME}/python/python.exe" AND EXISTS "${PHOTO_AI_RUNTIME
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../tools/photo_ai/weights-manifest.json"
     DESTINATION "${CMAKE_INSTALL_PREFIX}/photo_ai/weights" RENAME "manifest.json"
     COMPONENT Runtime)
+  # Runtime bundles provide the interpreter/dependencies/weights; ship the
+  # current tracked adapters even when that bundle predates a performance fix.
+  install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/photo_ai/engine.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/photo_ai/worker.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/photo_ai/MODELS.md"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/photo_ai" COMPONENT Runtime)
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../tools/photo_ai/vendor/"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/photo_ai/vendor" COMPONENT Runtime
+    PATTERN "__pycache__" EXCLUDE)
 endif()

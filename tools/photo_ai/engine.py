@@ -113,18 +113,36 @@ class Engine:
         completed = 0
         total = len(model.layers)
         progress('blocks', 0, total)
+        events = []
+        def report_completed():
+            nonlocal completed
+            while completed < len(events) and events[completed].query():
+                completed += 1
+                progress('blocks', completed, total)
         def block_finished(_module, _args, _output):
             nonlocal completed
             if self.device.type == 'cuda':
-                torch.cuda.synchronize()
-            completed += 1
-            progress('blocks', completed, total)
+                event = torch.cuda.Event()
+                event.record()
+                events.append(event)
+                report_completed()
+            else:
+                completed += 1
+                progress('blocks', completed, total)
         hooks = [block.register_forward_hook(block_finished) for block in model.layers]
         try:
             out = model(x)
         finally:
             for hook in hooks:
                 hook.remove()
+        if self.device.type == 'cuda':
+            # Synchronizing in every hook stalls the Python dispatcher after
+            # each model stage. CUDA events let the next stage be enqueued while
+            # a lightweight poll reports actual GPU completion without blocking.
+            while completed < total:
+                report_completed()
+                if completed < total:
+                    time.sleep(0.001)
         out = out[..., :h*scale, :w*scale]
         out = (out * out.new_tensor([0.299, 0.587, 0.114])[None, :, None, None]).sum(1, keepdim=True)
         progress('readback', None, None)

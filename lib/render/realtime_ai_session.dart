@@ -26,6 +26,10 @@ class RealtimeAiSession extends ChangeNotifier {
   Float32List? _lastSubmitted;
   RenderedFrame? _result;
   PhotoAiProgress? progress;
+  PhotoAiProgress? lastCompletedProgress;
+  final Stopwatch _outputClock = Stopwatch();
+  int? _lastOutputUs;
+  double? outputFps;
   String? error;
   int? elapsedMs;
 
@@ -45,6 +49,11 @@ class RealtimeAiSession extends ChangeNotifier {
     error = null;
     progress = null;
     elapsedMs = null;
+    lastCompletedProgress = null;
+    outputFps = null;
+    _lastOutputUs = null;
+    _outputClock.reset();
+    _outputClock.start();
     if (!_disposed) notifyListeners();
   }
 
@@ -89,6 +98,7 @@ class RealtimeAiSession extends ChangeNotifier {
     void report(PhotoAiProgress value) {
       if (current()) {
         progress = value;
+        if (value.stage == 'complete') lastCompletedProgress = value;
         notifyListeners();
       }
     }
@@ -100,6 +110,15 @@ class RealtimeAiSession extends ChangeNotifier {
       if (current()) {
         _result = result;
         elapsedMs = clock.elapsedMilliseconds;
+        final now = _outputClock.elapsedMicroseconds;
+        final previous = _lastOutputUs;
+        if (previous != null && now > previous) {
+          final instantaneous = 1000000 / (now - previous);
+          outputFps = outputFps == null
+              ? instantaneous
+              : outputFps! * 0.75 + instantaneous * 0.25;
+        }
+        _lastOutputUs = now;
       }
     } catch (e) {
       if (current()) {

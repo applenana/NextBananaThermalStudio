@@ -3,23 +3,41 @@ class PhotoAiProgress {
   final String stage;
   final int? completed, total;
   final String? device, fallback;
+  final int? prepareMs, requestMs, modelLoadMs, modelInferenceMs, colorMs;
   const PhotoAiProgress(
     this.stage, {
     this.completed,
     this.total,
     this.device,
     this.fallback,
+    this.prepareMs,
+    this.requestMs,
+    this.modelLoadMs,
+    this.modelInferenceMs,
+    this.colorMs,
   });
 
   factory PhotoAiProgress.fromJson(Map<String, dynamic> json) {
     final stage = json['stage'];
     final done = json['completed'], total = json['total'];
+    final invalidMetric =
+        const [
+          'prepareMs',
+          'requestMs',
+          'modelLoadMs',
+          'modelInferenceMs',
+          'colorMs',
+        ].any((key) {
+          final value = json[key];
+          return value != null && (value is! int || value < 0);
+        });
     if (stage is! String ||
         (done != null && done is! int) ||
         (total != null && total is! int) ||
         ((done == null) != (total == null)) ||
         (json['device'] != null && json['device'] is! String) ||
         (json['fallback'] != null && json['fallback'] is! String) ||
+        invalidMetric ||
         (done != null &&
             (total == null || total <= 0 || done < 0 || done > total))) {
       throw const FormatException('AI 进度数据无效');
@@ -30,6 +48,11 @@ class PhotoAiProgress {
       total: total,
       device: json['device'] as String?,
       fallback: json['fallback'] as String?,
+      prepareMs: json['prepareMs'] as int?,
+      requestMs: json['requestMs'] as int?,
+      modelLoadMs: json['modelLoadMs'] as int?,
+      modelInferenceMs: json['modelInferenceMs'] as int?,
+      colorMs: json['colorMs'] as int?,
     );
   }
 

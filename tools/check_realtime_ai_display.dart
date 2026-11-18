@@ -34,21 +34,42 @@ void main() {
       final session = RealtimeAiSession();
       addTearDown(session.dispose);
       addTearDown(() => PhotoAiRuntime.shared.close());
-      final completed = Completer<RenderedFrame>();
+      var latest = Completer<RenderedFrame>();
+      RenderedFrame? previous;
+      PhotoRenderInput? lastInput;
+      final durations = <int>[];
       session.addListener(() {
-        if (completed.isCompleted) return;
-      if (session.error != null) {
-          completed.completeError(StateError(session.error!));
-      }
-      if (session.enhancedFrame != null) {
-          completed.complete(session.enhancedFrame!);
-      }
+        if (session.error != null) {
+          if (!latest.isCompleted) {
+            latest.completeError(StateError(session.error!));
+          }
+        }
+        final result = session.enhancedFrame;
+        if (result != null && !identical(result, previous)) {
+          previous = result;
+          if (!latest.isCompleted) latest.complete(result);
+        }
       });
       session.setEnabled(true);
-      session.submit(input);
-      final enhanced = await completed.future;
-      final ordinary = input.render();
-      final ordinary3x = input.render(scale: 3);
+      var enhanced = input.render(scale: 3);
+      for (var frame = 0; frame < 23; frame++) {
+        latest = Completer<RenderedFrame>();
+        final frameInput = PhotoRenderInput(
+          temperatures: Float32List.fromList(
+            values.map((value) => value + frame * 0.001).toList(),
+          ),
+          width: 120,
+          height: 90,
+          params: input.params,
+        );
+        lastInput = frameInput;
+        final clock = Stopwatch()..start();
+        session.submit(frameInput);
+        enhanced = await latest.future;
+        clock.stop();
+        durations.add(clock.elapsedMilliseconds);
+      }
+      final ordinary3x = lastInput!.render(scale: 3);
       expect((enhanced.width, enhanced.height), (360, 270));
       expect(identical(session.enhancedFrame, enhanced), isTrue);
       expect(enhanced.temperatureField, ordinary3x.temperatureField);
@@ -62,9 +83,9 @@ void main() {
       }
       expect(changed, greaterThan(0), reason: 'Must not return ordinary RGB');
       final expectedDevice = Platform.environment['THERMAL_AI_EXPECT_DEVICE'];
-    if (expectedDevice != null) {
+      if (expectedDevice != null) {
         expect(session.progress?.device, expectedDevice);
-    }
+      }
       img.Image image(RenderedFrame frame) => img.Image.fromBytes(
         width: frame.width,
         height: frame.height,
@@ -76,6 +97,7 @@ void main() {
         Platform.environment['THERMAL_AI_RESULTS'] ??
             'build/live-ai-display-check',
       ).create(recursive: true);
+      final ordinary2x = lastInput.render();
       final comparison = img.Image(width: 1440, height: 574);
       img.drawString(
         comparison,
@@ -94,7 +116,7 @@ void main() {
       img.compositeImage(
         comparison,
         img.copyResize(
-          image(ordinary),
+          image(ordinary2x),
           width: 720,
           height: 540,
           interpolation: img.Interpolation.nearest,
@@ -126,7 +148,19 @@ void main() {
         const JsonEncoder.withIndent('  ').convert({
           'source': path,
           'device': session.progress?.device,
-          'pipelineMs': session.elapsedMs,
+          'frameWallMs': durations,
+          'warmFrameFps':
+              1000 /
+              durations.skip(3).reduce((a, b) => a + b) *
+              (durations.length - 3),
+          'lastSessionJobMs': session.elapsedMs,
+          'stageTimingsMs': {
+            'prepare': session.progress?.prepareMs,
+            'workerRequest': session.progress?.requestMs,
+            'modelLoad': session.progress?.modelLoadMs,
+            'modelInference': session.progress?.modelInferenceMs,
+            'color': session.progress?.colorMs,
+          },
           'width': enhanced.width,
           'height': enhanced.height,
           'changedChannelFraction': changed / enhanced.rgb.length,

@@ -6,6 +6,25 @@ from vendor import sparse_ops
 
 
 class AdapterTests(unittest.TestCase):
+    def test_inference_mask_reuses_one_shape_and_preserves_output(self):
+        from vendor.pft import PFT
+        model = PFT(upscale=3, embed_dim=8, depths=[2], num_heads=2,
+                    num_topk=[16, 16], window_size=4, convffn_kernel_size=3,
+                    mlp_ratio=1, upsampler='pixelshuffledirect').eval()
+        model.calculate_mask = Mock(wraps=model.calculate_mask)
+        with torch.inference_mode():
+            source = torch.rand(1, 3, 8, 8)
+            reference = model(source)
+            cached = model(source)
+            self.assertTrue(torch.equal(reference, cached))
+            self.assertEqual(model.calculate_mask.call_count, 1)
+            changed = source * 0.5
+            cached_changed = model(changed)
+            del model._inference_mask_key
+            self.assertTrue(torch.equal(cached_changed, model(changed)))
+            model(torch.rand(1, 3, 8, 12))
+            self.assertEqual(model.calculate_mask.call_count, 3)
+
     def test_cuda_failure_retries_on_cpu_but_other_errors_propagate(self):
         import numpy as np
         from engine import Engine
