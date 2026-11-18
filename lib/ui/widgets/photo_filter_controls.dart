@@ -167,9 +167,7 @@ class PhotoFilterControls extends StatelessWidget {
                             sourceHeight,
                             scale,
                           ),
-                          child: Text(
-                            'AI $scale× · ${ai!.model == PhotoAiModel.espcn && scale > 2 ? "级联" : "原生"}实验',
-                          ),
+                          child: Text('Thermal-PFT $scale×'),
                         ),
                     ],
                     onChanged: PhotoAiRuntime.available(ai!.model)

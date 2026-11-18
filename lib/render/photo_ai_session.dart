@@ -34,7 +34,7 @@ class PhotoAiSession extends ChangeNotifier {
       _inferProgress?.call(input, progress) ??
       _infer?.call(input) ??
       input.enhanceAsync(onProgress: progress);
-  PhotoAiModel _model = PhotoAiModel.espcn;
+  PhotoAiModel _model = PhotoAiModel.pftTv;
   PhotoAiModel get model => _model;
   int _scale = 0;
   int get scale => _scale;

@@ -1,3 +1,5 @@
+> 历史研究记录：当前应用仅保留 Thermal-PFT L1 / TV 3×。ESPCN、DRCT/PBVS、SwinFuSR 已移除。当前用法见 tools/photo_ai/MODELS.md。
+
 # 热像专用超分模型调研
 
 核查日期：2026-11-18。这里讨论单张图片的空间超分，不是视频时间插帧。

@@ -176,12 +176,29 @@ endif()
 # Portable CB360 photo restoration core.
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../native/cb360" "${CMAKE_CURRENT_BINARY_DIR}/cb360")
 install(TARGETS cb360_restore RUNTIME DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
-install(TARGETS thermal_super_resolution RUNTIME DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
-
 # Optional thermal photo models and portable Python runtime. Prepare explicitly
 # with tools/photo_ai/prepare_runtime.py; CMake never downloads model weights.
+install(CODE [[
+  # Upgrades may reuse an existing bundle directory. Remove only retired AI files.
+  foreach(retired IN ITEMS
+      "thermal_super_resolution.dll"
+      "photo_ai/weights/pbvs.pth" "photo_ai/weights/swinfu_robust03.pth"
+      "photo_ai/vendor/drct.py" "photo_ai/vendor/swinfu.py"
+      "photo_ai/DRCT-LICENSE.txt" "photo_ai/SwinFuSR-LICENSE.txt"
+      "data/flutter_assets/assets/licenses/espcn.txt"
+      "data/flutter_assets/assets/licenses/thermal_drct.txt"
+      "data/flutter_assets/assets/licenses/thermal_swinfu.txt")
+    file(REMOVE "${CMAKE_INSTALL_PREFIX}/${retired}")
+  endforeach()
+]] COMPONENT Runtime)
 set(PHOTO_AI_RUNTIME "${CMAKE_CURRENT_SOURCE_DIR}/../build/photo-ai-runtime" CACHE PATH "Prepared optional photo AI runtime")
 if(EXISTS "${PHOTO_AI_RUNTIME}/python/python.exe" AND EXISTS "${PHOTO_AI_RUNTIME}/weights/manifest.json")
   install(DIRECTORY "${PHOTO_AI_RUNTIME}/" DESTINATION "${CMAKE_INSTALL_PREFIX}/photo_ai"
-    COMPONENT Runtime PATTERN "__pycache__" EXCLUDE)
+    COMPONENT Runtime PATTERN "__pycache__" EXCLUDE
+    PATTERN "pbvs.pth" EXCLUDE PATTERN "swinfu_robust03.pth" EXCLUDE
+    PATTERN "drct.py" EXCLUDE PATTERN "swinfu.py" EXCLUDE
+    PATTERN "DRCT-LICENSE.txt" EXCLUDE PATTERN "SwinFuSR-LICENSE.txt" EXCLUDE)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../tools/photo_ai/weights-manifest.json"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/photo_ai/weights" RENAME "manifest.json"
+    COMPONENT Runtime)
 endif()

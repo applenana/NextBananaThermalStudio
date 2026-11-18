@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
 project(cb360_restore LANGUAGES CXX)
-add_subdirectory(../super_resolution ${CMAKE_CURRENT_BINARY_DIR}/super_resolution)
 add_library(cb360_restore SHARED bridge.cpp
   core/src/processing/photo.cpp
   core/src/display/photo_renderer.cpp

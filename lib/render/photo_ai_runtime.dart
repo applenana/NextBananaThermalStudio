@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'photo_ai_model.dart';
 import 'photo_ai_progress.dart';
 
-/// One shared, sequential local worker for both galleries. No network service.
+/// One shared, sequential local worker for galleries and live display. No network service.
 /// Its interpreter and weights live beside the Windows executable.
 class PhotoAiRuntime {
   static final shared = PhotoAiRuntime();
@@ -26,7 +26,6 @@ class PhotoAiRuntime {
       File('$root/weights/manifest.json').existsSync();
 
   static bool available(PhotoAiModel model) {
-    if (!model.external) return Platform.isWindows || Platform.isAndroid;
     if (!installed) return false;
     try {
       final manifest =

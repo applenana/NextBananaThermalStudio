@@ -20,8 +20,6 @@ PYTHON_HASH = '59ff76e16e6597de47474fb22be69e7191a89116910d728ab735079b078e52db'
 URLS = {
     'pft_l1': 'https://huggingface.co/SemilleroCV/thermal-pft-light-srx3/resolve/5002f089dcbd43c6835620136e0c0318707276cf/202_Thermal_PFT_light_SRx3_finetune.pth',
     'pft_tv': 'https://huggingface.co/SemilleroCV/thermal-pft-light-srx3-cross-channel-tv/resolve/98dfd184de8d364d19982190d70c2c692333aaf5/202_Thermal_PFT_light_SRx3_finetune_cross_channel_tv.pth',
-    'swinfu': 'https://github.com/VisionICLab/SwinFuSR/releases/download/v1.0.0/robust03',
-    'pbvs': '1MzYdz63dlql-WdUQsL9eC5AUqNGYedVF',
 }
 
 
@@ -30,14 +28,11 @@ def digest(path):
         return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
-def fetch(target, url, expected, download_python=None):
+def fetch(target, url, expected):
     if target.exists() and digest(target) == expected:
         return
     temp = target.with_suffix('.partial')
-    if url.startswith('https://'):
-        urllib.request.urlretrieve(url, temp)
-    else:
-        subprocess.run([str(download_python), '-m', 'gdown', url, '-O', str(temp)], check=True)
+    urllib.request.urlretrieve(url, temp)
     if digest(temp) != expected:
         raise ValueError('Checksum mismatch: ' + str(target))
     temp.replace(target)
@@ -77,23 +72,20 @@ def main():
     manifest = json.loads((HERE/'weights-manifest.json').read_text())
     args.weights_cache.mkdir(parents=True, exist_ok=True)
     (target/'weights').mkdir(exist_ok=True)
-    downloader = None
+    for retired in ('weights/pbvs.pth', 'weights/swinfu_robust03.pth',
+                    'vendor/drct.py', 'vendor/swinfu.py',
+                    'DRCT-LICENSE.txt', 'SwinFuSR-LICENSE.txt'):
+        (target/retired).unlink(missing_ok=True)
     for model, item in manifest.items():
         source = args.weights_cache/item['file']
-        if model == 'pbvs' and (not source.exists() or digest(source) != item['sha256']):
-            env = cache/'download-venv'
-            subprocess.run([sys.executable, '-m', 'venv', str(env)], check=True)
-            downloader = env/'Scripts/python.exe'
-            subprocess.run([str(downloader), '-m', 'pip', 'install', 'gdown==6.5.1'], check=True)
-        fetch(source, URLS[model], item['sha256'], downloader)
+        fetch(source, URLS[model], item['sha256'])
         shutil.copy2(source, target/'weights'/item['file'])
     shutil.copy2(HERE/'weights-manifest.json', target/'weights/manifest.json')
     for name in ['engine.py', 'worker.py', 'MODELS.md']:
         shutil.copy2(HERE/name, target/name)
     shutil.copytree(HERE/'vendor', target/'vendor', dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns('__pycache__'))
-    for license in HERE.glob('*LICENSE.txt'):
-        shutil.copy2(license, target/license.name)
+    shutil.copy2(HERE/'PFT-LICENSE.txt', target/'PFT-LICENSE.txt')
     subprocess.run([str(target/'python/python.exe'), '-c',
                     'import torch,numpy,einops; print(torch.__version__, "portable runtime ready")'], check=True)
     print('Prepared:', target)

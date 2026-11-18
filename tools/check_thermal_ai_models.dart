@@ -46,7 +46,7 @@ void main() {
             .enhanceAsync(onProgress: events.add);
         clock.stop();
         final expectedDevice = Platform.environment['THERMAL_AI_EXPECT_DEVICE'];
-        if (model.external && expectedDevice != null) {
+        if (expectedDevice != null) {
           expect(events.last.device, expectedDevice);
           expect(events.every((e) => e.fallback == null), isTrue);
           final counts = events.where((e) => e.completed != null).toList();

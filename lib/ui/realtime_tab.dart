@@ -20,6 +20,8 @@ import '../main.dart'
         setTemperatureRecordInterval;
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
+import '../render/photo_ai_model.dart';
+import '../render/photo_ai_runtime.dart';
 import '../temperature/temperature_history_store.dart';
 import '../temperature/temperature_recorder.dart';
 import 'connection_bar.dart';
@@ -444,6 +446,7 @@ class _ThermalCardState extends State<_ThermalCard> {
         visibleW: supportsVisibleLight ? app.visibleWidth : 0,
         visibleH: supportsVisibleLight ? app.visibleHeight : 0,
       );
+      frame = app.realtimeAi.display(frame);
     }
 
     final headerPad = edge
@@ -617,6 +620,11 @@ class _ThermalCardState extends State<_ThermalCard> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         header,
+        if (isWindows)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: _RealtimeAiSwitch(),
+          ),
         if (!edge) const SizedBox(height: 12),
         Expanded(
           child: Padding(padding: canvasPad, child: canvasArea),
@@ -802,6 +810,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
         visibleW: supportsVisibleLight ? app.visibleWidth : 0,
         visibleH: supportsVisibleLight ? app.visibleHeight : 0,
       );
+      frame = app.realtimeAi.display(frame);
     }
     final liveMarkers = (frame == null || cursorMode)
         ? const <TempMarker>[]
@@ -1928,6 +1937,59 @@ class _ThermalStreamSwitch extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _RealtimeAiSwitch extends StatelessWidget {
+  const _RealtimeAiSwitch();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final progress = app.realtimeAi.progress;
+    final resultAvailable = PhotoAiRuntime.available(PhotoAiModel.pftTv);
+    return Tooltip(
+      message: resultAvailable
+          ? 'Thermal-PFT TV 实时 3× 超分；温度测量仍使用原始帧'
+          : '未安装 Thermal-PFT Windows 扩展包',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('AI 实时超分 · PFT TV 3×', style: TextStyle(fontSize: 12)),
+          Transform.scale(
+            scale: 0.85,
+            child: Switch(
+              value: app.realtimeAiEnabled,
+              onChanged:
+                  resultAvailable && app.status == ConnectionStatus.connected
+                  ? app.setRealtimeAiEnabled
+                  : null,
+            ),
+          ),
+          if (app.realtimeAiEnabled)
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    app.realtimeAi.error ??
+                        (progress == null
+                            ? '等待热像帧'
+                            : '${progress.backendLabel} ${progress.label}'
+                                  '${app.realtimeAi.elapsedMs == null ? "" : " · 上帧 ${app.realtimeAi.elapsedMs} ms"}'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 10),
+                  ),
+                  if (app.realtimeAi.busy)
+                    LinearProgressIndicator(value: progress?.fraction),
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

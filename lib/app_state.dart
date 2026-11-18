@@ -22,6 +22,10 @@ import 'protocol/temperature_calibration.dart';
 import 'protocol/temperature_alarm.dart';
 import 'protocol/thermal_view_config.dart';
 import 'render/render_params.dart';
+import 'render/realtime_ai_session.dart';
+import 'render/photo_ai_runtime.dart';
+import 'render/photo_ai_model.dart';
+import 'render/ai_super_resolution.dart';
 import 'serial/serial_service.dart';
 import 'storage/capture_service.dart';
 import 'temperature/temperature_history_store.dart';
@@ -168,6 +172,8 @@ class AppState extends ChangeNotifier {
   // ---------------- 显示 ----------------
   /// 统一的渲染参数 (插值+双边滤波+调色盘+融合). 实时画面与图片下载 Tab 共用同一份.
   RenderParams renderParams = const RenderParams();
+  final RealtimeAiSession realtimeAi = RealtimeAiSession();
+  bool get realtimeAiEnabled => realtimeAi.enabled;
   RenderParams? _beforeCb360RenderParams;
 
   // ---------------- 日志 ----------------
@@ -184,6 +190,7 @@ class AppState extends ChangeNotifier {
   Timer? _jsonFlushTimer;
 
   AppState() {
+    realtimeAi.addListener(_onRealtimeAiChanged);
     _parser = FrameParser(
       onThermal: _onThermalFrame,
       onVisible: _onVisibleFrame,
@@ -197,6 +204,35 @@ class AppState extends ChangeNotifier {
       (_) => _refreshLocationCache(),
     );
     unawaited(_initializeTemperatureAlarmAudio());
+  }
+
+  void _onRealtimeAiChanged() {
+    if (!_disposed) notifyListeners();
+  }
+
+  void setRealtimeAiEnabled(bool enabled) {
+    if (!Platform.isWindows ||
+        (enabled && !PhotoAiRuntime.available(PhotoAiModel.pftTv))) {
+      return;
+    }
+    realtimeAi.setEnabled(enabled);
+    _submitRealtimeAi();
+  }
+
+  void _submitRealtimeAi() {
+    final frame = thermalFrame;
+    if (!realtimeAiEnabled || !Platform.isWindows || frame == null) return;
+    realtimeAi.submit(
+      PhotoRenderInput(
+        temperatures: frame,
+        width: thermalWidth,
+        height: thermalHeight,
+        params: renderParams,
+        visibleRgb: supportsVisibleLight ? visibleRgb888 : null,
+        visibleW: supportsVisibleLight ? visibleWidth : 0,
+        visibleH: supportsVisibleLight ? visibleHeight : 0,
+      ),
+    );
   }
 
   Future<void> _initializeTemperatureAlarmAudio() async {
@@ -436,7 +472,10 @@ class AppState extends ChangeNotifier {
   void _onCb360Changed() {
     if (cb360 == null || _disposed) return;
     thermalStreamEnabled = cb360!.active;
-    if (!thermalStreamEnabled) thermalFrame = null;
+    if (!thermalStreamEnabled) {
+      thermalFrame = null;
+      realtimeAi.clear();
+    }
     _lastBaud = cb360!.client.baud;
     notifyListeners();
   }
@@ -449,6 +488,7 @@ class AppState extends ChangeNotifier {
 
   /// 内部: 拆除当前连接资源 (不改 _userDisconnect / 不动重连逻辑).
   Future<void> _teardownConnection({required String reason}) async {
+    realtimeAi.setEnabled(false);
     _stopPortWatchdog();
     final cb = cb360;
     cb360 = null;
@@ -527,6 +567,7 @@ class AppState extends ChangeNotifier {
     status = ConnectionStatus.disconnected;
     currentPort = null;
     thermalFrame = null;
+    realtimeAi.clear();
     visibleFrame = null;
     visibleRgb888 = null;
     visibleWidth = 0;
@@ -1559,6 +1600,7 @@ class AppState extends ChangeNotifier {
             );
             if (geometryChanged) {
               thermalFrame = null;
+              realtimeAi.clear();
               _kMax.reset();
               _kMin.reset();
               _kAvg.reset();
@@ -1705,6 +1747,7 @@ class AppState extends ChangeNotifier {
     thermalFrame = mirrored;
     thermalWidth = width;
     thermalHeight = height;
+    _submitRealtimeAi();
     final recordedAt = DateTime.now();
     final recorder = TemperatureRecorder.instance;
     final history = TemperatureHistoryStore.instance;
@@ -1816,6 +1859,7 @@ class AppState extends ChangeNotifier {
       sendCommand('streaming stoped');
       // 关闭热像推流: 清空对应缓存, 避免画面残留 (需求: 关闭后不再保留旧帧).
       thermalFrame = null;
+      realtimeAi.clear();
       // 同时若可见光仍在推流, 把融合模式拨回 off — 此时已无法做"热像+可见光"
       // 真融合, 强行保留 blend/edge 反而会导致下次只开热像时残留奇怪叠加.
       if (visibleStreamEnabled && renderParams.fusion.mode != FusionMode.off) {
@@ -1942,6 +1986,8 @@ class AppState extends ChangeNotifier {
   /// 更新渲染参数 (任意字段). UI 控件调用.
   void updateRenderParams(RenderParams p) {
     renderParams = p;
+    realtimeAi.clear();
+    _submitRealtimeAi();
     notifyListeners();
   }
 
@@ -2311,6 +2357,8 @@ class AppState extends ChangeNotifier {
   @override
   Future<void> dispose() async {
     _disposed = true;
+    realtimeAi.removeListener(_onRealtimeAiChanged);
+    realtimeAi.dispose();
     _awaitingLegacyCalibration = false;
     final calibrationCompleter = _calibrationCompleter;
     _calibrationCompleter = null;
