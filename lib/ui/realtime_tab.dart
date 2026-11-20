@@ -24,6 +24,7 @@ import '../render/realtime_render_cache.dart';
 import '../render/ai_super_resolution.dart';
 import '../render/photo_ai_model.dart';
 import '../render/photo_ai_runtime.dart';
+import 'ai_runtime_install_ui.dart';
 import '../temperature/temperature_history_store.dart';
 import '../temperature/temperature_recorder.dart';
 import 'connection_bar.dart';
@@ -1962,14 +1963,29 @@ class _RealtimeAiSwitch extends StatefulWidget {
 }
 
 class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
-  late final Future<PhotoAiCudaCapability> _cuda;
-  late final bool _modelAvailable;
+  late Future<PhotoAiCudaCapability> _cuda;
+  late bool _modelAvailable;
 
   @override
   void initState() {
     super.initState();
     _modelAvailable = PhotoAiRuntime.available(PhotoAiModel.pftTv);
     _cuda = PhotoAiRuntime.shared.checkCuda();
+    PhotoAiRuntime.revision.addListener(_refreshRuntime);
+  }
+
+  void _refreshRuntime() {
+    if (!mounted) return;
+    setState(() {
+      _modelAvailable = PhotoAiRuntime.available(PhotoAiModel.pftTv);
+      _cuda = PhotoAiRuntime.shared.checkCuda();
+    });
+  }
+
+  @override
+  void dispose() {
+    PhotoAiRuntime.revision.removeListener(_refreshRuntime);
+    super.dispose();
   }
 
   Widget _info(double width, String text) => SizedBox(
@@ -2002,7 +2018,7 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
       message: _modelAvailable
           ? 'Thermal-PFT TV 实时 3× 超分；温度测量仍使用原始帧'
                 '${timings == null ? "" : "\n上帧预处理 ${timings.prepareMs} ms · 推理 ${timings.modelInferenceMs} ms · 着色 ${timings.colorMs} ms"}'
-          : '当前 Windows 安装包缺少 Thermal-PFT AI 运行包。请安装包含 AI 扩展的最新版完整安装包；便携版请完整解压后运行。',
+          : '需要独立安装 Thermal-PFT AI 运行包，点击“安装 AI 运行包”即可检查并下载。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -2029,6 +2045,7 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
                   ),
                 ],
               ),
+              if (!_modelAvailable) const AiRuntimeInstallButton(),
               FutureBuilder<PhotoAiCudaCapability>(
                 future: _cuda,
                 builder: (context, snapshot) {

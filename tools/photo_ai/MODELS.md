@@ -1,7 +1,8 @@
 # Thermal-PFT display super-resolution
 
-The optional **Windows CUDA/CPU** bundle lives beside the application in
-`photo_ai/`. Only Thermal-PFT L1 and TV checkpoints remain. Both infer at native
+The optional **Windows CUDA/CPU** bundle is installed on demand into
+`%LOCALAPPDATA%/BananaThermalStudio/ai/photo_ai_v1`. Legacy bundles beside the
+application in `photo_ai/` remain supported. Only Thermal-PFT L1 and TV checkpoints remain. Both infer at native
 3×. There is no automatic network download or Android inference runtime.
 
 ## Provenance and validation
@@ -75,20 +76,48 @@ restarted, and the worker exits after five idle minutes or parent EOF.
 CUDA allocation/driver/kernel failures retry once on CPU and retain the fallback
 reason. Other errors propagate. FP32 is retained with TF32 disabled.
 
-Release CI prepares the CUDA bundle before the Windows build, so both the
-installer and portable ZIP include `photo_ai/`. A compatible NVIDIA driver is
-needed for CUDA; the worker falls back to CPU when CUDA cannot be used. For a
-local release build, prepare using Windows Python 3.13:
+Release CI publishes the CUDA/CPU runtime separately from Setup and the portable
+application ZIP. `package_runtime.py` streams a ZIP64 archive into ordered 1 GiB
+parts (`photo-ai-windows-x64.zip.001`, etc.) and a JSON manifest. Every release
+asset is checked to be below 2 GiB. The matching app embeds the manifest SHA-256
+with `AI_RUNTIME_MANIFEST_SHA256` and uses `APP_RELEASE_VERSION` to fetch only
+that tag's assets over HTTPS. No latest-version lookup or user-supplied URLs are
+used for executable downloads.
+
+The startup offer runs after the app update check, only for a missing runtime
+on Windows x64, Windows 10+, at least 8 GiB visible RAM, a writable user directory,
+and enough disk space (two compressed copies + unpacked size + 1 GiB reserve).
+The dialog displays download size, disk requirements, destination and detected
+GPU. It downloads nothing beyond the small manifest until the user confirms.
+The user may decline or disable automatic offers; manual installation remains
+available in Settings, live display and photo controls. No administrator or
+system Python installation is required. CUDA support is checked after install;
+other machines retain CPU inference, which may be too slow for live use.
+
+Each downloaded part is checked for exact length and SHA-256. Cancelled/failed
+attempts reuse complete verified parts on retry (partial parts restart). A
+separate staging directory receives extraction, with path/link/size checks.
+`check_runtime.py` verifies both model hashes and performs a CPU inference before
+activation. An existing installation is preserved if validation fails. Activation
+refreshes the model controls and clears the cached CUDA probe without restarting
+the app. Successful installation removes download/staging files. The user-owned
+runtime persists across app upgrades and uninstallation; its folder may be
+removed manually when the app is closed. Offline/missing release assets suppress
+the automatic offer; the manual dialog displays the error and allows retry.
+
+Local development builds without both release defines do not download runtime
+assets. For a local runtime, prepare using Windows Python 3.13:
 
 ```powershell
 python tools/photo_ai/prepare_runtime.py --backend cuda --output build/photo-ai-cuda-runtime
-cmake -S windows -B build/windows/x64 -DPHOTO_AI_RUNTIME="$PWD/build/photo-ai-cuda-runtime"
+cmake -S windows -B build/windows/x64 -DBUNDLE_PHOTO_AI_RUNTIME=ON -DPHOTO_AI_RUNTIME="$PWD/build/photo-ai-cuda-runtime"
 flutter build windows --release --no-pub
 ```
 
 The portable runtime includes CUDA libraries; the target PC needs a compatible
 NVIDIA driver. `--backend cpu` prepares a smaller CPU bundle in a separate output
-directory. CMake defaults to `build/photo-ai-runtime`; override `PHOTO_AI_RUNTIME`
+directory. Bundling is off by default; `BUNDLE_PHOTO_AI_RUNTIME=ON` is for local
+use only. CMake defaults to `build/photo-ai-runtime`; override `PHOTO_AI_RUNTIME`
 for other prepared bundles. Copy the entire application folder including
 `photo_ai`, not just the EXE. `THERMAL_AI_RUNTIME` overrides the path in tests.
 The preparation and installation steps remove known retired model resources when

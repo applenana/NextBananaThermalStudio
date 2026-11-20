@@ -37,6 +37,7 @@ import 'widgets/window_title_bar.dart';
 import 'window_size_ffi.dart';
 import 'banana_toast.dart';
 import 'app_update_ui.dart';
+import 'ai_runtime_install_ui.dart';
 import 'firmware_update_ui.dart';
 import '../app_state.dart';
 import '../firmware/firmware_update.dart';
@@ -68,8 +69,10 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(checkForUpdatesOnStartup(context));
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await checkForUpdatesOnStartup(context);
+      if (mounted) await offerAiRuntimeOnStartup(context);
     });
   }
 
@@ -1076,6 +1079,15 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
             subtitle: '官方源优先，多镜像故障转移；检测失败后每分钟自动重试',
             child: AppUpdateSettingsControl(),
           ),
+          if (Platform.isWindows) ...[
+            const SizedBox(height: 12),
+            const _SettingsSection(
+              icon: Icons.auto_awesome,
+              title: 'AI 超分运行包',
+              subtitle: '独立下载和安装，支持 CUDA 加速与 CPU 回退',
+              child: AiRuntimeInstallButton(),
+            ),
+          ],
           const SizedBox(height: 12),
           _SettingsSection(
             icon: Icons.restore_rounded,

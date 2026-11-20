@@ -195,7 +195,8 @@ install(CODE [[
   endforeach()
 ]] COMPONENT Runtime)
 set(PHOTO_AI_RUNTIME "${CMAKE_CURRENT_SOURCE_DIR}/../build/photo-ai-runtime" CACHE PATH "Prepared optional photo AI runtime")
-if(EXISTS "${PHOTO_AI_RUNTIME}/python/python.exe" AND EXISTS "${PHOTO_AI_RUNTIME}/weights/manifest.json")
+option(BUNDLE_PHOTO_AI_RUNTIME "Include the large AI runtime in a local bundle" OFF)
+if(BUNDLE_PHOTO_AI_RUNTIME AND EXISTS "${PHOTO_AI_RUNTIME}/python/python.exe" AND EXISTS "${PHOTO_AI_RUNTIME}/weights/manifest.json")
   install(DIRECTORY "${PHOTO_AI_RUNTIME}/" DESTINATION "${CMAKE_INSTALL_PREFIX}/photo_ai"
     COMPONENT Runtime PATTERN "__pycache__" EXCLUDE
     PATTERN "pbvs.pth" EXCLUDE PATTERN "swinfu_robust03.pth" EXCLUDE

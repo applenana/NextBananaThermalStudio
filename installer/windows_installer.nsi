@@ -69,7 +69,8 @@ Section "主程序" SEC_MAIN
   SectionIn RO
   SetOutPath "$INSTDIR"
   SetOverwrite on
-  File /r "..\build\windows\x64\runner\Release\*"
+  ; AI is installed separately per user; never embed CUDA in NSIS.
+  File /r /x photo_ai "..\build\windows\x64\runner\Release\*"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"

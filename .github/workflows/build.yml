@@ -35,7 +35,24 @@ jobs:
           python-version: "3.13"
 
       - name: Prepare Thermal-PFT Windows runtime
+        if: startsWith(github.ref, 'refs/tags/v')
         run: python tools/photo_ai/prepare_runtime.py --backend cuda --output build/photo-ai-runtime
+
+      - name: Validate and package independent AI runtime
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          & build/photo-ai-runtime/python/python.exe -I build/photo-ai-runtime/check_runtime.py
+          if ($LASTEXITCODE -ne 0) { throw "AI runtime smoke test failed" }
+          $digest = python tools/photo_ai/package_runtime.py --source build/photo-ai-runtime --output dist --tag "$env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0 -or $digest -notmatch '^[0-9a-f]{64}$') { throw "AI runtime packaging failed" }
+          "AI_RUNTIME_MANIFEST_SHA256=$digest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Test AI runtime installer contracts
+        run: |
+          python -m unittest discover -s tools/photo_ai -p test_package_runtime.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter test --no-pub test/ai_runtime_install_test.dart test/ai_runtime_install_ui_test.dart
 
       - name: Check public branding
         run: python tools/check_public_branding.py
@@ -75,7 +92,7 @@ jobs:
           fi
 
       - name: Build Windows Release
-        run: flutter build windows --release ${{ steps.ver.outputs.args }}
+        run: flutter build windows --release ${{ steps.ver.outputs.args }} --dart-define=AI_RUNTIME_MANIFEST_SHA256=$env:AI_RUNTIME_MANIFEST_SHA256
 
       - name: Check Windows release branding
         run: python tools/check_public_branding.py --release build/windows/x64/runner/Release
@@ -86,6 +103,7 @@ jobs:
         run: |
           $src = "build\windows\x64\runner\Release"
           if (-not (Test-Path $src)) { throw "Release folder not found: $src" }
+          if (Test-Path "$src\photo_ai") { throw "AI runtime must be published separately, not embedded in the app" }
           # Release 资产名不带时间戳 / sha; artifact 名中可附加以区分不同 run.
           New-Item -ItemType Directory -Path "dist" -Force | Out-Null
           $zip = "dist\BananaThermal-windows-x64.zip"
@@ -102,6 +120,13 @@ jobs:
           & $makensis "/INPUTCHARSET" "UTF8" "/DAPP_VERSION=${{ steps.ver.outputs.name }}" "/DAPP_FILE_VERSION=${{ steps.ver.outputs.file_version }}" "installer\windows_installer.nsi"
           if ($LASTEXITCODE -ne 0) { throw "NSIS failed with exit code $LASTEXITCODE" }
 
+      - name: Check release asset sizes
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -File | ForEach-Object {
+            if ($_.Length -ge 2GB) { throw "Release asset exceeds 2 GiB: $($_.Name)" }
+          }
+
       - name: Upload windows artifact
         uses: actions/upload-artifact@v4
         with:
@@ -109,6 +134,7 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 30
+          compression-level: 0
 
   # ----------------------------- Android -----------------------------
   build-android:
@@ -409,6 +435,7 @@ jobs:
             echo "- **Windows 安装版**: \`BananaThermal-windows-x64-setup.exe\` — 推荐，支持覆盖升级"
             echo "- **Windows 便携版**: \`BananaThermal-windows-x64.zip\` — 解压后运行 \`banana_thermal.exe\`"
             echo "- **Android**: \`BananaThermal-android.apk\` — universal apk, 三 ABI 通用"
+            echo "- **Windows AI 超分**: 在应用内点击‘安装 AI 运行包’按需下载，支持 CUDA / CPU；无需手工下载或合并分卷。"
             if [ -n "$PREV" ]; then
               echo
               echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${CURR}"

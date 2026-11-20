@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'photo_ai_model.dart';
 import 'photo_ai_progress.dart';
 
@@ -12,9 +13,40 @@ class PhotoAiCudaCapability {
 }
 
 /// One shared, sequential local worker for galleries and live display. No network service.
-/// Its interpreter and weights live beside the Windows executable.
+/// Interpreter and weights live in per-user storage or a legacy portable bundle.
 class PhotoAiRuntime {
   static final shared = PhotoAiRuntime();
+  static final revision = ValueNotifier<int>(0);
+
+  static String get managedRoot =>
+      '${Platform.environment['LOCALAPPDATA'] ?? File(Platform.resolvedExecutable).parent.path}/BananaThermalStudio/ai/photo_ai_v1';
+
+  static bool completeAt(String directory) {
+    try {
+      if (!File('$directory/python/python.exe').existsSync() ||
+          !File('$directory/worker.py').existsSync()) {
+        return false;
+      }
+      final manifest =
+          jsonDecode(
+                File('$directory/weights/manifest.json').readAsStringSync(),
+              )
+              as Map;
+      return PhotoAiModel.values.every((model) {
+        final name = manifest[model.id]?['file'];
+        return name is String && File('$directory/weights/$name').existsSync();
+      });
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static void refreshInstallation() {
+    shared._cudaProbe = null;
+    shared.cudaCapability = null;
+    revision.value++;
+  }
+
   Process? _process;
   StreamIterator<String>? _responses;
   StreamSubscription<String>? _stderr;
@@ -65,7 +97,9 @@ class PhotoAiRuntime {
 
   static String get root =>
       Platform.environment['THERMAL_AI_RUNTIME'] ??
-      '${File(Platform.resolvedExecutable).parent.path}/photo_ai';
+      (completeAt(managedRoot)
+          ? managedRoot
+          : '${File(Platform.resolvedExecutable).parent.path}/photo_ai');
   static bool get installed =>
       Platform.isWindows &&
       File('$root/python/python.exe').existsSync() &&

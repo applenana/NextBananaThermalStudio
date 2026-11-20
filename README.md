@@ -23,6 +23,7 @@
 >
 > - **想要最新测试版？** → 点上方 CI 徽章，或进入 [Actions](https://github.com/applenana/NextBananaThermalStudio/actions/workflows/build.yml) 找到最新一次成功的构建，点开 **Artifacts** 下载各平台打包好的软件，抢先体验最新功能（可能不稳定）。
 > - **想要稳定发行版？** → 直接去 [Releases](https://github.com/applenana/NextBananaThermalStudio/releases/latest) 下载带版本号的正式包，开箱即用，不会踩坑。
+> - **Windows AI 超分** → 支持按需安装的正式版本会在环境满足条件时询问是否下载安装 AI 运行包，也可从“设置 → AI 超分运行包”手动安装。运行包包含 Python、模型和推理依赖，无需自行配置；兼容的 NVIDIA 显卡可使用 CUDA，其余环境使用 CPU。
 
 ---
 
