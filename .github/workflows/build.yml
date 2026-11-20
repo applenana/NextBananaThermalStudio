@@ -29,6 +29,14 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      - name: Setup Python for Thermal-PFT runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Prepare Thermal-PFT Windows runtime
+        run: python tools/photo_ai/prepare_runtime.py --backend cuda --output build/photo-ai-runtime
+
       - name: Check public branding
         run: python tools/check_public_branding.py
 

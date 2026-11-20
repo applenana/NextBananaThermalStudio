@@ -2002,7 +2002,7 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
       message: _modelAvailable
           ? 'Thermal-PFT TV 实时 3× 超分；温度测量仍使用原始帧'
                 '${timings == null ? "" : "\n上帧预处理 ${timings.prepareMs} ms · 推理 ${timings.modelInferenceMs} ms · 着色 ${timings.colorMs} ms"}'
-          : '未安装 Thermal-PFT Windows 扩展包',
+          : '当前 Windows 安装包缺少 Thermal-PFT AI 运行包。请安装包含 AI 扩展的最新版完整安装包；便携版请完整解压后运行。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,

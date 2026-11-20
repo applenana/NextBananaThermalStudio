@@ -75,7 +75,10 @@ restarted, and the worker exits after five idle minutes or parent EOF.
 CUDA allocation/driver/kernel failures retry once on CPU and retain the fallback
 reason. Other errors propagate. FP32 is retained with TF32 disabled.
 
-Prepare using Windows Python 3.13:
+Release CI prepares the CUDA bundle before the Windows build, so both the
+installer and portable ZIP include `photo_ai/`. A compatible NVIDIA driver is
+needed for CUDA; the worker falls back to CPU when CUDA cannot be used. For a
+local release build, prepare using Windows Python 3.13:
 
 ```powershell
 python tools/photo_ai/prepare_runtime.py --backend cuda --output build/photo-ai-cuda-runtime
