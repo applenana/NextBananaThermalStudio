@@ -336,7 +336,8 @@ class AppState extends ChangeNotifier {
       info: null,
     );
     var foundBaud = baud;
-    for (final speed in {
+    final rates = {
+      if (Platform.isAndroid) baud,
       preferences.getInt('starthermal.lastBaud') ??
           preferences.getInt(
             '${legacyStarThermalModel.toLowerCase()}.lastBaud',
@@ -346,7 +347,8 @@ class AppState extends ChangeNotifier {
       115200,
       2000000,
       921600,
-    }) {
+    };
+    for (final speed in rates) {
       if (status != ConnectionStatus.scanning) return false;
       found = await SerialService.searchTargetDevice(
         baud: speed,
@@ -363,7 +365,7 @@ class AppState extends ChangeNotifier {
 
     if (found.port == null) {
       status = ConnectionStatus.disconnected;
-      _log('warn', '未发现热成像设备, 请检查 USB 连接');
+      _log('warn', '未发现热成像设备（探测速率：${rates.join("、")}），请检查 USB 连接及授权');
       notifyListeners();
       return false;
     }
@@ -380,6 +382,8 @@ class AppState extends ChangeNotifier {
       }
       return status == ConnectionStatus.connected;
     }
+    // The probe has released the port; this is a handoff, not a competing search.
+    status = ConnectionStatus.disconnected;
     await connect(found.port!, baud: foundBaud);
     // 探测阶段已经拿到 JSON, 直接消化, 不必等连接后再 GetSysInfo
     if (found.info != null && !isStarThermal) {
@@ -430,8 +434,10 @@ class AppState extends ChangeNotifier {
         cancelOnError: false,
       );
       Map<String, dynamic>? identity;
-      for (final speed in {baud, 115200, 2000000, 921600}) {
+      final rates = {baud, 115200, 2000000, 921600};
+      for (final speed in rates) {
         await _serial.setBaud(speed);
+        _log('info', '等待设备身份应答：$portName @ $speed');
         _identityProbe = IdentityProbe();
         final result = _identityResult = Completer<Map<String, dynamic>>();
         await _serial.writeAll(Uint8List.fromList('GetSysInfo\n'.codeUnits));
@@ -445,7 +451,8 @@ class AppState extends ChangeNotifier {
       }
       _identityProbe = null;
       _identityResult = null;
-      if (identity == null) throw StateError('未收到有效设备信息');
+      if (identity == null)
+        throw StateError('串口已打开，但在 ${rates.join("、")} 均未收到有效设备信息');
       status = ConnectionStatus.connected;
       if (isStarThermalInfo(identity)) {
         final controller = StarThermalController(

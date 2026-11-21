@@ -351,7 +351,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
                         ? '中断自动搜索并连接所选端口'
                         : (connected ? '断开当前连接' : '连接所选端口'),
                     child: FilledButton.icon(
-                      onPressed: (app.status == ConnectionStatus.connecting)
+                      onPressed: (isBusy || (!connected && _selected == null))
                           ? null
                           : () async {
                               if (connected) {
@@ -382,15 +382,17 @@ class _ConnectionBarState extends State<ConnectionBar> {
                 ),
               ],
             ),
-            if (app.starthermal != null) ...[
+            ...[
               const SizedBox(height: 8),
               Wrap(
                 spacing: 12,
                 runSpacing: 4,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
+                  const Text('波特率'),
                   _baudSelector(app),
-                  StarThermalControls(device: app.starthermal!),
+                  if (app.starthermal != null)
+                    StarThermalControls(device: app.starthermal!),
                 ],
               ),
             ],
@@ -641,7 +643,8 @@ class _ConnectionBarState extends State<ConnectionBar> {
                     ),
                   ),
                   _StatusBadge(status: app.status),
-                  if (app.starthermal != null) StarThermalControls(device: app.starthermal!),
+                  if (app.starthermal != null)
+                    StarThermalControls(device: app.starthermal!),
                 ],
               ),
 
