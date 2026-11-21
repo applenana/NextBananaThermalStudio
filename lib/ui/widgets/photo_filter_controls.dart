@@ -136,13 +136,11 @@ class PhotoFilterControls extends StatelessWidget {
                 if (!PhotoAiRuntime.available(ai!.model))
                   const AiRuntimeInstallButton(),
                 Tooltip(
-                  message:
-                      '${ai!.model.description} 仅增强显示，测温取自原数据。'
-                      '热像模型需要 Windows 扩展包；不可用项置灰。',
+                  message: '${ai!.model.description} 仅增强显示，测温取自原数据。',
                   child: DropdownButton<PhotoAiModel>(
                     value: ai!.model,
                     isDense: true,
-                    items: PhotoAiModel.values
+                    items: PhotoAiModel.platformModels
                         .map(
                           (model) => DropdownMenuItem(
                             value: model,
@@ -175,7 +173,7 @@ class PhotoFilterControls extends StatelessWidget {
                             sourceHeight,
                             scale,
                           ),
-                          child: Text('Thermal-PFT $scale×'),
+                          child: Text('AI 超分：$scale×'),
                         ),
                     ],
                     onChanged: PhotoAiRuntime.available(ai!.model)

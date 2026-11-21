@@ -25,6 +25,7 @@ import 'render/render_params.dart';
 import 'render/realtime_ai_session.dart';
 import 'render/photo_ai_runtime.dart';
 import 'render/photo_ai_model.dart';
+import 'render/mobile_ai_backend.dart';
 import 'render/ai_super_resolution.dart';
 import 'serial/serial_service.dart';
 import 'storage/capture_service.dart';
@@ -190,6 +191,7 @@ class AppState extends ChangeNotifier {
   Timer? _jsonFlushTimer;
 
   AppState() {
+    MobileAiSettings.preferred.addListener(_submitRealtimeAi);
     realtimeAi.addListener(_onRealtimeAiChanged);
     _parser = FrameParser(
       onThermal: _onThermalFrame,
@@ -211,8 +213,7 @@ class AppState extends ChangeNotifier {
   }
 
   void setRealtimeAiEnabled(bool enabled) {
-    if (!Platform.isWindows ||
-        (enabled && !PhotoAiRuntime.available(PhotoAiModel.pftTv))) {
+    if (enabled && !PhotoAiRuntime.available(PhotoAiModel.platformDefault)) {
       return;
     }
     realtimeAi.setEnabled(enabled);
@@ -250,10 +251,12 @@ class AppState extends ChangeNotifier {
 
   void _submitRealtimeAi() {
     final frame = thermalFrame;
-    if (!realtimeAiEnabled || !Platform.isWindows || frame == null) return;
+    if (!realtimeAiEnabled || frame == null) return;
     realtimeAi.submit(
       PhotoRenderInput(
         temperatures: frame,
+        aiModel: PhotoAiModel.platformDefault,
+        backend: MobileAiSettings.preferred.value,
         width: thermalWidth,
         height: thermalHeight,
         params: renderParams,
@@ -2392,6 +2395,7 @@ class AppState extends ChangeNotifier {
 
   @override
   Future<void> dispose() async {
+    MobileAiSettings.preferred.removeListener(_submitRealtimeAi);
     _disposed = true;
     realtimeAi.removeListener(_onRealtimeAiChanged);
     realtimeAi.dispose();

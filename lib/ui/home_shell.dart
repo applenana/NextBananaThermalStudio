@@ -38,6 +38,7 @@ import 'window_size_ffi.dart';
 import 'banana_toast.dart';
 import 'app_update_ui.dart';
 import 'ai_runtime_install_ui.dart';
+import '../render/mobile_ai_backend.dart';
 import 'firmware_update_ui.dart';
 import '../app_state.dart';
 import '../firmware/firmware_update.dart';
@@ -1086,6 +1087,36 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
               title: 'AI 超分运行包',
               subtitle: '独立下载和安装，支持 CUDA 加速与 CPU 回退',
               child: AiRuntimeInstallButton(),
+            ),
+          ],
+          if (Platform.isAndroid) ...[
+            const SizedBox(height: 12),
+            _SettingsSection(
+              icon: Icons.memory,
+              title: 'AI 超分处理器',
+              subtitle: MobileAiSettings.supported
+                  ? '实时和照片共用 · 120×90 → 360×270 · GPU 不可用时回退 CPU'
+                  : '当前设备架构不支持移动超分',
+              child: ValueListenableBuilder<MobileAiBackend>(
+                valueListenable: MobileAiSettings.preferred,
+                builder: (context, value, _) =>
+                    SegmentedButton<MobileAiBackend>(
+                      segments: const [
+                        ButtonSegment(
+                          value: MobileAiBackend.cpu,
+                          label: Text('CPU 优先'),
+                        ),
+                        ButtonSegment(
+                          value: MobileAiBackend.gpu,
+                          label: Text('GPU 优先'),
+                        ),
+                      ],
+                      selected: {value},
+                      onSelectionChanged: MobileAiSettings.supported
+                          ? (values) => MobileAiSettings.select(values.single)
+                          : null,
+                    ),
+              ),
             ),
           ],
           const SizedBox(height: 12),

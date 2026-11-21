@@ -4,6 +4,7 @@ import '../fusion/fusion.dart';
 import 'render_params.dart';
 import 'render_pipeline.dart';
 import 'photo_ai_model.dart';
+import 'mobile_ai_backend.dart';
 import 'photo_ai_runtime.dart';
 import 'photo_ai_progress.dart';
 
@@ -68,6 +69,7 @@ class PhotoRenderInput {
   final double? min, max;
   final int aiScale;
   final PhotoAiModel aiModel;
+  final MobileAiBackend backend;
   const PhotoRenderInput({
     required this.temperatures,
     required this.width,
@@ -80,22 +82,27 @@ class PhotoRenderInput {
     this.max,
     this.aiScale = 3,
     this.aiModel = PhotoAiModel.pftTv,
+    this.backend = MobileAiBackend.cpu,
   });
 
-  PhotoRenderInput withAiScale(int scale, {PhotoAiModel? model}) =>
-      PhotoRenderInput(
-        temperatures: temperatures,
-        width: width,
-        height: height,
-        params: params,
-        visibleRgb: visibleRgb,
-        visibleW: visibleW,
-        visibleH: visibleH,
-        min: min,
-        max: max,
-        aiScale: scale,
-        aiModel: model ?? aiModel,
-      );
+  PhotoRenderInput withAiScale(
+    int scale, {
+    PhotoAiModel? model,
+    MobileAiBackend? preferred,
+  }) => PhotoRenderInput(
+    temperatures: temperatures,
+    width: width,
+    height: height,
+    params: params,
+    visibleRgb: visibleRgb,
+    visibleW: visibleW,
+    visibleH: visibleH,
+    min: min,
+    max: max,
+    aiScale: scale,
+    aiModel: model ?? aiModel,
+    backend: preferred ?? backend,
+  );
 
   bool get supportsAiScale => aiModel.supports(
     width,
@@ -147,6 +154,7 @@ class PhotoRenderInput {
       source.normalizedField,
       source.width,
       source.height,
+      backend: backend,
       onProgress: (progress) {
         latest = progress;
         onProgress?.call(progress);

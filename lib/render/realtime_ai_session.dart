@@ -67,6 +67,7 @@ class RealtimeAiSession extends ChangeNotifier {
       input.visibleH,
       input.aiModel.id,
       input.aiScale,
+      input.backend.name,
     ]);
     if (_configuration != configuration) {
       clear();
@@ -77,7 +78,7 @@ class RealtimeAiSession extends ChangeNotifier {
     if (error != null || identical(input.temperatures, _lastSubmitted)) return;
     _lastSubmitted = input.temperatures;
     if (!input.supportsAiScale) {
-      error = '此分辨率不支持 PFT 3×，已显示普通画面';
+      error = '此分辨率不支持 ${input.aiModel.label} 3×，已显示普通画面';
       notifyListeners();
       return;
     }

@@ -1,0 +1,26 @@
+plugins { id 'com.android.application' version '8.11.1' }
+
+android {
+    namespace 'studio.thermal.srprobe'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'studio.thermal.srprobe'
+        minSdk 24
+        targetSdk 35
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    sourceSets.main.assets.srcDir '../../../build/mobile-sr/assets'
+    androidResources { noCompress += 'tflite' }
+}
+dependencies {
+    implementation 'com.google.ai.edge.litert:litert:2.3.0'
+    implementation 'com.google.ai.edge.litert:litert-gpu:2.3.0'
+}
+tasks.named('preBuild') {
+    doFirst {
+        ['tiny3x.tflite','input.f32','reference.f32'].each {
+            if (!file("../../../build/mobile-sr/assets/$it").isFile())
+                throw new GradleException("Generate the mobile_sr probe assets first: $it")
+        }
+    }
+}

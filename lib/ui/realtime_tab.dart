@@ -629,7 +629,7 @@ class _ThermalCardState extends State<_ThermalCard> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         header,
-        if (isWindows)
+        if (isWindows || isAndroid)
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
             child: _RealtimeAiSwitch(),
@@ -1963,22 +1963,22 @@ class _RealtimeAiSwitch extends StatefulWidget {
 }
 
 class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
-  late Future<PhotoAiCudaCapability> _cuda;
+  Future<PhotoAiCudaCapability>? _cuda;
   late bool _modelAvailable;
 
   @override
   void initState() {
     super.initState();
-    _modelAvailable = PhotoAiRuntime.available(PhotoAiModel.pftTv);
-    _cuda = PhotoAiRuntime.shared.checkCuda();
+    _modelAvailable = PhotoAiRuntime.available(PhotoAiModel.platformDefault);
+    if (Platform.isWindows) _cuda = PhotoAiRuntime.shared.checkCuda();
     PhotoAiRuntime.revision.addListener(_refreshRuntime);
   }
 
   void _refreshRuntime() {
     if (!mounted) return;
     setState(() {
-      _modelAvailable = PhotoAiRuntime.available(PhotoAiModel.pftTv);
-      _cuda = PhotoAiRuntime.shared.checkCuda();
+      _modelAvailable = PhotoAiRuntime.available(PhotoAiModel.platformDefault);
+      if (Platform.isWindows) _cuda = PhotoAiRuntime.shared.checkCuda();
     });
   }
 
@@ -2016,8 +2016,10 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
     final connected = app.status == ConnectionStatus.connected;
     return Tooltip(
       message: _modelAvailable
-          ? 'Thermal-PFT TV 实时 3× 超分；温度测量仍使用原始帧'
+          ? '${PhotoAiModel.platformDefault.label} 实时 3× 超分；温度测量仍使用原始帧'
                 '${timings == null ? "" : "\n上帧预处理 ${timings.prepareMs} ms · 推理 ${timings.modelInferenceMs} ms · 着色 ${timings.colorMs} ms"}'
+          : Platform.isAndroid
+          ? '移动超分仅支持 64 位 ARM 设备'
           : '需要独立安装 Thermal-PFT AI 运行包，点击“安装 AI 运行包”即可检查并下载。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2030,9 +2032,11 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
-                    'AI 实时超分 · PFT TV 3×',
-                    style: TextStyle(fontSize: 12),
+                  Text(
+                    Platform.isAndroid
+                        ? 'AI 实时超分 · 轻量 3×'
+                        : 'AI 实时超分 · PFT TV 3×',
+                    style: const TextStyle(fontSize: 12),
                   ),
                   Transform.scale(
                     scale: 0.85,
@@ -2046,52 +2050,54 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
                 ],
               ),
               if (!_modelAvailable) const AiRuntimeInstallButton(),
-              FutureBuilder<PhotoAiCudaCapability>(
-                future: _cuda,
-                builder: (context, snapshot) {
-                  final capability = snapshot.data;
-                  final ready = capability?.available == true;
-                  final dark = Theme.of(context).brightness == Brightness.dark;
-                  final gold = dark
-                      ? const Color(0xFFE4C474)
-                      : const Color(0xFF876316);
-                  return Tooltip(
-                    message: capability == null
-                        ? '正在检测 CUDA 加速能力'
-                        : !ready
-                        ? capability.detail
-                        : !connected
-                        ? 'CUDA 已就绪，请连接设备'
-                        : '${capability.detail}\n开启 PFT TV 3×；普通插值 2× 双三次\n双边滤波：空间 0.79 / 亮度 0.50\n温度卡尔曼开启，像素卡尔曼关闭',
-                    child: OutlinedButton.icon(
-                      onPressed: ready && connected
-                          ? app.applyRealtimeAiPreset
-                          : null,
-                      icon: const Icon(Icons.auto_awesome_outlined, size: 16),
-                      label: const Text('AI 预设'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: gold,
-                        backgroundColor: ready
-                            ? gold.withValues(alpha: 0.08)
+              if (Platform.isWindows)
+                FutureBuilder<PhotoAiCudaCapability>(
+                  future: _cuda,
+                  builder: (context, snapshot) {
+                    final capability = snapshot.data;
+                    final ready = capability?.available == true;
+                    final dark =
+                        Theme.of(context).brightness == Brightness.dark;
+                    final gold = dark
+                        ? const Color(0xFFE4C474)
+                        : const Color(0xFF876316);
+                    return Tooltip(
+                      message: capability == null
+                          ? '正在检测 CUDA 加速能力'
+                          : !ready
+                          ? capability.detail
+                          : !connected
+                          ? 'CUDA 已就绪，请连接设备'
+                          : '${capability.detail}\n开启 PFT TV 3×；普通插值 2× 双三次\n双边滤波：空间 0.79 / 亮度 0.50\n温度卡尔曼开启，像素卡尔曼关闭',
+                      child: OutlinedButton.icon(
+                        onPressed: ready && connected
+                            ? app.applyRealtimeAiPreset
                             : null,
-                        side: BorderSide(
-                          color: ready
-                              ? gold.withValues(alpha: 0.5)
-                              : Theme.of(context).disabledColor,
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        textStyle: const TextStyle(fontSize: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
+                        icon: const Icon(Icons.auto_awesome_outlined, size: 16),
+                        label: const Text('AI 预设'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: gold,
+                          backgroundColor: ready
+                              ? gold.withValues(alpha: 0.08)
+                              : null,
+                          side: BorderSide(
+                            color: ready
+                                ? gold.withValues(alpha: 0.5)
+                                : Theme.of(context).disabledColor,
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          textStyle: const TextStyle(fontSize: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
                         ),
                       ),
-                    ),
-                  );
-                },
-              ),
+                    );
+                  },
+                ),
             ],
           ),
           if (app.realtimeAiEnabled)
@@ -2109,6 +2115,13 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
                   '${app.realtimeAi.outputFps?.toStringAsFixed(1) ?? "—"} AI FPS',
                 ),
                 _info(104, '上帧 ${app.realtimeAi.elapsedMs ?? "—"} ms'),
+                if (Platform.isAndroid && timings != null)
+                  _info(
+                    124,
+                    timings.fallback == null
+                        ? timings.backendLabel
+                        : 'GPU 不可用 · CPU',
+                  ),
                 if (app.realtimeAi.error != null)
                   _info(180, app.realtimeAi.error!),
               ],

@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'photo_ai_model.dart';
+import 'package:flutter/services.dart' show MethodChannel;
+import 'mobile_ai_backend.dart';
 import 'photo_ai_progress.dart';
 
 class PhotoAiCudaCapability {
@@ -32,7 +34,7 @@ class PhotoAiRuntime {
                 File('$directory/weights/manifest.json').readAsStringSync(),
               )
               as Map;
-      return PhotoAiModel.values.every((model) {
+      return PhotoAiModel.windowsModels.every((model) {
         final name = manifest[model.id]?['file'];
         return name is String && File('$directory/weights/$name').existsSync();
       });
@@ -107,6 +109,7 @@ class PhotoAiRuntime {
       File('$root/weights/manifest.json').existsSync();
 
   static bool available(PhotoAiModel model) {
+    if (model == PhotoAiModel.mobile3x) return MobileAiSettings.supported;
     if (!installed) return false;
     try {
       final manifest =
@@ -124,13 +127,44 @@ class PhotoAiRuntime {
     Float32List source,
     int w,
     int h, {
+    MobileAiBackend backend = MobileAiBackend.cpu,
     PhotoAiProgressCallback? onProgress,
   }) {
     onProgress?.call(const PhotoAiProgress('queued'));
     final result = Completer<Float32List>();
     _tail = _tail.then((_) async {
       try {
-        result.complete(await _request(model, source, w, h, onProgress));
+        if (model == PhotoAiModel.mobile3x) {
+          if (!available(model) ||
+              !model.supports(w, h, 3) ||
+              source.length != w * h) {
+            throw StateError('移动超分需要 64 位 ARM 安卓设备和 120×90 热像');
+          }
+          onProgress?.call(const PhotoAiProgress('inference'));
+          final clock = Stopwatch()..start();
+          final reply = await const MethodChannel('banana_thermal/mobile_sr')
+              .invokeMapMethod<String, dynamic>('infer', {
+                'input': source,
+                'prefer': backend.name,
+              });
+          final output = reply?['output'];
+          if (output is! Float32List || output.length != w * h * 9) {
+            throw const FormatException('移动超分返回尺寸无效');
+          }
+          onProgress?.call(
+            PhotoAiProgress(
+              'readback',
+              device: reply!['device'],
+              fallback: reply['fallback'],
+              requestMs: clock.elapsedMilliseconds,
+              modelLoadMs: reply['modelLoadMs'],
+              modelInferenceMs: reply['modelInferenceMs'],
+            ),
+          );
+          result.complete(output);
+        } else {
+          result.complete(await _request(model, source, w, h, onProgress));
+        }
       } catch (e, s) {
         result.completeError(e, s);
       }

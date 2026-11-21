@@ -7,7 +7,7 @@ import '../render/photo_ai_runtime.dart';
 
 const _dismissKey = 'ai_runtime_do_not_prompt';
 bool _dialogOpen = false;
-bool get _ready => PhotoAiModel.values.every(PhotoAiRuntime.available);
+bool get _ready => PhotoAiModel.windowsModels.every(PhotoAiRuntime.available);
 
 Future<void> offerAiRuntimeOnStartup(BuildContext context) async {
   if (!AiRuntimeInstaller.supported ||
