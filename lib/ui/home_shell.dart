@@ -332,7 +332,12 @@ class _HomeShellState extends State<HomeShell> {
         ),
         Expanded(
           child: Padding(
-            padding: EdgeInsets.fromLTRB(hPad, 0, hPad, compact ? 8 : 18),
+            padding: EdgeInsets.fromLTRB(
+              Platform.isAndroid && compact && _index == 0 ? 0 : hPad,
+              0,
+              Platform.isAndroid && compact && _index == 0 ? 0 : hPad,
+              compact ? 8 : 18,
+            ),
             child: IndexedStack(
               index: _index,
               children: const [

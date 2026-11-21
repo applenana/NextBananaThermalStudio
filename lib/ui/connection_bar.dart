@@ -150,7 +150,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
     final scheme = Theme.of(context).colorScheme;
     final connected = app.status == ConnectionStatus.connected;
     final label = switch (app.status) {
-      ConnectionStatus.connected => '已连接 · ${app.currentPort ?? ""}',
+      ConnectionStatus.connected => '已连接 · ${app.currentBaud} baud',
       ConnectionStatus.connecting => '连接中…',
       ConnectionStatus.scanning => '搜索中…',
       _ => '未连接 · 点击展开',
@@ -324,6 +324,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
                             );
                             if (ok && mounted) {
                               setState(() => _selected = app.currentPort);
+                              appConnectionBarExpanded.value = false;
                             }
                           },
                     icon: app.status == ConnectionStatus.scanning
@@ -358,6 +359,10 @@ class _ConnectionBarState extends State<ConnectionBar> {
                                 await app.disconnect();
                               } else if (_selected != null) {
                                 await app.connect(_selected!, baud: _baud);
+                                if (mounted &&
+                                    app.status == ConnectionStatus.connected) {
+                                  appConnectionBarExpanded.value = false;
+                                }
                               }
                             },
                       icon: Icon(

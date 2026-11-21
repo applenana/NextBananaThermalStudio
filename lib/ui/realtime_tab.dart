@@ -149,7 +149,7 @@ class _NarrowLayout extends StatelessWidget {
             const Padding(padding: sidePad, child: ConnectionBar()),
             const SizedBox(height: 12),
             // 全宽主画面: 抵消外部 home_shell 的两侧 hPad(12)
-            const _EdgeToEdgeThermal(),
+            const _ThermalCard(edgeToEdge: true),
             const SizedBox(height: 8),
             const Padding(padding: sidePad, child: _KpiRow()),
             const SizedBox(height: 8),
@@ -182,33 +182,6 @@ class _NarrowLayout extends StatelessWidget {
           SizedBox(height: 12),
           _CollapsibleConsole(expandedHeight: 200),
         ],
-      ),
-    );
-  }
-}
-
-/// Android 专用: 主画面横向贴边. 通过 OverflowBox 把宽度撑到屏宽,
-/// 抵消外层 home_shell 的 12pt 水平 padding, 并下发 edgeToEdge=true 令
-/// _ThermalCard 内部收起多余 padding 与圆角. 桌面不使用该组件.
-///
-/// 关键: SingleChildScrollView 在纵向给 unbounded 约束, OverflowBox 默认
-/// maxHeight=∞ 会导致整个 Column 测量崩溃. 因此外层用 SizedBox 给定
-/// finite 高度, 并让 OverflowBox 仅扩张宽度.
-class _EdgeToEdgeThermal extends StatelessWidget {
-  const _EdgeToEdgeThermal();
-  @override
-  Widget build(BuildContext context) {
-    final screenW = MediaQuery.of(context).size.width;
-    final h = screenW * 3 / 4;
-    return SizedBox(
-      height: h,
-      child: OverflowBox(
-        maxWidth: screenW,
-        minWidth: screenW,
-        maxHeight: h,
-        minHeight: h,
-        alignment: Alignment.center,
-        child: const _ThermalCard(edgeToEdge: true),
       ),
     );
   }
@@ -522,6 +495,7 @@ class _ThermalCardState extends State<_ThermalCard> {
         : ThermalCanvas(
             frame: frame,
             displayFrame: app.realtimeAi.enhancedFrame,
+
             markers: cursorMode ? const [] : _liveMarkers(frame),
             onAddMarker: (supportsViewTools && !cursorMode)
                 ? (px, py, _) => _store.add(px, py)
@@ -567,30 +541,80 @@ class _ThermalCardState extends State<_ThermalCard> {
             placeholder: '等待推流数据…',
           );
 
-    final viewTools = Column(
-      children: [
-        _FloatingMiniButton(
-          icon: Icons.fullscreen_rounded,
-          tooltip: '全屏',
-          onTap: (frame == null && !visibleOnly) ? null : _openFullscreen,
-        ),
-        const SizedBox(height: 8),
-        _FloatingMiniButton(
-          icon: cursorMode
-              ? Icons.touch_app_rounded
-              : Icons.my_location_rounded,
-          tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
-          highlighted: cursorMode,
-          onTap: () => _store.cursorMode = !cursorMode,
-        ),
-        const SizedBox(height: 8),
-        _FloatingMiniButton(
-          icon: Icons.cleaning_services_rounded,
-          tooltip: '清理光标',
-          onTap: _store.hasCursor ? _store.clear : null,
-        ),
-      ],
-    );
+    final toolButtons = [
+      _FloatingMiniButton(
+        icon: Icons.fullscreen_rounded,
+        tooltip: '全屏',
+        onTap: (frame == null && !visibleOnly) ? null : _openFullscreen,
+      ),
+      _FloatingMiniButton(
+        icon: cursorMode ? Icons.touch_app_rounded : Icons.my_location_rounded,
+        tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
+        highlighted: cursorMode,
+        onTap: () => _store.cursorMode = !cursorMode,
+      ),
+      _FloatingMiniButton(
+        icon: Icons.cleaning_services_rounded,
+        tooltip: '清理光标',
+        onTap: _store.hasCursor ? _store.clear : null,
+      ),
+    ];
+    final viewTools = Column(spacing: 8, children: toolButtons);
+
+    if (edge) {
+      final aspect = visibleOnly && app.visibleHeight > 0
+          ? app.visibleWidth / app.visibleHeight
+          : frame != null
+          ? frame.width / frame.height
+          : 4 / 3;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          AspectRatio(aspectRatio: aspect, child: canvas),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            child: Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  spacing: 4,
+                  children: toolButtons,
+                ),
+                const _CaptureBar(embedded: true, compact: true),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const _RealtimeAiSwitch(),
+                const _StreamToggleIcon(
+                  icon: Icons.thermostat_rounded,
+                  tooltip: '热成像推流',
+                  channel: _StreamChannel.thermal,
+                ),
+                if (supportsVisibleLight) ...const [
+                  _StreamToggleIcon(
+                    icon: Icons.photo_camera_rounded,
+                    tooltip: '可见光推流',
+                    channel: _StreamChannel.visible,
+                  ),
+                  _VisibleFloatingLauncher(iconOnly: true),
+                ],
+              ],
+            ),
+          ),
+        ],
+      );
+    }
 
     Widget canvasArea;
     if (isAndroid) {
@@ -641,11 +665,6 @@ class _ThermalCardState extends State<_ThermalCard> {
       ],
     );
 
-    if (edge) {
-      // Android edgeToEdge: 保留 Card 默认 margin/圆角 (避免画面贴屏边
-      // 裁掉圆角), 仅推进 clipBehavior 让画布裁切到圆角内.
-      return Card(clipBehavior: Clip.antiAlias, child: inner);
-    }
     return Card(child: inner);
   }
 }
@@ -889,6 +908,7 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                         : ThermalCanvas(
                             frame: frame,
                             displayFrame: app.realtimeAi.enhancedFrame,
+
                             markers: liveMarkers,
                             onAddMarker: cursorMode
                                 ? null
@@ -2014,6 +2034,34 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
     final enhanced = app.realtimeAi.enhancedFrame;
     final timings = app.realtimeAi.lastCompletedProgress;
     final connected = app.status == ConnectionStatus.connected;
+    if (Platform.isAndroid) {
+      final details = [
+        if (enhanced != null) '${enhanced.width}×${enhanced.height}',
+        if (timings != null)
+          timings.fallback == null ? timings.backendLabel : 'CPU（回退）',
+        if (app.realtimeAi.outputFps != null)
+          '${app.realtimeAi.outputFps!.toStringAsFixed(1)} FPS',
+        if (app.realtimeAi.elapsedMs != null) '${app.realtimeAi.elapsedMs} ms',
+      ].join(' · ');
+      return Wrap(
+        spacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          const Text('AI 3×'),
+          Switch(
+            value: app.realtimeAiEnabled,
+            onChanged: _modelAvailable && connected
+                ? app.setRealtimeAiEnabled
+                : null,
+          ),
+          if (app.realtimeAiEnabled)
+            Text(
+              app.realtimeAi.error ?? details,
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+        ],
+      );
+    }
     return Tooltip(
       message: _modelAvailable
           ? '${PhotoAiModel.platformDefault.label} 实时 3× 超分；温度测量仍使用原始帧'
