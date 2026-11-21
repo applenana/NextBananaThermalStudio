@@ -174,6 +174,14 @@ class AppState extends ChangeNotifier {
   /// 统一的渲染参数 (插值+双边滤波+调色盘+融合). 实时画面与图片下载 Tab 共用同一份.
   RenderParams renderParams = const RenderParams();
   final RealtimeAiSession realtimeAi = RealtimeAiSession();
+  bool _interpolateLive = false;
+  bool get interpolateLive => _interpolateLive;
+  void setInterpolateLive(bool value) {
+    if (_interpolateLive == value) return;
+    _interpolateLive = value;
+    notifyListeners();
+  }
+
   bool get realtimeAiEnabled => realtimeAi.enabled;
   RenderParams? _beforeStarThermalRenderParams;
 

@@ -495,7 +495,12 @@ class _ThermalCardState extends State<_ThermalCard> {
         : ThermalCanvas(
             frame: frame,
             displayFrame: app.realtimeAi.enhancedFrame,
-
+            interpolate: app.interpolateLive,
+            displayConfiguration: (
+              app.renderParams,
+              app.realtimeAiEnabled,
+              app.currentPort,
+            ),
             markers: cursorMode ? const [] : _liveMarkers(frame),
             onAddMarker: (supportsViewTools && !cursorMode)
                 ? (px, py, _) => _store.add(px, py)
@@ -908,7 +913,12 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                         : ThermalCanvas(
                             frame: frame,
                             displayFrame: app.realtimeAi.enhancedFrame,
-
+                            interpolate: app.interpolateLive,
+                            displayConfiguration: (
+                              app.renderParams,
+                              app.realtimeAiEnabled,
+                              app.currentPort,
+                            ),
                             markers: liveMarkers,
                             onAddMarker: cursorMode
                                 ? null
@@ -2034,6 +2044,15 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
     final enhanced = app.realtimeAi.enhancedFrame;
     final timings = app.realtimeAi.lastCompletedProgress;
     final connected = app.status == ConnectionStatus.connected;
+    final interpolation = Tooltip(
+      message: '在相邻热像之间生成一帧，仅用于实时显示',
+      child: FilterChip(
+        label: const Text('补帧 2×'),
+        visualDensity: VisualDensity.compact,
+        selected: app.interpolateLive,
+        onSelected: app.setInterpolateLive,
+      ),
+    );
     if (Platform.isAndroid) {
       final details = [
         if (enhanced != null) '${enhanced.width}×${enhanced.height}',
@@ -2059,6 +2078,7 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
               app.realtimeAi.error ?? details,
               style: Theme.of(context).textTheme.labelSmall,
             ),
+          interpolation,
         ],
       );
     }
@@ -2098,6 +2118,7 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
                 ],
               ),
               if (!_modelAvailable) const AiRuntimeInstallButton(),
+              interpolation,
               if (Platform.isWindows)
                 FutureBuilder<PhotoAiCudaCapability>(
                   future: _cuda,
