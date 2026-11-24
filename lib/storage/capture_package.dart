@@ -420,7 +420,7 @@ class CapturePackageReader {
       final lenBuf = await raf.read(4);
       final metaLen = ByteData.sublistView(lenBuf).getUint32(0, Endian.little);
       final metaBuf = await raf.read(metaLen);
-      final raw = String.fromCharCodes(metaBuf).trimRight();
+      final raw = utf8.decode(metaBuf).trimRight();
       final meta = CaptureMeta.fromJson(
         jsonDecode(raw) as Map<String, dynamic>,
       );
@@ -502,7 +502,7 @@ class CapturePackageReader {
       final metaLen = ByteData.sublistView(lenBuf).getUint32(0, Endian.little);
       final metaStart = await raf.position();
       final metaBuf = await raf.read(metaLen);
-      final raw = String.fromCharCodes(metaBuf).trimRight();
+      final raw = utf8.decode(metaBuf).trimRight();
       final meta = CaptureMeta.fromJson(
         jsonDecode(raw) as Map<String, dynamic>,
       );
