@@ -27,6 +27,7 @@ import 'render/photo_ai_runtime.dart';
 import 'render/photo_ai_model.dart';
 import 'render/ai_super_resolution.dart';
 import 'serial/serial_service.dart';
+import 'serial/identity_handshake.dart';
 import 'storage/capture_service.dart';
 import 'temperature/temperature_history_store.dart';
 import 'temperature/temperature_recorder.dart';
@@ -46,8 +47,10 @@ class AppState extends ChangeNotifier {
   StarThermalController? starthermal;
   bool get isStarThermal => starthermal != null;
   bool get requiresActivation => !isStarThermal;
-  IdentityProbe? _identityProbe;
-  Completer<Map<String, dynamic>>? _identityResult;
+  IdentityHandshake? _identityHandshake;
+  int _connectionGeneration = 0;
+  int _searchGeneration = 0;
+  bool _connectInProgress = false;
 
   final SerialService _alarmModuleSerial = SerialService();
   final TemperatureAlarmAudioController _temperatureAlarmAudio =
@@ -316,6 +319,7 @@ class AppState extends ChangeNotifier {
   /// 返回 true 表示连接成功. 若已连接会先断开重连. 探测期间会刷新 UI 显示
   /// "正在搜索 COMx" 进度日志.
   Future<bool> autoSearchAndConnect({int baud = 115200}) async {
+    if (_disposed || _connectInProgress) return false;
     if (status == ConnectionStatus.connected) {
       await disconnect();
     }
@@ -324,6 +328,7 @@ class AppState extends ChangeNotifier {
       return false;
     }
     status = ConnectionStatus.scanning;
+    final searchGeneration = ++_searchGeneration;
     _log('info', '开始自动搜索热成像设备...');
     notifyListeners();
 
@@ -344,7 +349,10 @@ class AppState extends ChangeNotifier {
       2000000,
       921600,
     }) {
-      if (status != ConnectionStatus.scanning) return false;
+      if (status != ConnectionStatus.scanning ||
+          searchGeneration != _searchGeneration) {
+        return false;
+      }
       found = await SerialService.searchTargetDevice(
         baud: speed,
         onProbe: (p) {
@@ -352,6 +360,7 @@ class AppState extends ChangeNotifier {
           notifyListeners();
         },
       );
+      if (searchGeneration != _searchGeneration) return false;
       if (found.port != null) {
         foundBaud = speed;
         break;
@@ -377,37 +386,45 @@ class AppState extends ChangeNotifier {
       }
       return status == ConnectionStatus.connected;
     }
+    status = ConnectionStatus.disconnected;
     await connect(found.port!, baud: foundBaud);
-    // 探测阶段已经拿到 JSON, 直接消化, 不必等连接后再 GetSysInfo
-    if (found.info != null && !isStarThermal) {
-      _absorbDeviceInfo(found.info!);
-      notifyListeners();
-    }
     return status == ConnectionStatus.connected;
   }
 
   Future<void> connect(String portName, {int baud = 115200}) async {
+    // Reserve the operation before its first await (scan cancellation or
+    // disconnect), so repeated clicks cannot open/close the same handle twice.
+    if (_disposed || _connectInProgress) return;
+    _connectInProgress = true;
+    try {
+      await _connect(portName, baud: baud);
+    } finally {
+      _connectInProgress = false;
+    }
+  }
+
+  Future<void> _connect(String portName, {required int baud}) async {
     if (alarmModuleConnected && alarmModulePort == portName) {
       throw StateError('该串口已连接为 USB 蜂鸣器模块，请选择热成像设备端口');
     }
     // 手动连接优先级最高: 如果正在自动扫描, 立即打断扫描后接手.
     if (status == ConnectionStatus.scanning) {
       _log('info', '手动连接请求, 中断自动搜索');
-      SerialService.cancelSearch();
-      // 等 autoSearchAndConnect 的 finally 走完 (状态回到 disconnected),
-      // 避免两条路径同时操作 _serial.
-      final start = DateTime.now();
-      while (status == ConnectionStatus.scanning &&
-          DateTime.now().difference(start) <
-              const Duration(milliseconds: 1500)) {
-        await Future<void>.delayed(const Duration(milliseconds: 30));
-      }
+      ++_searchGeneration;
+      await SerialService.cancelSearch();
+      if (_disposed) return;
+      status = ConnectionStatus.disconnected;
     }
     if (status == ConnectionStatus.connected) await disconnect();
     status = ConnectionStatus.connecting;
+    final generation = ++_connectionGeneration;
     notifyListeners();
     try {
       await _serial.open(portName, baud: baud);
+      if (generation != _connectionGeneration) {
+        await _serial.close();
+        return;
+      }
       currentPort = portName;
       _lastPort = portName;
       _lastBaud = baud;
@@ -418,31 +435,29 @@ class AppState extends ChangeNotifier {
         _onBytes,
         onError: (e) {
           _log('err', '串口读错误: $e');
-          _handleUnexpectedDisconnect();
+          if (_identityHandshake == null) _handleUnexpectedDisconnect();
         },
         onDone: () {
           _log('warn', '串口读流结束 (设备可能被拔出)');
-          _handleUnexpectedDisconnect();
+          if (_identityHandshake == null) _handleUnexpectedDisconnect();
         },
         cancelOnError: false,
       );
-      Map<String, dynamic>? identity;
-      for (final speed in {baud, 115200, 2000000, 921600}) {
-        await _serial.setBaud(speed);
-        _identityProbe = IdentityProbe();
-        final result = _identityResult = Completer<Map<String, dynamic>>();
-        await _serial.writeAll(Uint8List.fromList('GetSysInfo\n'.codeUnits));
-        try {
-          identity = await result.future.timeout(const Duration(seconds: 3));
-        } on TimeoutException {
-          continue;
-        }
-        _lastBaud = speed;
-        break;
+      final handshake = _identityHandshake = IdentityHandshake(
+        bytes: _serial.bytesStream,
+        write: _serial.writeAll,
+        setBaud: _serial.setBaud,
+        onLog: (message) => _log('info', '$portName：$message'),
+      );
+      final rates = {baud, 115200, 2000000, 921600};
+      final match = await handshake.run(rates);
+      if (generation != _connectionGeneration) return;
+      _identityHandshake = null;
+      if (match == null) {
+        throw StateError('串口已打开，但在 ${rates.join('、')} 均未收到有效设备信息');
       }
-      _identityProbe = null;
-      _identityResult = null;
-      if (identity == null) throw StateError('未收到有效设备信息');
+      final identity = match.info;
+      _lastBaud = match.baud;
       status = ConnectionStatus.connected;
       if (isStarThermalInfo(identity)) {
         final controller = StarThermalController(
@@ -492,10 +507,11 @@ class AppState extends ChangeNotifier {
         sendCommand('alarm get');
         if (Platform.isAndroid || Platform.isWindows) setThermalStream(true);
       }
+      if (generation != _connectionGeneration) return;
       _log('info', '已连接 $portName @ $_lastBaud');
     } catch (e) {
-      _identityProbe = null;
-      _identityResult = null;
+      if (generation != _connectionGeneration) return;
+      _identityHandshake = null;
       await _teardownConnection(reason: '连接失败');
       _log('err', '打开失败: $e');
     }
@@ -514,6 +530,8 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    ++_searchGeneration;
+    await SerialService.cancelSearch();
     _userDisconnect = true;
     _stopReconnectLoop();
     await _teardownConnection(reason: '已断开串口');
@@ -521,6 +539,9 @@ class AppState extends ChangeNotifier {
 
   /// 内部: 拆除当前连接资源 (不改 _userDisconnect / 不动重连逻辑).
   Future<void> _teardownConnection({required String reason}) async {
+    ++_connectionGeneration;
+    _identityHandshake?.cancel();
+    _identityHandshake = null;
     realtimeAi.setEnabled(false);
     _stopPortWatchdog();
     final cb = starthermal;
@@ -1319,15 +1340,7 @@ class AppState extends ChangeNotifier {
   // ============================================================
 
   void _onBytes(Uint8List data) {
-    if (_identityProbe != null) {
-      final info = _identityProbe!.add(data);
-      if (info != null &&
-          _identityResult != null &&
-          !_identityResult!.isCompleted) {
-        _identityResult!.complete(info);
-      }
-      return;
-    }
+    if (status == ConnectionStatus.connecting) return;
     if (starthermal != null) {
       starthermal!.client.feed(data);
       return;
@@ -2393,6 +2406,11 @@ class AppState extends ChangeNotifier {
   @override
   Future<void> dispose() async {
     _disposed = true;
+    ++_connectionGeneration;
+    ++_searchGeneration;
+    _identityHandshake?.cancel();
+    _identityHandshake = null;
+    await SerialService.cancelSearch();
     realtimeAi.removeListener(_onRealtimeAiChanged);
     realtimeAi.dispose();
     _awaitingLegacyCalibration = false;

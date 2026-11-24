@@ -11,13 +11,12 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:usb_serial/usb_serial.dart';
 
 import 'serial_port_info.dart';
-import '../starthermal/protocol.dart';
+import 'identity_handshake.dart';
 
 class AndroidSerialImpl {
   UsbPort? _port;
@@ -110,61 +109,66 @@ class AndroidSerialImpl {
     if (port == null) throw StateError('无法创建 USB 串口: $name');
     final ok = await port.open();
     if (!ok) throw StateError('无法打开 USB 串口: $name');
-    await port.setPortParameters(
-      baud,
-      UsbPort.DATABITS_8,
-      UsbPort.STOPBITS_1,
-      UsbPort.PARITY_NONE,
-    );
-    // 与桌面端一致: 显式拉高 DTR / RTS, 唤醒 TinyUSB CDC 设备 TX.
-    await port.setDTR(true);
-    await port.setRTS(true);
     _port = port;
-    _portName = name;
-    _currentVid = device.vid;
-    _currentPid = device.pid;
-    _sub = port.inputStream?.listen(
-      _byteCtrl.add,
-      onError: (e) {
-        _port = null;
-        _portName = null;
-        _byteCtrl.addError(e);
-      },
-      onDone: () {
-        // USB 拔出 / 链路断开时 inputStream 会 done. usb_serial 没有同步通知,
-        // 这里把 _port 清空让 isOpen 立即变 false (供 AppState 端 watchdog 识别),
-        // 同时通过 _byteCtrl.addError 触发 AppState 的 _byteSub.onError ->
-        // _handleUnexpectedDisconnect -> 自动重连循环.
-        _port = null;
-        _portName = null;
-        _byteCtrl.addError(StateError('USB 设备已断开'));
-      },
-      cancelOnError: false,
-    );
-    // 监听 USB attach/detach 广播: usb_serial 的 inputStream 在设备拔出后
-    // 不会主动 done, 必须靠 Android USB Host 广播触发清理. 命中当前设备
-    // detach 时主动 close + 抛 error, 让 AppState 进入自动重连流程.
     try {
-      await _eventSub?.cancel();
-    } catch (_) {}
-    _eventSub = UsbSerial.usbEventStream?.listen((ev) {
-      if (ev.event != UsbEvent.ACTION_USB_DETACHED) return;
-      final d = ev.device;
-      if (_port == null) return;
-      final matches =
-          d == null || ((d.vid == _currentVid) && (d.pid == _currentPid));
-      if (!matches) return;
-      // 主动触发断开: 先把 _port 清空让 isOpen 立刻 false, 再抛 error.
-      _port = null;
-      _portName = null;
-      _currentVid = null;
-      _currentPid = null;
+      await port.setPortParameters(
+        baud,
+        UsbPort.DATABITS_8,
+        UsbPort.STOPBITS_1,
+        UsbPort.PARITY_NONE,
+      );
+      // 与桌面端一致: 显式拉高 DTR / RTS, 唤醒 TinyUSB CDC 设备 TX.
+      await port.setDTR(true);
+      await port.setRTS(true);
+      _portName = name;
+      _currentVid = device.vid;
+      _currentPid = device.pid;
+      _sub = port.inputStream?.listen(
+        _byteCtrl.add,
+        onError: (e) {
+          _port = null;
+          _portName = null;
+          _byteCtrl.addError(e);
+        },
+        onDone: () {
+          // USB 拔出 / 链路断开时 inputStream 会 done. usb_serial 没有同步通知,
+          // 这里把 _port 清空让 isOpen 立即变 false (供 AppState 端 watchdog 识别),
+          // 同时通过 _byteCtrl.addError 触发 AppState 的 _byteSub.onError ->
+          // _handleUnexpectedDisconnect -> 自动重连循环.
+          _port = null;
+          _portName = null;
+          _byteCtrl.addError(StateError('USB 设备已断开'));
+        },
+        cancelOnError: false,
+      );
+      // 监听 USB attach/detach 广播: usb_serial 的 inputStream 在设备拔出后
+      // 不会主动 done, 必须靠 Android USB Host 广播触发清理. 命中当前设备
+      // detach 时主动 close + 抛 error, 让 AppState 进入自动重连流程.
       try {
-        _sub?.cancel();
+        await _eventSub?.cancel();
       } catch (_) {}
-      _sub = null;
-      _byteCtrl.addError(StateError('USB 设备已拔出'));
-    });
+      _eventSub = UsbSerial.usbEventStream?.listen((ev) {
+        if (ev.event != UsbEvent.ACTION_USB_DETACHED) return;
+        final d = ev.device;
+        if (_port == null) return;
+        final matches =
+            d == null || ((d.vid == _currentVid) && (d.pid == _currentPid));
+        if (!matches) return;
+        // 主动触发断开: 先把 _port 清空让 isOpen 立刻 false, 再抛 error.
+        _port = null;
+        _portName = null;
+        _currentVid = null;
+        _currentPid = null;
+        try {
+          _sub?.cancel();
+        } catch (_) {}
+        _sub = null;
+        _byteCtrl.addError(StateError('USB 设备已拔出'));
+      });
+    } catch (_) {
+      await close();
+      rethrow;
+    }
   }
 
   Future<void> setBaud(int baud) async {
@@ -231,88 +235,35 @@ class AndroidSerialImpl {
     int baud = 115200,
     Duration timeout = const Duration(milliseconds: 1800),
   }) async {
-    final devices = await UsbSerial.listDevices();
-    final device = devices.firstWhere(
-      (d) => d.deviceName == name,
-      orElse: () => throw StateError('USB 设备未连接: $name'),
-    );
-    UsbPort? port;
-    StreamSubscription<Uint8List>? sub;
-    final completer = Completer<Map<String, dynamic>?>();
-    final buf = BytesBuilder(copy: false);
-    final identityProbe = IdentityProbe();
+    final service = AndroidSerialImpl();
     try {
-      port = await device.create();
-      if (port == null) return null;
-      if (!await port.open()) return null;
-      await port.setPortParameters(
-        baud,
-        UsbPort.DATABITS_8,
-        UsbPort.STOPBITS_1,
-        UsbPort.PARITY_NONE,
+      await service.open(name, baud: baud);
+      final handshake = IdentityHandshake(
+        bytes: service.bytesStream,
+        write: service.writeAll,
+        setBaud: service.setBaud,
+        perBaudTimeout: timeout,
       );
-      await port.setDTR(true);
-      await port.setRTS(true);
-      sub = port.inputStream?.listen(
-        (data) {
-          if (completer.isCompleted) return;
-          final identity = identityProbe.add(data);
-          if (identity != null) {
-            completer.complete(identity);
-            return;
-          }
-          buf.add(data);
-          final all = buf.toBytes();
-          int last = 0;
-          for (int i = 0; i < all.length; i++) {
-            if (all[i] != 0x0A) continue;
-            final raw = all.sublist(last, i);
-            last = i + 1;
-            final ascii = raw
-                .where((b) => b == 0x09 || (b >= 0x20 && b < 0x7F))
-                .toList(growable: false);
-            final line = String.fromCharCodes(ascii).trim();
-            if (line.startsWith('{') && line.endsWith('}')) {
-              try {
-                final j = jsonDecode(line);
-                if (j is Map<String, dynamic> &&
-                    (j.containsKey('Activated') ||
-                        j.containsKey('Serial') ||
-                        j.containsKey('SerialNum') ||
-                        j.containsKey('isActivated'))) {
-                  if (!completer.isCompleted) completer.complete(j);
-                  return;
-                }
-              } catch (_) {}
-            }
-          }
-          if (last > 0 && last < all.length) {
-            final tail = all.sublist(last);
-            buf.clear();
-            buf.add(tail);
-          } else if (last >= all.length) {
-            buf.clear();
-          }
-        },
-        onError: (_) {
-          if (!completer.isCompleted) completer.complete(null);
-        },
-      );
-
-      await Future<void>.delayed(const Duration(milliseconds: 150));
-      await port.write(Uint8List.fromList('GetSysInfo\n'.codeUnits));
-
-      return await completer.future.timeout(timeout, onTimeout: () => null);
+      _activeSearchProbe = handshake;
+      if (_searchCancelled) handshake.cancel();
+      return (await handshake.run([baud]))?.info;
     } catch (_) {
       return null;
     } finally {
-      try {
-        await sub?.cancel();
-      } catch (_) {}
-      try {
-        await port?.close();
-      } catch (_) {}
+      _activeSearchProbe = null;
+      await service.dispose();
     }
+  }
+
+  static bool _searchCancelled = false;
+  static IdentityHandshake? _activeSearchProbe;
+  static Completer<void>? _searchFinished;
+
+  static Future<void> cancelSearch() async {
+    _searchCancelled = true;
+    _activeSearchProbe?.cancel();
+    await _searchFinished?.future;
+    if (_searchFinished == null) _searchCancelled = false;
   }
 
   static Future<({String? port, Map<String, dynamic>? info})>
@@ -320,17 +271,29 @@ class AndroidSerialImpl {
     int baud = 115200,
     Duration perPortTimeout = const Duration(milliseconds: 1500),
     void Function(String port)? onProbe,
+    Set<String>? allowedPorts,
   }) async {
-    final ports = await listPortsAsync();
-    for (final info in ports) {
-      onProbe?.call(info.name);
-      final res = await probeDevice(
-        info.name,
-        baud: baud,
-        timeout: perPortTimeout,
-      );
-      if (res != null) return (port: info.name, info: res);
+    final finished = _searchFinished = Completer<void>();
+    _searchCancelled = false;
+    try {
+      final ports = await listPortsAsync();
+      for (final info in ports) {
+        if (_searchCancelled) break;
+        if (allowedPorts != null && !allowedPorts.contains(info.name)) continue;
+        onProbe?.call(info.name);
+        final res = await probeDevice(
+          info.name,
+          baud: baud,
+          timeout: perPortTimeout,
+        );
+        if (_searchCancelled) break;
+        if (res != null) return (port: info.name, info: res);
+      }
+      return (port: null, info: null);
+    } finally {
+      _searchFinished = null;
+      _searchCancelled = false;
+      finished.complete();
     }
-    return (port: null, info: null);
   }
 }

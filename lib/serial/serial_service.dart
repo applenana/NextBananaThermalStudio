@@ -17,7 +17,6 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io' show Platform;
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -28,7 +27,7 @@ import 'android_serial_impl.dart';
 import 'serial_port_info.dart';
 import 'windows_rx_buffer.dart';
 import 'desktop_serial_reader.dart';
-import '../starthermal/protocol.dart';
+import 'identity_handshake.dart';
 
 export 'serial_port_info.dart';
 
@@ -127,29 +126,34 @@ class SerialService {
     if (!p.openReadWrite()) {
       throw SerialPortError('无法打开串口 $name');
     }
-    final cfg = SerialPortConfig()
-      ..baudRate = baud
-      ..bits = 8
-      ..stopBits = 1
-      ..parity = SerialPortParity.none
-      ..setFlowControl(SerialPortFlowControl.none)
-      // 关键: 显式拉高 DTR / RTS, 唤醒 RP2040 + TinyUSB CDC 设备的 TX.
-      // 多数 TinyUSB CDC 固件在 cdc_set_control_line_state(dtr=1) 回调里
-      // 才把内部 cdc_connected 置 true, 否则 tud_cdc_write 全部丢弃.
-      // 这也是为什么必须先用浏览器 Web Serial (默认拉 DTR) "唤一下"才有数据.
-      ..dtr = SerialPortDtr.on
-      ..rts = SerialPortRts.on;
-    p.config = cfg;
-    // 不调 cfg.dispose(): flutter_libserialport 在 Windows 上手动 dispose 后
-    // GC finalizer 会二次释放同一 native handle, 造成闪退. 交给 GC.
-
-    configureWindowsRxBuffer(p.address);
     _port = p;
-    _reader = await DesktopSerialReader.open(p.address);
-    _sub = _reader!.stream.listen(
-      _byteCtrl.add,
-      onError: (e) => _byteCtrl.addError(e),
-    );
+    try {
+      final cfg = SerialPortConfig()
+        ..baudRate = baud
+        ..bits = 8
+        ..stopBits = 1
+        ..parity = SerialPortParity.none
+        ..setFlowControl(SerialPortFlowControl.none)
+        // 关键: 显式拉高 DTR / RTS, 唤醒 RP2040 + TinyUSB CDC 设备的 TX.
+        // 多数 TinyUSB CDC 固件在 cdc_set_control_line_state(dtr=1) 回调里
+        // 才把内部 cdc_connected 置 true, 否则 tud_cdc_write 全部丢弃.
+        // 这也是为什么必须先用浏览器 Web Serial (默认拉 DTR) "唤一下"才有数据.
+        ..dtr = SerialPortDtr.on
+        ..rts = SerialPortRts.on;
+      p.config = cfg;
+      // 不调 cfg.dispose(): flutter_libserialport 在 Windows 上手动 dispose 后
+      // GC finalizer 会二次释放同一 native handle, 造成闪退. 交给 GC.
+
+      configureWindowsRxBuffer(p.address);
+      _reader = await DesktopSerialReader.open(p.address);
+      _sub = _reader!.stream.listen(
+        _byteCtrl.add,
+        onError: (e) => _byteCtrl.addError(e),
+      );
+    } catch (_) {
+      await close();
+      rethrow;
+    }
   }
 
   Future<void> setBaud(int baud) async {
@@ -334,21 +338,29 @@ class SerialService {
     int baud = 115200,
     Duration perPortTimeout = const Duration(milliseconds: 1500),
     void Function(String port)? onProbe,
+    Set<String>? allowedPorts,
   }) async {
     if (Platform.isAndroid) {
       return AndroidSerialImpl.searchTargetDevice(
         baud: baud,
         perPortTimeout: perPortTimeout,
         onProbe: onProbe,
+        allowedPorts: allowedPorts,
       );
     }
     // 枚举仍在主 isolate, 否则跨 isolate 的 SerialPortInfo 排序逻辑要复制一份.
-    final ports = listPorts();
+    final ports = listPorts()
+        .where(
+          (port) => allowedPorts == null || allowedPorts.contains(port.name),
+        )
+        .toList();
     final ordered = <String>[
       ...ports.where(_isLikelyTarget).map((e) => e.name),
       ...ports.where((p) => !_isLikelyTarget(p)).map((e) => e.name),
     ];
     if (ordered.isEmpty) return (port: null, info: null);
+    final finished = _searchFinished = Completer<void>();
+    _searchCancelled = false;
 
     final rp = ReceivePort();
     final errorPort = ReceivePort();
@@ -357,7 +369,10 @@ class SerialService {
     final foundCompleter = Completer<String?>();
 
     final progSub = rp.listen((msg) {
-      if (msg is String) {
+      if (msg is SendPort) {
+        _currentSearchCommands = msg;
+        if (_searchCancelled) msg.send(null);
+      } else if (msg is String) {
         onProbe?.call(msg);
       } else if (msg is Map) {
         // 结果消息: {'port': name, 'info': Map?}
@@ -398,7 +413,6 @@ class SerialService {
         onExit: exitPort.sendPort,
         errorsAreFatal: false,
       );
-      _currentSearchIsolate = isolate;
       final foundPort = await foundCompleter.future;
       final foundInfo = await resultCompleter.future;
       if (_searchCancelled) {
@@ -410,20 +424,21 @@ class SerialService {
       print('[searchTargetDevice] spawn failed, fallback main isolate: $e');
       // 兜底: 没法用 isolate 时退回主 isolate 串行扫描, 不至于完全没功能.
       for (final name in ordered) {
+        if (_searchCancelled) break;
         onProbe?.call(name);
         final info = await _probeDeviceCore(
           name,
           baud: baud,
           timeoutMs: perPortTimeout.inMilliseconds,
         );
-        if (info != null) return (port: name, info: info);
+        if (!_searchCancelled && info != null) return (port: name, info: info);
       }
       return (port: null, info: null);
     } finally {
       try {
         isolate?.kill(priority: Isolate.immediate);
       } catch (_) {}
-      _currentSearchIsolate = null;
+      _currentSearchCommands = null;
       _searchCancelled = false;
       await progSub.cancel();
       await errSub.cancel();
@@ -431,22 +446,26 @@ class SerialService {
       rp.close();
       errorPort.close();
       exitPort.close();
+      _searchFinished = null;
+      finished.complete();
     }
   }
 
-  // 当前进行中的扫描 isolate (仅桌面端 isolate 路径). 用于 cancelSearch().
-  static Isolate? _currentSearchIsolate;
+  // Cooperative cancellation also waits for the reader isolate to exit.
+  static SendPort? _currentSearchCommands;
+  static IdentityHandshake? _activeSearchProbe;
+  static Completer<void>? _searchFinished;
   static bool _searchCancelled = false;
 
-  /// 取消正在进行的 [searchTargetDevice]. 立即 kill 后台 isolate 并让
-  /// 等待的 Completer 以 (null, null) 完成. 用于"手动连接打断自动扫描".
-  /// 桌面端有效; Android (单 isolate 实现) 暂不可中途打断, 调用会被忽略.
-  static void cancelSearch() {
-    if (_currentSearchIsolate == null) return;
+  /// Cancel cooperatively and wait for the probe to close its native port.
+  /// Killing its isolate first would skip finally and leave the port occupied.
+  static Future<void> cancelSearch() async {
+    if (Platform.isAndroid) return AndroidSerialImpl.cancelSearch();
     _searchCancelled = true;
-    try {
-      _currentSearchIsolate!.kill(priority: Isolate.immediate);
-    } catch (_) {}
+    _currentSearchCommands?.send(null);
+    _activeSearchProbe?.cancel();
+    await _searchFinished?.future;
+    if (_searchFinished == null) _searchCancelled = false;
   }
 
   /// probeDevice 的纯实现, 不依赖任何 isolate-bound 资源, 可在主或子 isolate 调用.
@@ -455,98 +474,23 @@ class SerialService {
     required int baud,
     required int timeoutMs,
   }) async {
-    SerialPort? port;
-    SerialPortReader? reader;
-    StreamSubscription<Uint8List>? sub;
-    final completer = Completer<Map<String, dynamic>?>();
-    final buf = BytesBuilder(copy: false);
-    final identityProbe = IdentityProbe();
+    final service = SerialService();
     try {
-      port = SerialPort(name);
-      if (!port.openReadWrite()) {
-        return null;
-      }
-      final cfg = SerialPortConfig()
-        ..baudRate = baud
-        ..bits = 8
-        ..stopBits = 1
-        ..parity = SerialPortParity.none
-        ..setFlowControl(SerialPortFlowControl.none)
-        // 探测路径同样要拉高 DTR / RTS, 否则探测期设备不会回 JSON.
-        ..dtr = SerialPortDtr.on
-        ..rts = SerialPortRts.on;
-      port.config = cfg;
-
-      reader = SerialPortReader(port);
-      sub = reader.stream.listen(
-        (data) {
-          if (completer.isCompleted) return;
-          final identity = identityProbe.add(data);
-          if (identity != null) {
-            completer.complete(identity);
-            return;
-          }
-          buf.add(data);
-          final all = buf.toBytes();
-          int last = 0;
-          for (int i = 0; i < all.length; i++) {
-            if (all[i] != 0x0A) continue;
-            final raw = all.sublist(last, i);
-            last = i + 1;
-            final ascii = raw
-                .where((b) => b == 0x09 || (b >= 0x20 && b < 0x7F))
-                .toList(growable: false);
-            final line = String.fromCharCodes(ascii).trim();
-            if (line.startsWith('{') && line.endsWith('}')) {
-              try {
-                final j = jsonDecode(line);
-                if (j is Map<String, dynamic> &&
-                    (j.containsKey('Activated') ||
-                        j.containsKey('Serial') ||
-                        j.containsKey('SerialNum') ||
-                        j.containsKey('isActivated'))) {
-                  if (!completer.isCompleted) completer.complete(j);
-                  return;
-                }
-              } catch (_) {}
-            }
-          }
-          if (last > 0 && last < all.length) {
-            final tail = all.sublist(last);
-            buf.clear();
-            buf.add(tail);
-          } else if (last >= all.length) {
-            buf.clear();
-          }
-        },
-        onError: (_) {
-          if (!completer.isCompleted) completer.complete(null);
-        },
+      await service.open(name, baud: baud);
+      final handshake = IdentityHandshake(
+        bytes: service.bytesStream,
+        write: service.writeAll,
+        setBaud: service.setBaud,
+        perBaudTimeout: Duration(milliseconds: timeoutMs),
       );
-
-      await Future<void>.delayed(const Duration(milliseconds: 150));
-      if (!port.isOpen) {
-        if (!completer.isCompleted) completer.complete(null);
-      } else {
-        port.write(Uint8List.fromList('GetSysInfo\n'.codeUnits), timeout: 200);
-      }
-
-      return await completer.future.timeout(
-        Duration(milliseconds: timeoutMs),
-        onTimeout: () => null,
-      );
+      _activeSearchProbe = handshake;
+      if (_searchCancelled) handshake.cancel();
+      return (await handshake.run([baud]))?.info;
     } catch (_) {
       return null;
     } finally {
-      try {
-        await sub?.cancel();
-      } catch (_) {}
-      try {
-        reader?.close();
-      } catch (_) {}
-      try {
-        if (port?.isOpen == true) port?.close();
-      } catch (_) {}
+      _activeSearchProbe = null;
+      await service.dispose();
     }
   }
 }
@@ -569,17 +513,28 @@ class _SearchArgs {
 }
 
 Future<void> _searchIsolateEntry(_SearchArgs args) async {
-  for (final name in args.ports) {
-    args.sendPort.send(name); // 进度消息: 端口名
-    final info = await SerialService._probeDeviceCore(
-      name,
-      baud: args.baud,
-      timeoutMs: args.timeoutMs,
-    );
-    if (info != null) {
-      args.sendPort.send({'port': name, 'info': info});
-      return;
+  final commands = ReceivePort();
+  commands.listen((_) {
+    SerialService._searchCancelled = true;
+    SerialService._activeSearchProbe?.cancel();
+  });
+  args.sendPort.send(commands.sendPort);
+  try {
+    for (final name in args.ports) {
+      if (SerialService._searchCancelled) break;
+      args.sendPort.send(name); // 进度消息: 端口名
+      final info = await SerialService._probeDeviceCore(
+        name,
+        baud: args.baud,
+        timeoutMs: args.timeoutMs,
+      );
+      if (!SerialService._searchCancelled && info != null) {
+        args.sendPort.send({'port': name, 'info': info});
+        return;
+      }
     }
+    args.sendPort.send({'port': null, 'info': null});
+  } finally {
+    commands.close();
   }
-  args.sendPort.send({'port': null, 'info': null});
 }

@@ -29,6 +29,8 @@ class DeviceResponse {
 
 /// Length framing only. Never interpret a binary body as lines or JSON.
 class ResponseParser {
+  ResponseParser({this.onUnframedJson});
+  final void Function(Map<String, dynamic>)? onUnframedJson;
   final List<int> _bytes = [];
   Map<String, dynamic>? _header;
   void add(List<int> data) {
@@ -64,7 +66,11 @@ class ResponseParser {
       } catch (_) {
         continue;
       }
-      if (h is! Map || h['api'] is! String) continue;
+      if (h is! Map<String, dynamic>) continue;
+      if (h['api'] is! String) {
+        onUnframedJson?.call(h);
+        continue;
+      }
       final j = h['jsonLength'], b = h['binaryLength'];
       if (j is! int || b is! int || j < 0 || b < 0 || j + b > 1024 * 1024) {
         throw const FormatException('无效响应长度');
@@ -99,42 +105,46 @@ bool isStarThermalInfo(Map<String, dynamic> info) =>
 
 /// Used by both desktop and Android probes; v2 body need not end in newline.
 class IdentityProbe {
-  final ResponseParser _v2 = ResponseParser();
-  final List<int> _legacy = [];
-  Map<String, dynamic>? add(Uint8List data) {
-    _v2.add(data);
-    try {
-      final response = _v2.next();
-      if (response != null &&
-          response.header['ok'] == true &&
-          response.json is Map &&
-          isStarThermalInfo(response.object)) {
-        return response.object;
-      }
-    } on FormatException {
-      _v2.reset();
-    }
-    _legacy.addAll(data);
-    while (_legacy.contains(10)) {
-      final end = _legacy.indexOf(10);
-      final line = utf8
-          .decode(_legacy.sublist(0, end), allowMalformed: true)
-          .trim();
-      _legacy.removeRange(0, end + 1);
-      try {
-        final j = jsonDecode(line);
-        if (j is Map<String, dynamic> &&
-            !j.containsKey('api') &&
-            (j.containsKey('Serial') ||
-                j.containsKey('SerialNum') ||
-                j.containsKey('Activated') ||
-                j.containsKey('isActivated'))) {
-          return j;
+  IdentityProbe() {
+    _parser = ResponseParser(
+      onUnframedJson: (info) {
+        // Never accept an orphaned v2 body as legacy JSON without its CRC.
+        if (info['protocolVersion'] != 2 &&
+            !info.containsKey('api') &&
+            (info.containsKey('Serial') ||
+                info.containsKey('SerialNum') ||
+                info.containsKey('Activated') ||
+                info.containsKey('isActivated'))) {
+          _legacyIdentity = info;
         }
-      } catch (_) {}
+      },
+    );
+  }
+  late final ResponseParser _parser;
+  Map<String, dynamic>? _legacyIdentity;
+  String? lastError;
+  Map<String, dynamic>? add(Uint8List data) {
+    try {
+      _parser.add(data);
+    } on FormatException catch (error) {
+      lastError = error.message;
+      return null;
     }
-    if (_legacy.length > 8192) _legacy.clear();
-    return null;
+    while (true) {
+      try {
+        final response = _parser.next();
+        if (response == null) return _legacyIdentity;
+        if (response.header['api'] == 'GetSysInfo' &&
+            response.header['ok'] == true &&
+            response.json is Map &&
+            isStarThermalInfo(response.object)) {
+          return response.object;
+        }
+      } on FormatException catch (error) {
+        // next() consumed the bad header/body. Keep any following response.
+        lastError = error.message;
+      }
+    }
   }
 }
 
