@@ -27,6 +27,7 @@ import '../fusion/fusion.dart';
 import '../fusion/colormap.dart';
 import '../render/render_params.dart';
 import '../render/render_pipeline.dart';
+import '../render/video_export.dart';
 import '../render/ai_super_resolution.dart';
 import '../render/photo_ai_session.dart';
 import '../render/photo_ai_model.dart';
@@ -1174,8 +1175,15 @@ class _DetailBodyState extends State<_DetailBody> {
         overlayMin != null && overlayMax != null && overlayAvg != null;
     final hasMarkers = markers != null && markers.isNotEmpty;
     final hasExtremeTracking = _trackHotSpot || _trackColdSpot;
+    final scale = thermalVideoDisplayScale(r.width, r.height);
+    final outputWidth = r.width * scale;
+    final outputHeight = r.height * scale;
     if (!hasOverlay && !hasMarkers && !hasExtremeTracking) {
-      return (rgba: rgba, width: r.width, height: r.height);
+      return (
+        rgba: scaleVideoRgba(rgba, r.width, r.height, scale),
+        width: outputWidth,
+        height: outputHeight,
+      );
     }
     // 需要烘焙叠加: 走 Canvas, 之后再 toByteData(rawRgba).
     final completer = Completer<ui.Image>();
@@ -1190,9 +1198,16 @@ class _DetailBodyState extends State<_DetailBody> {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(
       recorder,
-      Rect.fromLTWH(0, 0, r.width.toDouble(), r.height.toDouble()),
+      Rect.fromLTWH(0, 0, outputWidth.toDouble(), outputHeight.toDouble()),
     );
-    canvas.drawImage(baseImg, Offset.zero, Paint());
+    // Keep marker coordinates in the rendered frame, but rasterize text at
+    // export resolution. Match ThermalCanvas's FilterQuality.none.
+    canvas.scale(scale.toDouble());
+    canvas.drawImage(
+      baseImg,
+      Offset.zero,
+      Paint()..filterQuality = FilterQuality.none,
+    );
     if (hasOverlay) {
       _drawTempOverlayOnCanvas(
         canvas,
@@ -1220,10 +1235,23 @@ class _DetailBodyState extends State<_DetailBody> {
       );
     }
     final picture = recorder.endRecording();
-    final outImg = await picture.toImage(r.width, r.height);
-    final bd = await outImg.toByteData(format: ui.ImageByteFormat.rawRgba);
-    if (bd == null) throw 'toByteData rawRgba null';
-    return (rgba: bd.buffer.asUint8List(), width: r.width, height: r.height);
+    try {
+      final outImg = await picture.toImage(outputWidth, outputHeight);
+      try {
+        final bd = await outImg.toByteData(format: ui.ImageByteFormat.rawRgba);
+        if (bd == null) throw 'toByteData rawRgba null';
+        return (
+          rgba: bd.buffer.asUint8List(),
+          width: outputWidth,
+          height: outputHeight,
+        );
+      } finally {
+        outImg.dispose();
+      }
+    } finally {
+      picture.dispose();
+      baseImg.dispose();
+    }
   }
 
   /// 把单帧渲染结果 + (可选)温度叠加烘焙成 PNG bytes.
@@ -1825,7 +1853,7 @@ class _DetailBodyState extends State<_DetailBody> {
       final base = p.basenameWithoutExtension(widget.item.path);
       final dir = await _ensureExportRoot();
       final outPath = p.join(dir.path, '$base.mp4');
-      final bitrate = (w * h * fps * 0.12).round().clamp(500000, 20000000);
+      final bitrate = videoExportBitrate(w, h, fps);
 
       if (usePlugin) {
         // 移动 / macOS: 走原生硬件编码插件.
@@ -1895,31 +1923,12 @@ class _DetailBodyState extends State<_DetailBody> {
         await _exportAllFramesAsPngBatch(setExportingFlag: false);
         return;
       }
-      final args = <String>[
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-y',
-        '-f',
-        'rawvideo',
-        '-pix_fmt',
-        'rgba',
-        '-s',
-        '${w}x$h',
-        '-r',
-        '$fps',
-        '-i',
-        'pipe:0',
-        '-c:v',
-        'libx264',
-        '-pix_fmt',
-        'yuv420p',
-        '-preset',
-        'medium',
-        '-b:v',
-        '$bitrate',
-        outPath,
-      ];
+      final args = videoExportFfmpegArgs(
+        width: w,
+        height: h,
+        fps: fps,
+        outputPath: outPath,
+      );
       final proc = await Process.start(ffmpegPath, args);
       final stderrBuf = StringBuffer();
       proc.stderr
