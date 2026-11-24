@@ -5,6 +5,13 @@
 #include "flutter_window.h"
 #include "utils.h"
 
+// Optimus reads this exported value from the executable when the process
+// starts. Keep it in the runner, not a plugin DLL, so hybrid notebooks can
+// prefer the NVIDIA GPU without a manually configured application profile.
+extern "C" {
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
   // Attach to console when present (e.g., 'flutter run') or create a
@@ -18,6 +25,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
   flutter::DartProject project(L"data");
+  // Select the high-performance rendering adapter before creating the engine.
+  // Flutter falls back to the available GPU on integrated-only computers.
+  // The separate AI worker selects its CUDA device independently.
+  project.set_gpu_preference(flutter::GpuPreference::HighPerformancePreference);
 
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();

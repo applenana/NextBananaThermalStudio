@@ -2086,6 +2086,7 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
       message: _modelAvailable
           ? '${PhotoAiModel.platformDefault.label} 实时 3× 超分；温度测量仍使用原始帧'
                 '${timings == null ? "" : "\n上帧预处理 ${timings.prepareMs} ms · 推理 ${timings.modelInferenceMs} ms · 着色 ${timings.colorMs} ms"}'
+                '${timings?.fallback == null ? "" : "\nCPU 回退原因：${timings!.fallback}"}'
           : Platform.isAndroid
           ? '移动超分仅支持 64 位 ARM 设备'
           : '需要独立安装 Thermal-PFT AI 运行包，点击“安装 AI 运行包”即可检查并下载。',
@@ -2184,11 +2185,11 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
                   '${app.realtimeAi.outputFps?.toStringAsFixed(1) ?? "—"} AI FPS',
                 ),
                 _info(104, '上帧 ${app.realtimeAi.elapsedMs ?? "—"} ms'),
-                if (Platform.isAndroid && timings != null)
+                if (timings != null)
                   _info(
                     124,
                     timings.fallback == null
-                        ? timings.backendLabel
+                        ? 'AI ${timings.backendLabel}'
                         : 'GPU 不可用 · CPU',
                   ),
                 if (app.realtimeAi.error != null)
