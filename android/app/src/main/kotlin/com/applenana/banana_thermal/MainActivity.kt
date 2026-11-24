@@ -15,9 +15,11 @@ class MainActivity : FlutterActivity() {
     private val updateChannel = "com.applenana.banana_thermal/app_update"
     private val systemFontsChannel = "com.applenana.banana_thermal/system_fonts"
     private var firmwareFlasher: AndroidFirmwareFlasher? = null
+    private var mobileSr: MobileSr? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        mobileSr = MobileSr(assets, flutterEngine.dartExecutor.binaryMessenger)
         firmwareFlasher = AndroidFirmwareFlasher(this, flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, updateChannel)
             .setMethodCallHandler { call, result ->
@@ -51,6 +53,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        mobileSr?.close()
+        mobileSr = null
         firmwareFlasher?.dispose()
         firmwareFlasher = null
         super.cleanUpFlutterEngine(flutterEngine)

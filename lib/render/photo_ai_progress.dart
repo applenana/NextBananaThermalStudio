@@ -61,6 +61,8 @@ class PhotoAiProgress {
       : null;
   String get backendLabel => device == 'cuda'
       ? 'CUDA'
+      : device == 'gpu'
+      ? 'GPU'
       : device == 'cpu'
       ? 'CPU'
       : '';

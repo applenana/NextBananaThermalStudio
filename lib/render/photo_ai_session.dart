@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'ai_super_resolution.dart';
 import 'render_pipeline.dart';
 import 'photo_ai_model.dart';
+import 'mobile_ai_backend.dart';
 import 'photo_ai_progress.dart';
 
 /// One in-flight inference and one latest pending input per gallery preview.
@@ -20,7 +21,9 @@ class PhotoAiSession extends ChangeNotifier {
     Future<RenderedFrame> Function(PhotoRenderInput, PhotoAiProgressCallback)?
     inferProgress,
   }) : _infer = infer,
-       _inferProgress = inferProgress;
+       _inferProgress = inferProgress {
+    MobileAiSettings.preferred.addListener(_reset);
+  }
   PhotoAiProgress? _previewProgress, _exportProgress;
   Object? _exportToken;
   bool get processing => busy || _exportToken != null;
@@ -34,7 +37,7 @@ class PhotoAiSession extends ChangeNotifier {
       _inferProgress?.call(input, progress) ??
       _infer?.call(input) ??
       input.enhanceAsync(onProgress: progress);
-  PhotoAiModel _model = PhotoAiModel.pftTv;
+  PhotoAiModel _model = PhotoAiModel.platformDefault;
   PhotoAiModel get model => _model;
   int _scale = 0;
   int get scale => _scale;
@@ -60,6 +63,7 @@ class PhotoAiSession extends ChangeNotifier {
     input.max,
     input.aiScale,
     input.aiModel,
+    input.backend,
   );
 
   void setScale(int value) {
@@ -93,12 +97,16 @@ class PhotoAiSession extends ChangeNotifier {
 
   RenderedFrame preview(PhotoRenderInput input) {
     if (!enabled) return input.render();
-    input = input.withAiScale(scale, model: model);
+    input = input.withAiScale(
+      scale,
+      model: model,
+      preferred: MobileAiSettings.preferred.value,
+    );
     if (!input.supportsAiScale) {
       _wanted = null;
       _pending = null;
       _debounce?.cancel();
-      error = '当前照片不支持 $scale× AI 超分，请选择较低倍率（输出每边最多 1024）';
+      error = '当前照片不支持 $scale× AI 超分：${model.inputLimit}';
       elapsedMs = null;
       _previewProgress = null;
       return input.render();
@@ -158,9 +166,13 @@ class PhotoAiSession extends ChangeNotifier {
   }) async {
     final selectedScale = scale ?? this.scale;
     if (selectedScale == 0) return input.render();
-    input = input.withAiScale(selectedScale, model: model ?? this.model);
+    input = input.withAiScale(
+      selectedScale,
+      model: model ?? this.model,
+      preferred: MobileAiSettings.preferred.value,
+    );
     if (!input.supportsAiScale) {
-      throw const FormatException('当前照片不支持此 AI 倍率（输出每边最多 1024）');
+      throw FormatException('当前照片不支持此 AI 倍率：${input.aiModel.inputLimit}');
     }
     if (_completed == _key(input) && _result != null) return _result!;
     // Export never silently substitutes a regular image for requested AI output.
@@ -186,6 +198,7 @@ class PhotoAiSession extends ChangeNotifier {
 
   @override
   void dispose() {
+    MobileAiSettings.preferred.removeListener(_reset);
     _disposed = true;
     _debounce?.cancel();
     _pending = null;

@@ -32,6 +32,7 @@ dependencies:
 
   # SHA-256 缓存指纹 (lib/protocol/photo_cache_index.dart 使用)
   crypto: ^3.0.3
+  archive: ^4.0.9
 
   # 图像处理 (Dart 纯实现; JPEG 解码 / 缩放 / 滤镜)
   image: ^4.3.0

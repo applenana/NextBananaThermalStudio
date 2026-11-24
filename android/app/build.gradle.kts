@@ -16,6 +16,7 @@ if (hasReleaseSigning) {
 }
 
 android {
+    androidResources { noCompress += "tflite" }
     namespace = "com.applenana.banana_thermal"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
@@ -32,6 +33,7 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.applenana.banana_thermal"
+        manifestPlaceholders["appLabel"] = "BananaThermal Studio"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -56,6 +58,11 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            // Hardware testing alongside a signed installation and its photo library.
+            applicationIdSuffix = ".srpreview"
+            manifestPlaceholders["appLabel"] = "BananaThermal SR"
+        }
         release {
             // 本地未配置 key.properties 时保留 debug 回退，方便开发构建；
             // GitHub tag 构建会强制注入持久 release 密钥，不允许静默换签名。
@@ -70,4 +77,8 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    implementation(project(":mobile-sr"))
 }

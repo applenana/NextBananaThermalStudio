@@ -24,6 +24,7 @@ import '../render/realtime_render_cache.dart';
 import '../render/ai_super_resolution.dart';
 import '../render/photo_ai_model.dart';
 import '../render/photo_ai_runtime.dart';
+import 'ai_runtime_install_ui.dart';
 import '../temperature/temperature_history_store.dart';
 import '../temperature/temperature_recorder.dart';
 import 'connection_bar.dart';
@@ -148,7 +149,7 @@ class _NarrowLayout extends StatelessWidget {
             const Padding(padding: sidePad, child: ConnectionBar()),
             const SizedBox(height: 12),
             // 全宽主画面: 抵消外部 home_shell 的两侧 hPad(12)
-            const _EdgeToEdgeThermal(),
+            const _ThermalCard(edgeToEdge: true),
             const SizedBox(height: 8),
             const Padding(padding: sidePad, child: _KpiRow()),
             const SizedBox(height: 8),
@@ -181,33 +182,6 @@ class _NarrowLayout extends StatelessWidget {
           SizedBox(height: 12),
           _CollapsibleConsole(expandedHeight: 200),
         ],
-      ),
-    );
-  }
-}
-
-/// Android 专用: 主画面横向贴边. 通过 OverflowBox 把宽度撑到屏宽,
-/// 抵消外层 home_shell 的 12pt 水平 padding, 并下发 edgeToEdge=true 令
-/// _ThermalCard 内部收起多余 padding 与圆角. 桌面不使用该组件.
-///
-/// 关键: SingleChildScrollView 在纵向给 unbounded 约束, OverflowBox 默认
-/// maxHeight=∞ 会导致整个 Column 测量崩溃. 因此外层用 SizedBox 给定
-/// finite 高度, 并让 OverflowBox 仅扩张宽度.
-class _EdgeToEdgeThermal extends StatelessWidget {
-  const _EdgeToEdgeThermal();
-  @override
-  Widget build(BuildContext context) {
-    final screenW = MediaQuery.of(context).size.width;
-    final h = screenW * 3 / 4;
-    return SizedBox(
-      height: h,
-      child: OverflowBox(
-        maxWidth: screenW,
-        minWidth: screenW,
-        maxHeight: h,
-        minHeight: h,
-        alignment: Alignment.center,
-        child: const _ThermalCard(edgeToEdge: true),
       ),
     );
   }
@@ -521,6 +495,12 @@ class _ThermalCardState extends State<_ThermalCard> {
         : ThermalCanvas(
             frame: frame,
             displayFrame: app.realtimeAi.enhancedFrame,
+            interpolate: app.interpolateLive,
+            displayConfiguration: (
+              app.renderParams,
+              app.realtimeAiEnabled,
+              app.currentPort,
+            ),
             markers: cursorMode ? const [] : _liveMarkers(frame),
             onAddMarker: (supportsViewTools && !cursorMode)
                 ? (px, py, _) => _store.add(px, py)
@@ -566,30 +546,80 @@ class _ThermalCardState extends State<_ThermalCard> {
             placeholder: '等待推流数据…',
           );
 
-    final viewTools = Column(
-      children: [
-        _FloatingMiniButton(
-          icon: Icons.fullscreen_rounded,
-          tooltip: '全屏',
-          onTap: (frame == null && !visibleOnly) ? null : _openFullscreen,
-        ),
-        const SizedBox(height: 8),
-        _FloatingMiniButton(
-          icon: cursorMode
-              ? Icons.touch_app_rounded
-              : Icons.my_location_rounded,
-          tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
-          highlighted: cursorMode,
-          onTap: () => _store.cursorMode = !cursorMode,
-        ),
-        const SizedBox(height: 8),
-        _FloatingMiniButton(
-          icon: Icons.cleaning_services_rounded,
-          tooltip: '清理光标',
-          onTap: _store.hasCursor ? _store.clear : null,
-        ),
-      ],
-    );
+    final toolButtons = [
+      _FloatingMiniButton(
+        icon: Icons.fullscreen_rounded,
+        tooltip: '全屏',
+        onTap: (frame == null && !visibleOnly) ? null : _openFullscreen,
+      ),
+      _FloatingMiniButton(
+        icon: cursorMode ? Icons.touch_app_rounded : Icons.my_location_rounded,
+        tooltip: cursorMode ? '切到多点标签' : '切到单点光标',
+        highlighted: cursorMode,
+        onTap: () => _store.cursorMode = !cursorMode,
+      ),
+      _FloatingMiniButton(
+        icon: Icons.cleaning_services_rounded,
+        tooltip: '清理光标',
+        onTap: _store.hasCursor ? _store.clear : null,
+      ),
+    ];
+    final viewTools = Column(spacing: 8, children: toolButtons);
+
+    if (edge) {
+      final aspect = visibleOnly && app.visibleHeight > 0
+          ? app.visibleWidth / app.visibleHeight
+          : frame != null
+          ? frame.width / frame.height
+          : 4 / 3;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          AspectRatio(aspectRatio: aspect, child: canvas),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            child: Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  spacing: 4,
+                  children: toolButtons,
+                ),
+                const _CaptureBar(embedded: true, compact: true),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const _RealtimeAiSwitch(),
+                const _StreamToggleIcon(
+                  icon: Icons.thermostat_rounded,
+                  tooltip: '热成像推流',
+                  channel: _StreamChannel.thermal,
+                ),
+                if (supportsVisibleLight) ...const [
+                  _StreamToggleIcon(
+                    icon: Icons.photo_camera_rounded,
+                    tooltip: '可见光推流',
+                    channel: _StreamChannel.visible,
+                  ),
+                  _VisibleFloatingLauncher(iconOnly: true),
+                ],
+              ],
+            ),
+          ),
+        ],
+      );
+    }
 
     Widget canvasArea;
     if (isAndroid) {
@@ -628,7 +658,7 @@ class _ThermalCardState extends State<_ThermalCard> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         header,
-        if (isWindows)
+        if (isWindows || isAndroid)
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
             child: _RealtimeAiSwitch(),
@@ -640,11 +670,6 @@ class _ThermalCardState extends State<_ThermalCard> {
       ],
     );
 
-    if (edge) {
-      // Android edgeToEdge: 保留 Card 默认 margin/圆角 (避免画面贴屏边
-      // 裁掉圆角), 仅推进 clipBehavior 让画布裁切到圆角内.
-      return Card(clipBehavior: Clip.antiAlias, child: inner);
-    }
     return Card(child: inner);
   }
 }
@@ -888,6 +913,12 @@ class _FullscreenThermalViewState extends State<_FullscreenThermalView> {
                         : ThermalCanvas(
                             frame: frame,
                             displayFrame: app.realtimeAi.enhancedFrame,
+                            interpolate: app.interpolateLive,
+                            displayConfiguration: (
+                              app.renderParams,
+                              app.realtimeAiEnabled,
+                              app.currentPort,
+                            ),
                             markers: liveMarkers,
                             onAddMarker: cursorMode
                                 ? null
@@ -1962,14 +1993,29 @@ class _RealtimeAiSwitch extends StatefulWidget {
 }
 
 class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
-  late final Future<PhotoAiCudaCapability> _cuda;
-  late final bool _modelAvailable;
+  Future<PhotoAiCudaCapability>? _cuda;
+  late bool _modelAvailable;
 
   @override
   void initState() {
     super.initState();
-    _modelAvailable = PhotoAiRuntime.available(PhotoAiModel.pftTv);
-    _cuda = PhotoAiRuntime.shared.checkCuda();
+    _modelAvailable = PhotoAiRuntime.available(PhotoAiModel.platformDefault);
+    if (Platform.isWindows) _cuda = PhotoAiRuntime.shared.checkCuda();
+    PhotoAiRuntime.revision.addListener(_refreshRuntime);
+  }
+
+  void _refreshRuntime() {
+    if (!mounted) return;
+    setState(() {
+      _modelAvailable = PhotoAiRuntime.available(PhotoAiModel.platformDefault);
+      if (Platform.isWindows) _cuda = PhotoAiRuntime.shared.checkCuda();
+    });
+  }
+
+  @override
+  void dispose() {
+    PhotoAiRuntime.revision.removeListener(_refreshRuntime);
+    super.dispose();
   }
 
   Widget _info(double width, String text) => SizedBox(
@@ -1998,11 +2044,51 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
     final enhanced = app.realtimeAi.enhancedFrame;
     final timings = app.realtimeAi.lastCompletedProgress;
     final connected = app.status == ConnectionStatus.connected;
+    final interpolation = Tooltip(
+      message: '在相邻热像之间生成一帧，仅用于实时显示',
+      child: FilterChip(
+        label: const Text('补帧 2×'),
+        visualDensity: VisualDensity.compact,
+        selected: app.interpolateLive,
+        onSelected: app.setInterpolateLive,
+      ),
+    );
+    if (Platform.isAndroid) {
+      final details = [
+        if (enhanced != null) '${enhanced.width}×${enhanced.height}',
+        if (timings != null)
+          timings.fallback == null ? timings.backendLabel : 'CPU（回退）',
+        if (app.realtimeAi.outputFps != null)
+          '${app.realtimeAi.outputFps!.toStringAsFixed(1)} FPS',
+        if (app.realtimeAi.elapsedMs != null) '${app.realtimeAi.elapsedMs} ms',
+      ].join(' · ');
+      return Wrap(
+        spacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          const Text('AI 3×'),
+          Switch(
+            value: app.realtimeAiEnabled,
+            onChanged: _modelAvailable && connected
+                ? app.setRealtimeAiEnabled
+                : null,
+          ),
+          if (app.realtimeAiEnabled)
+            Text(
+              app.realtimeAi.error ?? details,
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          interpolation,
+        ],
+      );
+    }
     return Tooltip(
       message: _modelAvailable
-          ? 'Thermal-PFT TV 实时 3× 超分；温度测量仍使用原始帧'
+          ? '${PhotoAiModel.platformDefault.label} 实时 3× 超分；温度测量仍使用原始帧'
                 '${timings == null ? "" : "\n上帧预处理 ${timings.prepareMs} ms · 推理 ${timings.modelInferenceMs} ms · 着色 ${timings.colorMs} ms"}'
-          : '未安装 Thermal-PFT Windows 扩展包',
+          : Platform.isAndroid
+          ? '移动超分仅支持 64 位 ARM 设备'
+          : '需要独立安装 Thermal-PFT AI 运行包，点击“安装 AI 运行包”即可检查并下载。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -2014,9 +2100,11 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
-                    'AI 实时超分 · PFT TV 3×',
-                    style: TextStyle(fontSize: 12),
+                  Text(
+                    Platform.isAndroid
+                        ? 'AI 实时超分 · 轻量 3×'
+                        : 'AI 实时超分 · PFT TV 3×',
+                    style: const TextStyle(fontSize: 12),
                   ),
                   Transform.scale(
                     scale: 0.85,
@@ -2029,52 +2117,56 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
                   ),
                 ],
               ),
-              FutureBuilder<PhotoAiCudaCapability>(
-                future: _cuda,
-                builder: (context, snapshot) {
-                  final capability = snapshot.data;
-                  final ready = capability?.available == true;
-                  final dark = Theme.of(context).brightness == Brightness.dark;
-                  final gold = dark
-                      ? const Color(0xFFE4C474)
-                      : const Color(0xFF876316);
-                  return Tooltip(
-                    message: capability == null
-                        ? '正在检测 CUDA 加速能力'
-                        : !ready
-                        ? capability.detail
-                        : !connected
-                        ? 'CUDA 已就绪，请连接设备'
-                        : '${capability.detail}\n开启 PFT TV 3×；普通插值 2× 双三次\n双边滤波：空间 0.79 / 亮度 0.50\n温度卡尔曼开启，像素卡尔曼关闭',
-                    child: OutlinedButton.icon(
-                      onPressed: ready && connected
-                          ? app.applyRealtimeAiPreset
-                          : null,
-                      icon: const Icon(Icons.auto_awesome_outlined, size: 16),
-                      label: const Text('AI 预设'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: gold,
-                        backgroundColor: ready
-                            ? gold.withValues(alpha: 0.08)
+              if (!_modelAvailable) const AiRuntimeInstallButton(),
+              interpolation,
+              if (Platform.isWindows)
+                FutureBuilder<PhotoAiCudaCapability>(
+                  future: _cuda,
+                  builder: (context, snapshot) {
+                    final capability = snapshot.data;
+                    final ready = capability?.available == true;
+                    final dark =
+                        Theme.of(context).brightness == Brightness.dark;
+                    final gold = dark
+                        ? const Color(0xFFE4C474)
+                        : const Color(0xFF876316);
+                    return Tooltip(
+                      message: capability == null
+                          ? '正在检测 CUDA 加速能力'
+                          : !ready
+                          ? capability.detail
+                          : !connected
+                          ? 'CUDA 已就绪，请连接设备'
+                          : '${capability.detail}\n开启 PFT TV 3×；普通插值 2× 双三次\n双边滤波：空间 0.79 / 亮度 0.50\n温度卡尔曼开启，像素卡尔曼关闭',
+                      child: OutlinedButton.icon(
+                        onPressed: ready && connected
+                            ? app.applyRealtimeAiPreset
                             : null,
-                        side: BorderSide(
-                          color: ready
-                              ? gold.withValues(alpha: 0.5)
-                              : Theme.of(context).disabledColor,
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        textStyle: const TextStyle(fontSize: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
+                        icon: const Icon(Icons.auto_awesome_outlined, size: 16),
+                        label: const Text('AI 预设'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: gold,
+                          backgroundColor: ready
+                              ? gold.withValues(alpha: 0.08)
+                              : null,
+                          side: BorderSide(
+                            color: ready
+                                ? gold.withValues(alpha: 0.5)
+                                : Theme.of(context).disabledColor,
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          textStyle: const TextStyle(fontSize: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
                         ),
                       ),
-                    ),
-                  );
-                },
-              ),
+                    );
+                  },
+                ),
             ],
           ),
           if (app.realtimeAiEnabled)
@@ -2092,6 +2184,13 @@ class _RealtimeAiSwitchState extends State<_RealtimeAiSwitch> {
                   '${app.realtimeAi.outputFps?.toStringAsFixed(1) ?? "—"} AI FPS',
                 ),
                 _info(104, '上帧 ${app.realtimeAi.elapsedMs ?? "—"} ms'),
+                if (Platform.isAndroid && timings != null)
+                  _info(
+                    124,
+                    timings.fallback == null
+                        ? timings.backendLabel
+                        : 'GPU 不可用 · CPU',
+                  ),
                 if (app.realtimeAi.error != null)
                   _info(180, app.realtimeAi.error!),
               ],

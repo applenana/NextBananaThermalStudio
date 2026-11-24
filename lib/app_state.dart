@@ -25,6 +25,7 @@ import 'render/render_params.dart';
 import 'render/realtime_ai_session.dart';
 import 'render/photo_ai_runtime.dart';
 import 'render/photo_ai_model.dart';
+import 'render/mobile_ai_backend.dart';
 import 'render/ai_super_resolution.dart';
 import 'serial/serial_service.dart';
 import 'serial/identity_handshake.dart';
@@ -176,6 +177,14 @@ class AppState extends ChangeNotifier {
   /// 统一的渲染参数 (插值+双边滤波+调色盘+融合). 实时画面与图片下载 Tab 共用同一份.
   RenderParams renderParams = const RenderParams();
   final RealtimeAiSession realtimeAi = RealtimeAiSession();
+  bool _interpolateLive = false;
+  bool get interpolateLive => _interpolateLive;
+  void setInterpolateLive(bool value) {
+    if (_interpolateLive == value) return;
+    _interpolateLive = value;
+    notifyListeners();
+  }
+
   bool get realtimeAiEnabled => realtimeAi.enabled;
   RenderParams? _beforeStarThermalRenderParams;
 
@@ -193,6 +202,7 @@ class AppState extends ChangeNotifier {
   Timer? _jsonFlushTimer;
 
   AppState() {
+    MobileAiSettings.preferred.addListener(_submitRealtimeAi);
     realtimeAi.addListener(_onRealtimeAiChanged);
     _parser = FrameParser(
       onThermal: _onThermalFrame,
@@ -214,8 +224,7 @@ class AppState extends ChangeNotifier {
   }
 
   void setRealtimeAiEnabled(bool enabled) {
-    if (!Platform.isWindows ||
-        (enabled && !PhotoAiRuntime.available(PhotoAiModel.pftTv))) {
+    if (enabled && !PhotoAiRuntime.available(PhotoAiModel.platformDefault)) {
       return;
     }
     realtimeAi.setEnabled(enabled);
@@ -253,10 +262,12 @@ class AppState extends ChangeNotifier {
 
   void _submitRealtimeAi() {
     final frame = thermalFrame;
-    if (!realtimeAiEnabled || !Platform.isWindows || frame == null) return;
+    if (!realtimeAiEnabled || frame == null) return;
     realtimeAi.submit(
       PhotoRenderInput(
         temperatures: frame,
+        aiModel: PhotoAiModel.platformDefault,
+        backend: MobileAiSettings.preferred.value,
         width: thermalWidth,
         height: thermalHeight,
         params: renderParams,
@@ -338,7 +349,8 @@ class AppState extends ChangeNotifier {
       info: null,
     );
     var foundBaud = baud;
-    for (final speed in {
+    final rates = {
+      if (Platform.isAndroid) baud,
       preferences.getInt('starthermal.lastBaud') ??
           preferences.getInt(
             '${legacyStarThermalModel.toLowerCase()}.lastBaud',
@@ -348,7 +360,8 @@ class AppState extends ChangeNotifier {
       115200,
       2000000,
       921600,
-    }) {
+    };
+    for (final speed in rates) {
       if (status != ConnectionStatus.scanning ||
           searchGeneration != _searchGeneration) {
         return false;
@@ -369,7 +382,7 @@ class AppState extends ChangeNotifier {
 
     if (found.port == null) {
       status = ConnectionStatus.disconnected;
-      _log('warn', '未发现热成像设备, 请检查 USB 连接');
+      _log('warn', '未发现热成像设备（探测速率：${rates.join("、")}），请检查 USB 连接及授权');
       notifyListeners();
       return false;
     }
@@ -386,6 +399,7 @@ class AppState extends ChangeNotifier {
       }
       return status == ConnectionStatus.connected;
     }
+    // The probe has released the port; this is a handoff, not a competing search.
     status = ConnectionStatus.disconnected;
     await connect(found.port!, baud: foundBaud);
     return status == ConnectionStatus.connected;
@@ -2405,6 +2419,7 @@ class AppState extends ChangeNotifier {
 
   @override
   Future<void> dispose() async {
+    MobileAiSettings.preferred.removeListener(_submitRealtimeAi);
     _disposed = true;
     ++_connectionGeneration;
     ++_searchGeneration;

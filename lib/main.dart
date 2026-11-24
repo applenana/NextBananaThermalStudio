@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io' show Platform;
 
 import 'app_state.dart';
+import 'render/mobile_ai_backend.dart';
 import 'temperature/temperature_history_store.dart';
 import 'temperature/temperature_recorder.dart';
 import 'update/update_service.dart';
@@ -122,6 +123,7 @@ Future<void> setWindowSizePersist(int w, int h) async {
 Future<void> _loadPersistedSettings() async {
   final prefs = await SharedPreferences.getInstance();
   _prefs = prefs;
+  MobileAiSettings.load(prefs);
 
   await AppFontController.instance.initialize(prefs);
 
@@ -195,6 +197,8 @@ Future<void> _loadPersistedSettings() async {
 Future<void> resetAllSettings() async {
   final prefs = _prefs ?? await SharedPreferences.getInstance();
   await prefs.remove(_kThemeMode);
+  await prefs.remove(MobileAiSettings.key);
+  MobileAiSettings.load(prefs);
   await prefs.remove(_kUiScale);
   await prefs.remove(_kWideBreakpoint);
   await prefs.remove(_kConsoleExpanded);

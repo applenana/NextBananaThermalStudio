@@ -37,6 +37,8 @@ import 'widgets/window_title_bar.dart';
 import 'window_size_ffi.dart';
 import 'banana_toast.dart';
 import 'app_update_ui.dart';
+import 'ai_runtime_install_ui.dart';
+import '../render/mobile_ai_backend.dart';
 import 'firmware_update_ui.dart';
 import '../app_state.dart';
 import '../firmware/firmware_update.dart';
@@ -68,8 +70,10 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(checkForUpdatesOnStartup(context));
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await checkForUpdatesOnStartup(context);
+      if (mounted) await offerAiRuntimeOnStartup(context);
     });
   }
 
@@ -328,7 +332,12 @@ class _HomeShellState extends State<HomeShell> {
         ),
         Expanded(
           child: Padding(
-            padding: EdgeInsets.fromLTRB(hPad, 0, hPad, compact ? 8 : 18),
+            padding: EdgeInsets.fromLTRB(
+              Platform.isAndroid && compact && _index == 0 ? 0 : hPad,
+              0,
+              Platform.isAndroid && compact && _index == 0 ? 0 : hPad,
+              compact ? 8 : 18,
+            ),
             child: IndexedStack(
               index: _index,
               children: const [
@@ -1076,6 +1085,45 @@ class _SettingsPlaceholderState extends State<_SettingsPlaceholder> {
             subtitle: '官方源优先，多镜像故障转移；检测失败后每分钟自动重试',
             child: AppUpdateSettingsControl(),
           ),
+          if (Platform.isWindows) ...[
+            const SizedBox(height: 12),
+            const _SettingsSection(
+              icon: Icons.auto_awesome,
+              title: 'AI 超分运行包',
+              subtitle: '独立下载和安装，支持 CUDA 加速与 CPU 回退',
+              child: AiRuntimeInstallButton(),
+            ),
+          ],
+          if (Platform.isAndroid) ...[
+            const SizedBox(height: 12),
+            _SettingsSection(
+              icon: Icons.memory,
+              title: 'AI 超分处理器',
+              subtitle: MobileAiSettings.supported
+                  ? '实时和照片共用 · 120×90 → 360×270 · GPU 不可用时回退 CPU'
+                  : '当前设备架构不支持移动超分',
+              child: ValueListenableBuilder<MobileAiBackend>(
+                valueListenable: MobileAiSettings.preferred,
+                builder: (context, value, _) =>
+                    SegmentedButton<MobileAiBackend>(
+                      segments: const [
+                        ButtonSegment(
+                          value: MobileAiBackend.cpu,
+                          label: Text('CPU 优先'),
+                        ),
+                        ButtonSegment(
+                          value: MobileAiBackend.gpu,
+                          label: Text('GPU 优先'),
+                        ),
+                      ],
+                      selected: {value},
+                      onSelectionChanged: MobileAiSettings.supported
+                          ? (values) => MobileAiSettings.select(values.single)
+                          : null,
+                    ),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           _SettingsSection(
             icon: Icons.restore_rounded,

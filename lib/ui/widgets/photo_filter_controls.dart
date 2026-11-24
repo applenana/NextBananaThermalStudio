@@ -3,6 +3,7 @@ import '../../render/photo_ai_model.dart';
 import '../../render/photo_ai_runtime.dart';
 import '../../render/photo_ai_session.dart';
 import '../../render/render_params.dart';
+import '../ai_runtime_install_ui.dart';
 
 /// Both galleries edit a local configuration, preserving source temperatures.
 class PhotoFilterControls extends StatelessWidget {
@@ -20,7 +21,12 @@ class PhotoFilterControls extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ValueListenableBuilder<int>(
+    valueListenable: PhotoAiRuntime.revision,
+    builder: (context, _, _) => _buildControls(context),
+  );
+
+  Widget _buildControls(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -127,14 +133,14 @@ class PhotoFilterControls extends StatelessWidget {
                       },
               ),
               if (ai != null) ...[
+                if (!PhotoAiRuntime.available(ai!.model))
+                  const AiRuntimeInstallButton(),
                 Tooltip(
-                  message:
-                      '${ai!.model.description} 仅增强显示，测温取自原数据。'
-                      '热像模型需要 Windows 扩展包；不可用项置灰。',
+                  message: '${ai!.model.description} 仅增强显示，测温取自原数据。',
                   child: DropdownButton<PhotoAiModel>(
                     value: ai!.model,
                     isDense: true,
-                    items: PhotoAiModel.values
+                    items: PhotoAiModel.platformModels
                         .map(
                           (model) => DropdownMenuItem(
                             value: model,
@@ -167,7 +173,7 @@ class PhotoFilterControls extends StatelessWidget {
                             sourceHeight,
                             scale,
                           ),
-                          child: Text('Thermal-PFT $scale×'),
+                          child: Text('AI 超分：$scale×'),
                         ),
                     ],
                     onChanged: PhotoAiRuntime.available(ai!.model)

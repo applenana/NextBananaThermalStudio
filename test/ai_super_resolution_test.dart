@@ -152,7 +152,12 @@ void main() {
   });
 
   test('Thermal-PFT supports native 3x only and enforces output bounds', () {
-    expect(PhotoAiModel.values, [PhotoAiModel.pftL1, PhotoAiModel.pftTv]);
+    expect(PhotoAiModel.windowsModels, [
+      PhotoAiModel.pftL1,
+      PhotoAiModel.pftTv,
+    ]);
+    expect(PhotoAiModel.mobile3x.supports(120, 90, 3), isTrue);
+    expect(PhotoAiModel.mobile3x.supports(90, 120, 3), isFalse);
     expect(PhotoAiModel.pftTv.scales, [3]);
     expect(PhotoAiModel.pftTv.supports(120, 90, 3), isTrue);
     expect(PhotoAiModel.pftTv.supports(120, 90, 2), isFalse);

@@ -150,7 +150,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
     final scheme = Theme.of(context).colorScheme;
     final connected = app.status == ConnectionStatus.connected;
     final label = switch (app.status) {
-      ConnectionStatus.connected => '已连接 · ${app.currentPort ?? ""}',
+      ConnectionStatus.connected => '已连接 · ${app.currentBaud} baud',
       ConnectionStatus.connecting => '连接中…',
       ConnectionStatus.scanning => '搜索中…',
       _ => '未连接 · 点击展开',
@@ -324,6 +324,7 @@ class _ConnectionBarState extends State<ConnectionBar> {
                             );
                             if (ok && mounted) {
                               setState(() => _selected = app.currentPort);
+                              appConnectionBarExpanded.value = false;
                             }
                           },
                     icon: app.status == ConnectionStatus.scanning
@@ -351,13 +352,17 @@ class _ConnectionBarState extends State<ConnectionBar> {
                         ? '中断自动搜索并连接所选端口'
                         : (connected ? '断开当前连接' : '连接所选端口'),
                     child: FilledButton.icon(
-                      onPressed: (app.status == ConnectionStatus.connecting)
+                      onPressed: (isBusy || (!connected && _selected == null))
                           ? null
                           : () async {
                               if (connected) {
                                 await app.disconnect();
                               } else if (_selected != null) {
                                 await app.connect(_selected!, baud: _baud);
+                                if (mounted &&
+                                    app.status == ConnectionStatus.connected) {
+                                  appConnectionBarExpanded.value = false;
+                                }
                               }
                             },
                       icon: Icon(
@@ -382,15 +387,17 @@ class _ConnectionBarState extends State<ConnectionBar> {
                 ),
               ],
             ),
-            if (app.starthermal != null) ...[
+            ...[
               const SizedBox(height: 8),
               Wrap(
                 spacing: 12,
                 runSpacing: 4,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
+                  const Text('波特率'),
                   _baudSelector(app),
-                  StarThermalControls(device: app.starthermal!),
+                  if (app.starthermal != null)
+                    StarThermalControls(device: app.starthermal!),
                 ],
               ),
             ],
@@ -641,7 +648,8 @@ class _ConnectionBarState extends State<ConnectionBar> {
                     ),
                   ),
                   _StatusBadge(status: app.status),
-                  if (app.starthermal != null) StarThermalControls(device: app.starthermal!),
+                  if (app.starthermal != null)
+                    StarThermalControls(device: app.starthermal!),
                 ],
               ),
 

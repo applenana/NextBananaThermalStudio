@@ -30,6 +30,8 @@ class ThermalCanvas extends StatefulWidget {
   /// Optional native-resolution RGB. Only its image is used; measurement and
   /// marker coordinates continue to come from [frame]. Must have the same aspect.
   final RenderedFrame? displayFrame;
+  final bool interpolate;
+  final Object? displayConfiguration;
 
   /// 是否启用鼠标悬浮取温 + 十字光标
   final bool showCursorTemp;
@@ -87,6 +89,8 @@ class ThermalCanvas extends StatefulWidget {
     super.key,
     required this.frame,
     this.displayFrame,
+    this.interpolate = false,
+    this.displayConfiguration,
     this.showCursorTemp = true,
     this.infoBar,
     this.placeholder = '等待数据…',
@@ -302,6 +306,8 @@ class _ThermalCanvasState extends State<ThermalCanvas>
                       ? (d) => setState(() => _hoverLocal = d.localPosition)
                       : null,
                   child: RgbImageView(
+                    key: ValueKey(widget.displayConfiguration),
+                    interpolate: widget.interpolate,
                     rgb: display.rgb,
                     width: display.width,
                     height: display.height,

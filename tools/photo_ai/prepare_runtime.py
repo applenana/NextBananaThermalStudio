@@ -63,8 +63,8 @@ def main():
             shutil.copytree(args.runtime_site, site, dirs_exist_ok=True)
     elif not (site/'torch').exists():
         torch_args = ['torch==2.11.0+cu128', '--index-url', 'https://download.pytorch.org/whl/cu128'] if args.backend == 'cuda' else ['torch==2.15.0']
-        subprocess.run([sys.executable, '-m', 'pip', 'install', '--target', str(site), *torch_args], check=True)
-        subprocess.run([sys.executable, '-m', 'pip', 'install', '--target', str(site),
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', '--target', str(site), *torch_args], check=True)
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', '--target', str(site),
                         'numpy==2.5.5', 'einops==0.8.2'], check=True)
     subprocess.run([str(target/'python/python.exe'), '-c',
                     'import torch; assert bool(torch.version.cuda) == '+repr(args.backend == 'cuda')+
@@ -81,7 +81,7 @@ def main():
         fetch(source, URLS[model], item['sha256'])
         shutil.copy2(source, target/'weights'/item['file'])
     shutil.copy2(HERE/'weights-manifest.json', target/'weights/manifest.json')
-    for name in ['engine.py', 'worker.py', 'MODELS.md']:
+    for name in ['engine.py', 'worker.py', 'check_runtime.py', 'MODELS.md']:
         shutil.copy2(HERE/name, target/name)
     shutil.copytree(HERE/'vendor', target/'vendor', dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns('__pycache__'))
